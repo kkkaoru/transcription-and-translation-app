@@ -1,3 +1,5 @@
+#![cfg_attr(all(feature = "gpui", target_os = "windows"), windows_subsystem = "windows")]
+
 #[cfg(feature = "gpui")]
 fn main() {
     kotoba_beacon_native::run();

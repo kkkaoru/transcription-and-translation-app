@@ -96,3 +96,51 @@ jobs:
       - run: bun run rust:vibrato:fmt
       - run: bun run rust:vibrato:lint
       - run: bun run rust:vibrato:test
+
+  native:
+    name: Native (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            os: ubuntu-24.04
+            node_platform: linux
+          - platform: Windows
+            os: windows-2025
+            node_platform: win32
+          - platform: macOS
+            os: macos-14
+            node_platform: darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt
+      - name: Install Linux Native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake libasound2-dev libfontconfig-dev \
+            libglib2.0-dev libssl-dev libvulkan1 libwayland-dev \
+            libx11-xcb-dev libxkbcommon-x11-dev libzstd-dev
+      - name: Check Native formatting
+        run: cargo fmt --manifest-path apps/native/Cargo.toml --all -- --check
+      - name: Lint Native
+        run: cargo clippy --locked --manifest-path apps/native/Cargo.toml --all-targets -- -D warnings
+      - name: Test Native
+        run: cargo test --locked --manifest-path apps/native/Cargo.toml
+      - name: Build Native release
+        run: cargo build --locked --release --manifest-path apps/native/Cargo.toml
+      - name: Package Native release without launching it
+        run: node scripts/package-native-release.mjs --platform ${{ matrix.node_platform }}
+      - name: Upload Native release
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotoba-beacon-native-${{ matrix.node_platform }}
+          path: dist/
+          if-no-files-found: error

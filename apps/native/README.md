@@ -221,6 +221,44 @@ The ASR verifier loads the real Silero, sherpa-onnx, Namo, and dictionary resour
 
 A physical microphone permission check remains an OS/hardware boundary.
 
+## Desktop platform builds
+
+Native uses the same GPUI, CPAL, Silero VAD, sherpa-onnx, and Parapper pipeline on
+macOS, Windows, and Linux. Platform-only outputs remain isolated: Syphon is macOS-only,
+Spout is Windows-only, and Browser Source plus Caption Output are available everywhere.
+
+```bash
+# macOS, Windows, or Linux (run on the target operating system)
+cargo build --locked --release --manifest-path apps/native/Cargo.toml
+```
+
+Windows requires the MSVC C++ Build Tools and Windows SDK. The release executable is
+`apps/native/target/release/kotoba-beacon-native.exe`; microphone capture uses WASAPI.
+The executable uses the Windows GUI subsystem, so launching it does not create a console window.
+
+Linux requires ALSA, Vulkan, Wayland, and X11 development libraries. On Ubuntu/Debian:
+
+```bash
+sudo apt-get install build-essential clang cmake libasound2-dev libfontconfig-dev \
+  libglib2.0-dev libssl-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+  libxkbcommon-x11-dev libzstd-dev
+cargo build --locked --release --manifest-path apps/native/Cargo.toml
+```
+
+The Linux executable is `apps/native/target/release/kotoba-beacon-native`. GPUI selects
+Wayland or X11 at runtime.
+
+After building on any target OS, create a portable release without launching the app:
+
+```bash
+node scripts/package-native-release.mjs
+```
+
+Windows and Linux packages include the executable plus the ONNX Runtime and sherpa-onnx
+libraries. macOS produces a signed local `.app` with the same in-process libraries. CI performs
+Native format, Clippy, tests, release builds, packaging, and artifact upload on all three
+operating systems so platform regressions cannot be hidden by a macOS-only gate.
+
 ## macOS installation
 
 ```bash
@@ -232,7 +270,9 @@ Installed layout:
 ```text
 ~/Applications/Kotoba Beacon Native.app/
 └─ Contents/
-   ├─ MacOS/kotoba-beacon-native
+   ├─ MacOS/
+   │  ├─ kotoba-beacon-native
+   │  └─ libonnxruntime.dylib
    └─ Frameworks/
       ├─ Syphon.framework
       ├─ libsherpa-onnx-c-api.dylib

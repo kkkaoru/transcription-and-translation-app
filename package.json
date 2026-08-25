@@ -16,6 +16,7 @@
     "dev:web": "bun --filter=@caption-bridge/desktop run dev",
     "build": "node scripts/clean-build-artifacts.mjs && bun --filter=@caption-bridge/desktop run build",
     "install:macos-native-app": "node scripts/install-macos-native-app.mjs",
+    "package:native": "node scripts/package-native-release.mjs",
     "typecheck": "bun --filter=@caption-bridge/desktop run typecheck && bun --filter=@caption-bridge/inference-server-core run typecheck",
     "lint": "biome check .",
     "format": "biome format --write .",
@@ -89,7 +90,7 @@
     "rust:wasm:build": "cargo build --locked --manifest-path packages/azookey-wasm/Cargo.toml --target wasm32-unknown-unknown --release",
     "vibrato:wasm:build": "node scripts/build-vibrato-wasm.mjs --bindgen",
     "rust:native:build": "cargo build --manifest-path apps/native/Cargo.toml",
-    "test:build-cleanup": "node --test scripts/build-azookey-dictionary.test.mjs scripts/clean-build-artifacts.test.mjs scripts/run-coverage-locked.test.mjs scripts/run-quality-gate-locked.test.mjs scripts/verify-ci-local-gates.test.mjs scripts/verify-generated-assets.test.mjs scripts/verify-azookey-wasm-parity.test.mjs scripts/build-azookey-wasm.test.mjs scripts/install-macos-native-app.test.mjs scripts/setup-cursor-cloudflare-mcp.test.mjs scripts/setup-cloudflare-access.test.mjs scripts/verify-cloudflare-hosted.test.mjs scripts/verify-azookey-compare-deploy.test.mjs scripts/compare-dev-asr-access-proxy.test.mjs scripts/partial-window-cpu-benchmark.test.mjs scripts/benchmark-native-runtime.test.mjs scripts/verify-greeting-live-caption.test.mjs scripts/verify-caption-quality.test.mjs scripts/judge-live-session.test.mjs scripts/probe-worker-one-completion.test.mjs scripts/run-timed-quality-steps.test.mjs",
+    "test:build-cleanup": "node --test scripts/build-azookey-dictionary.test.mjs scripts/clean-build-artifacts.test.mjs scripts/run-coverage-locked.test.mjs scripts/run-quality-gate-locked.test.mjs scripts/verify-ci-local-gates.test.mjs scripts/verify-generated-assets.test.mjs scripts/verify-azookey-wasm-parity.test.mjs scripts/build-azookey-wasm.test.mjs scripts/install-macos-native-app.test.mjs scripts/package-native-release.test.mjs scripts/setup-cursor-cloudflare-mcp.test.mjs scripts/setup-cloudflare-access.test.mjs scripts/verify-cloudflare-hosted.test.mjs scripts/verify-azookey-compare-deploy.test.mjs scripts/compare-dev-asr-access-proxy.test.mjs scripts/partial-window-cpu-benchmark.test.mjs scripts/benchmark-native-runtime.test.mjs scripts/verify-greeting-live-caption.test.mjs scripts/verify-caption-quality.test.mjs scripts/judge-live-session.test.mjs scripts/probe-worker-one-completion.test.mjs scripts/run-timed-quality-steps.test.mjs",
     "check:all": "node scripts/run-quality-gate-locked.mjs",
     "check:all:unlocked": "node scripts/run-timed-quality-steps.mjs"
   },
