@@ -188,11 +188,19 @@ void main() {
     final transport = _RoutingTransport();
     final processing = _RoutingProcessing();
     final statuses = <String>[];
+    final connectionStates = <bool>[];
+    final routeControlStates = <bool>[];
     final controller = CompanionController(
       route: defaultPipelineRoute(),
       transport: transport,
       processing: processing,
       onStatus: statuses.add,
+      onConnectionChanged: ({required connected}) {
+        connectionStates.add(connected);
+      },
+      onRouteControlsEnabled: ({required enabled}) {
+        routeControlStates.add(enabled);
+      },
       onSource: (_) {},
       onAzooKey: (_) {},
       onTranslation: (_) {},
@@ -212,6 +220,8 @@ void main() {
       statuses,
       contains(contains('接続エラー: Bad state: socket failed')),
     );
+    expect(connectionStates, containsAllInOrder([false, true]));
+    expect(routeControlStates, containsAllInOrder([false, true]));
     transport.addText(
       '{"version":1,"type":"route.configure",'
       '"route":{"asr":"desktop","azookey":"mobile",'
@@ -221,7 +231,8 @@ void main() {
     expect(controller.route.asr, ExecutionDevice.desktop);
     expect(controller.route.azookey, ExecutionDevice.mobile);
     expect(controller.route.translation, ExecutionDevice.desktop);
-    expect(statuses, contains('デスクトップ設定を適用: dmd'));
+    expect(statuses, contains('設定同期済み: dmd'));
+    expect(routeControlStates.last, isTrue);
     await controller.dispose();
   });
 

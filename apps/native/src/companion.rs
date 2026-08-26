@@ -10,13 +10,15 @@ use std::time::Duration;
 
 use getrandom::fill as fill_random;
 use rust_lib_kotoba_beacon_companion::api::simple::{
-    decode_mobile_route_request, decode_mobile_stage_result, decode_pair_request,
-    decode_session_configuration, encode_route_configuration, encode_session_ready,
-    MobileCapabilities, MobileStageResult, PipelineRoute,
+    decode_discovery_request, decode_mobile_route_request, decode_mobile_stage_result,
+    decode_pair_request, decode_session_configuration, encode_discovery_response,
+    encode_route_configuration, encode_session_ready, MobileCapabilities, MobileStageResult,
+    PipelineRoute,
 };
 use tungstenite::{accept, Error as WebSocketError, Message, WebSocket};
 
 pub const COMPANION_PORT: u16 = 18_183;
+pub const COMPANION_DISCOVERY_PORT: u16 = 18_184;
 const OUTBOUND_CAPACITY: usize = 64;
 const INBOUND_CAPACITY: usize = 64;
 const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(8);
@@ -24,6 +26,7 @@ const MODEL_PREPARATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(8);
 const PAIRING_TOKEN_BYTES: usize = 16;
 const MAX_PCM_FRAME_BYTES: usize = 4_096;
+const MAX_DISCOVERY_DATAGRAM_BYTES: usize = 1_024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompanionConnectionSnapshot {
@@ -85,6 +88,11 @@ impl CompanionServer {
         listener
             .set_nonblocking(true)
             .map_err(|error| format!("could not configure companion LAN listener: {error}"))?;
+        let discovery_socket = UdpSocket::bind(("0.0.0.0", COMPANION_DISCOVERY_PORT))
+            .map_err(|error| format!("could not bind companion discovery port: {error}"))?;
+        discovery_socket
+            .set_nonblocking(true)
+            .map_err(|error| format!("could not configure companion discovery socket: {error}"))?;
         let pairing_token = generate_pairing_token()?;
         let snapshot = Arc::new(Mutex::new(CompanionConnectionSnapshot::disconnected(
             pairing_token.clone(),
@@ -100,6 +108,7 @@ impl CompanionServer {
             .spawn(move || {
                 run_server(
                     listener,
+                    discovery_socket,
                     pairing_token,
                     outbound_rx,
                     inbound_tx,
@@ -189,6 +198,7 @@ impl Drop for CompanionServer {
 
 fn run_server(
     listener: TcpListener,
+    discovery_socket: UdpSocket,
     pairing_token: String,
     outbound_rx: Receiver<CompanionOutbound>,
     inbound_tx: SyncSender<CompanionInbound>,
@@ -196,6 +206,7 @@ fn run_server(
     stop_requested: Arc<AtomicBool>,
 ) {
     while !stop_requested.load(Ordering::Acquire) {
+        respond_to_discovery(&discovery_socket, &pairing_token, &snapshot);
         match listener.accept() {
             Ok((stream, _address)) => {
                 if let Err(error) = serve_connection(
@@ -220,6 +231,29 @@ fn run_server(
             }
         }
     }
+}
+
+fn respond_to_discovery(
+    socket: &UdpSocket,
+    pairing_token: &str,
+    snapshot: &Arc<Mutex<CompanionConnectionSnapshot>>,
+) {
+    let mut bytes = [0_u8; MAX_DISCOVERY_DATAGRAM_BYTES];
+    let Ok((length, peer)) = socket.recv_from(&mut bytes) else {
+        return;
+    };
+    let Ok(request) = std::str::from_utf8(&bytes[..length]) else {
+        return;
+    };
+    let Ok(nonce) = decode_discovery_request(request.to_string()) else {
+        return;
+    };
+    let endpoint =
+        snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).endpoint.clone();
+    let Ok(response) = encode_discovery_response(nonce, endpoint, pairing_token.to_string()) else {
+        return;
+    };
+    let _ = socket.send_to(response.as_bytes(), peer);
 }
 
 fn serve_connection(
@@ -389,17 +423,18 @@ fn set_error(snapshot: &Arc<Mutex<CompanionConnectionSnapshot>>, error: String) 
 
 #[cfg(test)]
 mod tests {
+    use std::net::UdpSocket;
     use std::thread;
     use std::time::Duration;
 
     use super::{
         constant_time_equal, generate_pairing_token, CompanionConnectionSnapshot, CompanionInbound,
-        CompanionServer, COMPANION_PORT,
+        CompanionServer, COMPANION_DISCOVERY_PORT, COMPANION_PORT,
     };
     use rust_lib_kotoba_beacon_companion::api::simple::{
-        default_pipeline_route, encode_pair_request, encode_route_request,
-        encode_session_configure, encode_stage_result, ExecutionDevice, MobileCapabilities,
-        PipelineRoute, ProcessingStage,
+        decode_discovery_response, default_pipeline_route, encode_discovery_request,
+        encode_pair_request, encode_route_request, encode_session_configure, encode_stage_result,
+        ExecutionDevice, MobileCapabilities, PipelineRoute, ProcessingStage,
     };
     use tungstenite::{connect, Message};
 
@@ -439,12 +474,31 @@ mod tests {
         let server = CompanionServer::start(route).expect("start companion server");
         let handle = server.handle();
         let snapshot = server.snapshot();
+        let discovery = UdpSocket::bind(("127.0.0.1", 0)).expect("bind discovery client");
+        discovery.set_read_timeout(Some(Duration::from_secs(1))).expect("set discovery timeout");
+        discovery
+            .send_to(
+                encode_discovery_request(77).expect("encode discovery request").as_bytes(),
+                ("127.0.0.1", COMPANION_DISCOVERY_PORT),
+            )
+            .expect("send discovery request");
+        let mut discovery_bytes = [0_u8; 1_024];
+        let (length, _peer) =
+            discovery.recv_from(&mut discovery_bytes).expect("discovery response");
+        let discovered = decode_discovery_response(
+            String::from_utf8(discovery_bytes[..length].to_vec())
+                .expect("UTF-8 discovery response"),
+        )
+        .expect("decode discovery response");
+        assert_eq!(discovered.nonce, 77);
+        assert_eq!(discovered.endpoint, snapshot.endpoint);
+        assert_eq!(discovered.token, snapshot.pairing_token);
         let (mut socket, _response) = connect(format!("ws://127.0.0.1:{COMPANION_PORT}/companion"))
             .expect("connect companion client");
         socket
             .send(Message::Text(
                 encode_pair_request(
-                    snapshot.pairing_token,
+                    snapshot.pairing_token.clone(),
                     "android-test-1".to_string(),
                     "test phone".to_string(),
                 )
@@ -524,6 +578,14 @@ mod tests {
                 translation: ExecutionDevice::Desktop,
             }
         );
+        server.set_route(default_pipeline_route()).expect("desktop route update");
+        assert!(matches!(
+            socket.read().expect("desktop route update"),
+            Message::Text(text)
+                if text.contains("route.configure")
+                    && text.contains("\"asr\":\"mobile\"")
+        ));
+        assert_eq!(server.snapshot().route, default_pipeline_route());
         socket.close(None).expect("close companion client");
     }
 }

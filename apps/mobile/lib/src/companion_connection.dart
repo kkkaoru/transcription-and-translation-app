@@ -1,8 +1,51 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:kotoba_beacon_companion/src/rust/api/simple.dart';
+
+const _discoveryPort = 18184;
+const _discoveryTimeout = Duration(seconds: 3);
+
+/// Discovers Native on the trusted LAN and returns authenticated connection
+/// data.
+Future<DiscoveryResponse> discoverCompanion({
+  InternetAddress? broadcastAddress,
+  int port = _discoveryPort,
+  Duration timeout = _discoveryTimeout,
+}) async {
+  final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+  final nonce = BigInt.from(Random.secure().nextInt(0x7fffffff));
+  final completion = Completer<DiscoveryResponse>();
+  socket.broadcastEnabled = true;
+  final subscription = socket.listen((event) {
+    if (event != RawSocketEvent.read || completion.isCompleted) return;
+    final datagram = socket.receive();
+    if (datagram == null) return;
+    try {
+      final response = decodeDiscoveryResponse(
+        json: utf8.decode(datagram.data),
+      );
+      if (response.nonce == nonce) completion.complete(response);
+    } on Object {
+      // Ignore unrelated LAN datagrams until the bounded timeout expires.
+    }
+  });
+  try {
+    final request = encodeDiscoveryRequest(nonce: nonce);
+    socket.send(
+      utf8.encode(request),
+      broadcastAddress ?? InternetAddress('255.255.255.255'),
+      port,
+    );
+    return await completion.future.timeout(timeout);
+  } finally {
+    await subscription.cancel();
+    socket.close();
+  }
+}
 
 /// Transport boundary between Flutter processing and Native on the trusted LAN.
 abstract interface class CompanionTransport {

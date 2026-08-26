@@ -1,0 +1,22 @@
+PODS:
+  - Flutter (1.0.0)
+  - rust_lib_kotoba_beacon_companion (0.0.1):
+    - Flutter
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - rust_lib_kotoba_beacon_companion (from `.symlinks/plugins/rust_lib_kotoba_beacon_companion/ios`)
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  rust_lib_kotoba_beacon_companion:
+    :path: ".symlinks/plugins/rust_lib_kotoba_beacon_companion/ios"
+
+SPEC CHECKSUMS:
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
+  rust_lib_kotoba_beacon_companion: 7c639efac86f557eb08cc461d7914d4372b8b2ac
+
+PODFILE CHECKSUM: afebdc598e42891e54b253bb159df83d419de1e3
+
+COCOAPODS: 1.17.0

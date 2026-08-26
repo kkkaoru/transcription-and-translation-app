@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -25,6 +26,7 @@ void main() {
     'WebSocket transport rejects non-LAN endpoint schemes',
     _testInvalidEndpoint,
   );
+  test('UDP discovery returns matching authenticated data', _testDiscovery);
   test(
     'real loopback WebSocket completes the mobile-owned pipeline',
     _testLoopbackPipeline,
@@ -59,6 +61,35 @@ Future<void> _testInvalidEndpoint() async {
   );
 
   await transport.dispose();
+}
+
+Future<void> _testDiscovery() async {
+  final server = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final subscription = server.listen((event) async {
+    if (event != RawSocketEvent.read) return;
+    final datagram = server.receive();
+    if (datagram == null) return;
+    final nonce = await decodeDiscoveryRequest(
+      json: utf8.decode(datagram.data),
+    );
+    final response = await encodeDiscoveryResponse(
+      nonce: nonce,
+      endpoint: 'ws://127.0.0.1:18183/companion',
+      token: '0123456789abcdef0123456789abcdef',
+    );
+    server.send(utf8.encode(response), datagram.address, datagram.port);
+  });
+
+  final discovered = await discoverCompanion(
+    broadcastAddress: InternetAddress.loopbackIPv4,
+    port: server.port,
+    timeout: const Duration(seconds: 1),
+  );
+
+  expect(discovered.endpoint, 'ws://127.0.0.1:18183/companion');
+  expect(discovered.token, '0123456789abcdef0123456789abcdef');
+  await subscription.cancel();
+  server.close();
 }
 
 Future<void> _testLoopbackPipeline() async {

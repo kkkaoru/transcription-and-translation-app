@@ -74,6 +74,13 @@ pub struct PairRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryResponse {
+    pub nonce: u64,
+    pub endpoint: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfiguration {
     pub session_id: String,
     pub route: PipelineRoute,
@@ -122,6 +129,8 @@ struct WireEnvelope {
     is_final: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     device_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,6 +252,7 @@ pub fn encode_pair_request(
         source_text: None,
         is_final: None,
         token: Some(token),
+        endpoint: None,
         device_name: Some(device_name),
         device_id: Some(device_id),
         route: None,
@@ -294,6 +304,7 @@ pub fn encode_session_configure(
         source_text: None,
         is_final: None,
         token: None,
+        endpoint: None,
         device_name: None,
         device_id: None,
         route: Some(route),
@@ -497,12 +508,64 @@ pub fn encode_stage_result(
         source_text: None,
         is_final: Some(is_final),
         token: None,
+        endpoint: None,
         device_name: None,
         device_id: None,
         route: None,
         capabilities: None,
         nonce: None,
         enabled: None,
+    })
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
+pub fn encode_discovery_request(nonce: u64) -> Result<String, String> {
+    let mut envelope = desktop_envelope("discovery.request", "discovery".to_string(), None, None);
+    envelope.session_id = None;
+    envelope.nonce = Some(nonce);
+    encode(envelope)
+}
+
+pub fn decode_discovery_request(json: String) -> Result<u64, String> {
+    let envelope = decode_wire(&json)?;
+    if envelope.kind != "discovery.request" {
+        return Err(format!("expected discovery.request, received {}", envelope.kind));
+    }
+    required(envelope.nonce, "discovery nonce")
+}
+
+pub fn encode_discovery_response(
+    nonce: u64,
+    endpoint: String,
+    token: String,
+) -> Result<String, String> {
+    let mut envelope = desktop_envelope("discovery.response", "discovery".to_string(), None, None);
+    envelope.session_id = None;
+    envelope.nonce = Some(nonce);
+    envelope.endpoint =
+        Some(bounded_required_text(endpoint, MAX_TEXT_CHARACTERS, "discovery endpoint")?);
+    envelope.token = Some(bounded_required_text(token, MAX_PAIRING_TOKEN_BYTES, "pairing token")?);
+    encode(envelope)
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
+pub fn decode_discovery_response(json: String) -> Result<DiscoveryResponse, String> {
+    let envelope = decode_wire(&json)?;
+    if envelope.kind != "discovery.response" {
+        return Err(format!("expected discovery.response, received {}", envelope.kind));
+    }
+    Ok(DiscoveryResponse {
+        nonce: required(envelope.nonce, "discovery nonce")?,
+        endpoint: bounded_required_text(
+            required(envelope.endpoint, "discovery endpoint")?,
+            MAX_TEXT_CHARACTERS,
+            "discovery endpoint",
+        )?,
+        token: bounded_required_text(
+            required(envelope.token, "pairing token")?,
+            MAX_PAIRING_TOKEN_BYTES,
+            "pairing token",
+        )?,
     })
 }
 
@@ -562,6 +625,7 @@ fn desktop_envelope(
         source_text: None,
         is_final: None,
         token: None,
+        endpoint: None,
         device_name: None,
         device_id: None,
         route: None,
@@ -670,13 +734,14 @@ fn required<T>(value: Option<T>, label: &str) -> Result<T, String> {
 mod tests {
     use super::{
         all_pipeline_routes, decode_desktop_command, decode_dictionary_bytes,
-        decode_mobile_stage_result, decode_pair_request, decode_session_configuration,
-        default_pipeline_route, encode_audio_boundary, encode_pair_request,
-        encode_route_configuration, encode_session_configure, encode_session_ready,
-        encode_stage_request, encode_stage_result, encode_translation_enabled, pipeline_route_id,
-        should_continue_on_mobile, stage_owner, DesktopCommand, ExecutionDevice,
-        MobileCapabilities, MobileStageResult, PairRequest, PipelineRoute, ProcessingStage,
-        SessionConfiguration,
+        decode_discovery_request, decode_discovery_response, decode_mobile_stage_result,
+        decode_pair_request, decode_session_configuration, default_pipeline_route,
+        encode_audio_boundary, encode_discovery_request, encode_discovery_response,
+        encode_pair_request, encode_route_configuration, encode_session_configure,
+        encode_session_ready, encode_stage_request, encode_stage_result,
+        encode_translation_enabled, pipeline_route_id, should_continue_on_mobile, stage_owner,
+        DesktopCommand, DiscoveryResponse, ExecutionDevice, MobileCapabilities, MobileStageResult,
+        PairRequest, PipelineRoute, ProcessingStage, SessionConfiguration,
     };
 
     #[test]
@@ -797,6 +862,41 @@ mod tests {
             )
             .expect("valid configuration"),
             r#"{"version":1,"type":"session.configure","session_id":"session-1","route":{"asr":"mobile","azookey":"mobile","translation":"mobile"},"capabilities":{"device_id":"ios-vendor-1","device_name":"iPhone","platform":"ios","asr_available":true,"azookey_available":true,"translation_available":true}}"#
+        );
+    }
+
+    #[test]
+    fn discovery_matches_one_nonce_and_returns_authenticated_connection_data() {
+        assert_eq!(
+            encode_discovery_request(42).expect("discovery request"),
+            r#"{"version":1,"type":"discovery.request","nonce":42}"#
+        );
+        assert_eq!(
+            decode_discovery_request(
+                r#"{"version":1,"type":"discovery.request","nonce":42}"#.to_string()
+            )
+            .expect("decode discovery request"),
+            42
+        );
+        assert_eq!(
+            encode_discovery_response(
+                42,
+                "ws://192.168.1.2:18183/companion".to_string(),
+                "0123456789abcdef0123456789abcdef".to_string(),
+            )
+            .expect("discovery response"),
+            r#"{"version":1,"type":"discovery.response","token":"0123456789abcdef0123456789abcdef","endpoint":"ws://192.168.1.2:18183/companion","nonce":42}"#
+        );
+        assert_eq!(
+            decode_discovery_response(
+                r#"{"version":1,"type":"discovery.response","token":"0123456789abcdef0123456789abcdef","endpoint":"ws://192.168.1.2:18183/companion","nonce":42}"#.to_string()
+            )
+            .expect("decode discovery response"),
+            DiscoveryResponse {
+                nonce: 42,
+                endpoint: "ws://192.168.1.2:18183/companion".to_string(),
+                token: "0123456789abcdef0123456789abcdef".to_string(),
+            }
         );
     }
 

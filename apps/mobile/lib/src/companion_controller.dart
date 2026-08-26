@@ -9,6 +9,8 @@ Future<void> _acceptRoute(PipelineRoute route) async {}
 
 void _ignoreRouteControlState({required bool enabled}) {}
 
+void _ignoreConnectionState({required bool connected}) {}
+
 /// Reports whether the authenticated session is idle enough to change routes.
 typedef RouteControlsChanged = void Function({required bool enabled});
 
@@ -25,10 +27,11 @@ final class CompanionController {
     required this.onTranslation,
     this.onRouteRequested = _acceptRoute,
     this.onRouteControlsEnabled = _ignoreRouteControlState,
+    this.onConnectionChanged = _ignoreConnectionState,
   }) {
     _transportSubscription = transport.messages.listen(
       _handleTransportMessage,
-      onError: (Object error) => onStatus('接続エラー: $error'),
+      onError: _handleTransportError,
     );
     _processingSubscription = processing.events.listen(_handleProcessingEvent);
   }
@@ -50,6 +53,9 @@ final class CompanionController {
 
   /// Enables route changes only while the authenticated session is idle.
   final RouteControlsChanged onRouteControlsEnabled;
+
+  /// Reports whether Native acknowledged the authenticated session.
+  final void Function({required bool connected}) onConnectionChanged;
 
   /// Receives accepted ASR source text immediately.
   final void Function(String text) onSource;
@@ -139,11 +145,13 @@ final class CompanionController {
     switch (command) {
       case DesktopCommand_SessionReady(:final sessionId, :final route):
         await _configureRoute(route);
+        onConnectionChanged(connected: true);
         onRouteControlsEnabled(enabled: true);
         onStatus('接続済み: $sessionId / ${pipelineRouteId(route: route)}');
       case DesktopCommand_ConfigureRoute(:final route):
         await _configureRoute(route);
-        onStatus('デスクトップ設定を適用: ${pipelineRouteId(route: route)}');
+        onRouteControlsEnabled(enabled: true);
+        onStatus('設定同期済み: ${pipelineRouteId(route: route)}');
       case DesktopCommand_StartAudio(
         :final sessionId,
         :final turnId,
@@ -367,6 +375,12 @@ final class CompanionController {
 
   bool _isCurrent(BigInt turnId, BigInt revision) =>
       _latestRevisionByTurn[turnId] == revision;
+
+  void _handleTransportError(Object error) {
+    onConnectionChanged(connected: false);
+    onRouteControlsEnabled(enabled: false);
+    onStatus('接続エラー: $error');
+  }
 
   void _reportProcessingError(Object error) {
     onStatus('音声処理エラー: $error');

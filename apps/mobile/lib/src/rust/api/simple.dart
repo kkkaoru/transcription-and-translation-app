@@ -11,7 +11,7 @@ part 'simple.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bounded_required_text`, `decode_dictionary_bytes`, `decode_wire`, `desktop_envelope`, `device_id`, `encode_desktop_message`, `encode_route_message`, `encode`, `required`, `supported_owner`, `validate_mobile_capabilities`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `WireEnvelope`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 PipelineRoute defaultPipelineRoute() =>
     RustLib.instance.api.crateApiSimpleDefaultPipelineRoute();
@@ -136,6 +136,25 @@ String encodeStageResult({
   isFinal: isFinal,
 );
 
+String encodeDiscoveryRequest({required BigInt nonce}) =>
+    RustLib.instance.api.crateApiSimpleEncodeDiscoveryRequest(nonce: nonce);
+
+Future<BigInt> decodeDiscoveryRequest({required String json}) =>
+    RustLib.instance.api.crateApiSimpleDecodeDiscoveryRequest(json: json);
+
+Future<String> encodeDiscoveryResponse({
+  required BigInt nonce,
+  required String endpoint,
+  required String token,
+}) => RustLib.instance.api.crateApiSimpleEncodeDiscoveryResponse(
+  nonce: nonce,
+  endpoint: endpoint,
+  token: token,
+);
+
+DiscoveryResponse decodeDiscoveryResponse({required String json}) =>
+    RustLib.instance.api.crateApiSimpleDecodeDiscoveryResponse(json: json);
+
 Future<void> initializeAzookeyDictionary({required List<int> bytes}) => RustLib
     .instance
     .api
@@ -208,6 +227,30 @@ sealed class DesktopCommand with _$DesktopCommand {
   const factory DesktopCommand.ping({
     required BigInt nonce,
   }) = DesktopCommand_Ping;
+}
+
+class DiscoveryResponse {
+  final BigInt nonce;
+  final String endpoint;
+  final String token;
+
+  const DiscoveryResponse({
+    required this.nonce,
+    required this.endpoint,
+    required this.token,
+  });
+
+  @override
+  int get hashCode => nonce.hashCode ^ endpoint.hashCode ^ token.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiscoveryResponse &&
+          runtimeType == other.runtimeType &&
+          nonce == other.nonce &&
+          endpoint == other.endpoint &&
+          token == other.token;
 }
 
 enum ExecutionDevice {

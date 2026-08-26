@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kotoba_beacon_companion/main.dart' as app;
@@ -43,6 +44,10 @@ void main() {
   testWidgets(
     'releases a prepared dictionary when AzooKey moves to Desktop',
     _testPreparedDictionaryRelease,
+  );
+  testWidgets(
+    'uses Cupertino controls and acknowledged routes on iOS and iPadOS',
+    _testCupertinoInterface,
   );
 }
 
@@ -86,6 +91,8 @@ Future<void> _initializeWidgetDictionary() async {
 Future<void> _testMobileDefaults(WidgetTester tester) async {
   await tester.pumpWidget(const app.KotobaBeaconCompanionApp());
 
+  expect(find.byType(MaterialApp), findsOneWidget);
+  expect(find.byType(CupertinoApp), findsNothing);
   expect(find.text('Kotoba Beacon Companion'), findsOneWidget);
   expect(find.text('処理場所 (mmm)'), findsOneWidget);
   expect(find.text('ASR'), findsAtLeastNWidgets(1));
@@ -137,6 +144,9 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
   );
   await tester.pump(const Duration(milliseconds: 20));
   expect(find.textContaining('接続済み: widget-session / mmm'), findsOneWidget);
+  expect(find.text('接続状態: 認証済み'), findsOneWidget);
+  expect(find.text('同期済み route: mmm'), findsOneWidget);
+  expect(find.textContaining('Mobile APIs: ASR 利用可'), findsOneWidget);
 
   transport.addText(
     '{"version":1,"type":"audio.start","session_id":"widget-session",'
@@ -155,6 +165,17 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 100));
 
   expect(find.text('きょう'), findsOneWidget);
+
+  transport.addText(
+    '{"version":1,"type":"azookey.request",'
+    '"session_id":"widget-session","turn_id":4,'
+    '"revision":10,"text":"きょう","is_final":true}',
+  );
+  await tester.runAsync(
+    () => Future<void>.delayed(const Duration(milliseconds: 100)),
+  );
+  await tester.pump();
+  expect(find.text('今日'), findsOneWidget);
 
   transport.addText(
     '{"version":1,"type":"translation.request",'
@@ -186,23 +207,65 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
       translation: ExecutionDevice.desktop,
     ),
   );
+  expect(find.text('同期済み route: mmm'), findsOneWidget);
+  transport.addText(
+    '{"version":1,"type":"route.configure",'
+    '"route":{"asr":"mobile","azookey":"mobile",'
+    '"translation":"desktop"}}',
+  );
+  await tester.pump(const Duration(milliseconds: 20));
+  expect(find.text('同期済み route: mmd'), findsOneWidget);
+  expect(find.text('設定同期済み: mmd'), findsOneWidget);
 
   var sentCount = transport.sentTexts.length;
-  routeControls.elementAt(0).onSelectionChanged?.call({
+  var currentControls = tester.widgetList<SegmentedButton<ExecutionDevice>>(
+    find.byType(SegmentedButton<ExecutionDevice>),
+  );
+  currentControls.elementAt(0).onSelectionChanged?.call({
     ExecutionDevice.desktop,
   });
   await tester.runAsync(() => _waitForSentCount(transport, sentCount + 1));
+  transport.addText(
+    '{"version":1,"type":"route.configure",'
+    '"route":{"asr":"desktop","azookey":"mobile",'
+    '"translation":"desktop"}}',
+  );
+  await tester.pump(const Duration(milliseconds: 20));
+
   sentCount = transport.sentTexts.length;
-  routeControls.elementAt(0).onSelectionChanged?.call({ExecutionDevice.mobile});
+  currentControls = tester.widgetList<SegmentedButton<ExecutionDevice>>(
+    find.byType(SegmentedButton<ExecutionDevice>),
+  );
+  currentControls.elementAt(0).onSelectionChanged?.call({
+    ExecutionDevice.mobile,
+  });
   await tester.runAsync(() => _waitForSentCount(transport, sentCount + 1));
+  transport.addText(
+    '{"version":1,"type":"route.configure",'
+    '"route":{"asr":"mobile","azookey":"mobile",'
+    '"translation":"desktop"}}',
+  );
+  await tester.pump(const Duration(milliseconds: 20));
+
   sentCount = transport.sentTexts.length;
-  routeControls.elementAt(2).onSelectionChanged?.call({ExecutionDevice.mobile});
+  currentControls = tester.widgetList<SegmentedButton<ExecutionDevice>>(
+    find.byType(SegmentedButton<ExecutionDevice>),
+  );
+  currentControls.elementAt(2).onSelectionChanged?.call({
+    ExecutionDevice.mobile,
+  });
   await tester.runAsync(() => _waitForSentCount(transport, sentCount + 1));
-  await tester.pump();
   expect(
     decodeMobileRouteRequest(json: transport.sentTexts.last),
     defaultPipelineRoute(),
   );
+  transport.addText(
+    '{"version":1,"type":"route.configure",'
+    '"route":{"asr":"mobile","azookey":"mobile",'
+    '"translation":"mobile"}}',
+  );
+  await tester.pump(const Duration(milliseconds: 20));
+  expect(find.text('同期済み route: mmm'), findsOneWidget);
 
   final disconnectButton = find.widgetWithText(FilledButton, '切断');
   await tester.ensureVisible(disconnectButton);
@@ -336,6 +399,70 @@ Future<void> _testPreparedDictionaryRelease(WidgetTester tester) async {
     decodeMobileRouteRequest(json: transport.sentTexts.last).azookey,
     ExecutionDevice.desktop,
   );
+}
+
+Future<void> _testCupertinoInterface(WidgetTester tester) async {
+  debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+  addTearDown(() => debugDefaultTargetPlatformOverride = null);
+  final transport = _WidgetTransport();
+  final processing = _WidgetProcessing();
+  await tester.pumpWidget(
+    app.KotobaBeaconCompanionApp(
+      key: UniqueKey(),
+      home: app.CompanionHomePage(
+        createTransport: () => transport,
+        createProcessing: () => processing,
+        prepareAzooKeyDictionary: () async {},
+        discoverDesktop: () async => DiscoveryResponse(
+          nonce: BigInt.zero,
+          endpoint: 'ws://192.168.1.227:18183/companion',
+          token: '0123456789abcdef0123456789abcdef',
+        ),
+        autoDiscover: true,
+      ),
+    ),
+  );
+
+  expect(find.byType(CupertinoPageScaffold), findsOneWidget);
+  expect(find.byType(CupertinoTextField), findsNWidgets(2));
+  expect(
+    find.byType(CupertinoSlidingSegmentedControl<ExecutionDevice>),
+    findsNWidgets(3),
+  );
+  expect(find.byType(SegmentedButton<ExecutionDevice>), findsNothing);
+
+  await tester.runAsync(() => _waitForConnection(transport));
+  transport.addText(
+    '{"version":1,"type":"session.ready",'
+    '"session_id":"cupertino-session",'
+    '"route":{"asr":"mobile","azookey":"mobile",'
+    '"translation":"mobile"}}',
+  );
+  await tester.pump(const Duration(milliseconds: 20));
+  expect(find.text('接続状態'), findsOneWidget);
+  expect(find.text('認証済み'), findsOneWidget);
+
+  final asrControl = find.byKey(const Key('stage-ASR'));
+  await tester.tap(
+    find.descendant(of: asrControl, matching: find.text('Desktop')),
+  );
+  await tester.runAsync(() => _waitForRouteRequest(transport));
+  expect(
+    decodeMobileRouteRequest(json: transport.sentTexts.last),
+    const PipelineRoute(
+      asr: ExecutionDevice.desktop,
+      azookey: ExecutionDevice.mobile,
+      translation: ExecutionDevice.mobile,
+    ),
+  );
+  transport.addText(
+    '{"version":1,"type":"route.configure",'
+    '"route":{"asr":"desktop","azookey":"mobile",'
+    '"translation":"mobile"}}',
+  );
+  await tester.pump(const Duration(milliseconds: 20));
+  expect(find.text('dmm'), findsOneWidget);
+  debugDefaultTargetPlatformOverride = null;
 }
 
 Future<void> _selectEveryDesktopStage(WidgetTester tester) async {

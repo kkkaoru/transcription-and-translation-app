@@ -40,6 +40,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DesktopCommand dco_decode_desktop_command(dynamic raw);
 
   @protected
+  DiscoveryResponse dco_decode_discovery_response(dynamic raw);
+
+  @protected
   ExecutionDevice dco_decode_execution_device(dynamic raw);
 
   @protected
@@ -102,6 +105,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DesktopCommand sse_decode_desktop_command(SseDeserializer deserializer);
+
+  @protected
+  DiscoveryResponse sse_decode_discovery_response(SseDeserializer deserializer);
 
   @protected
   ExecutionDevice sse_decode_execution_device(SseDeserializer deserializer);
@@ -177,6 +183,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_desktop_command(
     DesktopCommand self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_discovery_response(
+    DiscoveryResponse self,
     SseSerializer serializer,
   );
 
