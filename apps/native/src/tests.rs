@@ -521,6 +521,9 @@ fn live_tab_contains_capture_output_controls_without_html_display_fields() {
     assert!(output.contains("CHROMA_KEY_COLORS"));
     assert!(output.contains("capture_background_color"));
     assert!(output.contains(".bg(parse_rgb(color))"));
+    assert!(output.contains("format!(\"✓ {}\", color.to_uppercase())"));
+    assert!(output.contains("this.border_2().border_color(cx.theme().foreground)"));
+    assert!(output.contains(".toggled(selected)"));
     assert!(!output.contains("selectable_text(style.capture_background_color"));
     assert!(!output.contains("output-browser-enabled"));
     assert!(!output.contains("NATIVE_BROWSER_SOURCE_HINT"));

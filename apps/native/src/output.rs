@@ -4,7 +4,7 @@ use gpui::prelude::*;
 use gpui::{black, white, Context, IntoElement};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::switch::Switch;
-use gpui_component::{h_flex, v_flex, Selectable as _};
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Selectable as _};
 
 use crate::domain::{NativeAppSettings, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
@@ -30,13 +30,17 @@ pub fn render_output<V: 'static>(
     let language: UiLanguage = settings.ui_language;
     let background_colors = CHROMA_KEY_COLORS.iter().map(|color| {
         let value = (*color).to_string();
+        let selected = style.capture_background_color.eq_ignore_ascii_case(color);
+        let label =
+            if selected { format!("✓ {}", color.to_uppercase()) } else { color.to_uppercase() };
         let foreground = if matches!(*color, "#0000ff" | "#000000") { white() } else { black() };
         Button::new(format!("output-background-{color}"))
-            .label(color.to_uppercase())
+            .label(label)
             .bg(parse_rgb(color))
             .text_color(foreground)
-            .selected(style.capture_background_color.eq_ignore_ascii_case(color))
-            .toggled(style.capture_background_color.eq_ignore_ascii_case(color))
+            .selected(selected)
+            .toggled(selected)
+            .when(selected, |this| this.border_2().border_color(cx.theme().foreground))
             .on_click(cx.listener(move |view, _event, _window, _cx| {
                 (callbacks.on_background_color)(view, &value);
             }))
