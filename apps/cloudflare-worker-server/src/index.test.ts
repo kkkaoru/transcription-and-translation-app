@@ -10,7 +10,7 @@ import {
   AzookeyProtocolError,
   BROWSER_VIBRATO_MODE,
 } from "./azookey.js";
-import { createWorker, type Env, type WorkerHandler } from "./index.js";
+import { createWorker, type Env, isCompiledWasmModule, type WorkerHandler } from "./index.js";
 import type { ProfileConversionResult } from "./profile-converter-do.js";
 import {
   WORKERS_AI_ASR_HTTP_PATH,
@@ -243,6 +243,11 @@ describe("Cloudflare Worker inference adapter", () => {
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe("IPADIC notice");
     expect(assets.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("brand-checks a compiled WASM module without relying on realm identity", () => {
+    const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    expect(isCompiledWasmModule(module)).toBe(true);
   });
 
   it("skips isolate warmup when an injected wasm value is not a module", async () => {

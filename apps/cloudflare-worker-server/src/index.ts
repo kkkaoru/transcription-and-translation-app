@@ -459,6 +459,16 @@ const dictionaryFetchersFor = (
   };
 };
 
+/** Cross-realm-safe brand check for Wrangler compiled-WASM module bindings. */
+export const isCompiledWasmModule = (module: WebAssembly.Module): boolean => {
+  try {
+    WebAssembly.Module.imports(module);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const warmAzookeyIsolate = async (
   requestUrl: string,
   env: Env,
@@ -466,7 +476,7 @@ const warmAzookeyIsolate = async (
   fallbackFetcher: AzookeyFetcher,
 ): Promise<void> => {
   const wasmModule = dependencies.wasmModule ?? azookeyWasm;
-  if (!(wasmModule instanceof WebAssembly.Module)) {
+  if (!isCompiledWasmModule(wasmModule)) {
     return;
   }
   const fetchers = dictionaryFetchersFor(requestUrl, env, dependencies, fallbackFetcher);
@@ -616,7 +626,7 @@ export const createWorker = (
         const wasmModule = dependencies.wasmModule ?? azookeyWasm;
         const converter =
           dependencies.converter ??
-          (wasmModule instanceof WebAssembly.Module
+          (isCompiledWasmModule(wasmModule)
             ? createWasmConverter(
                 wasmModule,
                 env.AZOOKEY_DICTIONARY_URL,
@@ -873,15 +883,14 @@ export const createWorker = (
       const fetchers = dictionaryFetchersFor(request.url, env, dependencies, fetcher);
       const azookeyDictionaryFetcher = fetchers.azookeyDictionaryFetcher;
       const wasmModule = dependencies.wasmModule ?? azookeyWasm;
-      const wasmConverter =
-        wasmModule instanceof WebAssembly.Module
-          ? createWasmConverter(
-              wasmModule,
-              env.AZOOKEY_DICTIONARY_URL,
-              azookeyDictionaryFetcher,
-              azookeyDictionaryTimeoutMs(env),
-            )
-          : undefined;
+      const wasmConverter = isCompiledWasmModule(wasmModule)
+        ? createWasmConverter(
+            wasmModule,
+            env.AZOOKEY_DICTIONARY_URL,
+            azookeyDictionaryFetcher,
+            azookeyDictionaryTimeoutMs(env),
+          )
+        : undefined;
       const decoder = dependencies.converter ?? wasmConverter;
       const handler = createGatewayFetchHandler(config, {
         // The shared gateway core deliberately models the platform fetch as
