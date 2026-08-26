@@ -4,10 +4,12 @@ use std::{rc::Rc, sync::Arc};
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, img, px, relative, Bounds, Context, ExternalPaths, FocusHandle, IntoElement,
-    MouseDownEvent, MouseMoveEvent, ObjectFit, Pixels, Point, RenderImage, Role, SharedString,
+    canvas, div, img, px, relative, Bounds, Context, Entity, ExternalPaths, FocusHandle,
+    IntoElement, MouseDownEvent, MouseMoveEvent, ObjectFit, Pixels, Point, RenderImage, Role,
+    SharedString, Window,
 };
 use gpui_component::button::Button;
+use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::switch::Switch;
@@ -46,7 +48,7 @@ macro_rules! slider {
 }
 
 macro_rules! color_picker {
-    ($id:expr, $label:expr, $value:expr, $active:expr, $language:expr, $on_toggle:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
+    ($id:expr, $label:expr, $value:expr, $active:expr, $color_code_input:expr, $language:expr, $on_toggle:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
         color_picker_control(
             ColorPickerSpec {
                 id: $id,
@@ -54,6 +56,7 @@ macro_rules! color_picker {
                 language: $language,
                 value: $value,
                 active: $active,
+                color_code_input: $color_code_input,
                 set: $set,
             },
             $style,
@@ -95,7 +98,7 @@ pub struct StyleCallbacks<V> {
     pub on_preview_image_position: fn(&mut V, f32, f32),
     pub on_reset_preview_image_position: fn(&mut V),
     pub on_delete_preview_image: fn(&mut V),
-    pub on_color_toggle: fn(&mut V, &str),
+    pub on_color_toggle: fn(&mut V, &str, &mut Window, &mut Context<V>),
 }
 
 pub struct StyleViewState<'a> {
@@ -107,6 +110,7 @@ pub struct StyleViewState<'a> {
     pub fonts: &'a [String],
     pub language: UiLanguage,
     pub active_color_picker: Option<&'a str>,
+    pub color_code_input: &'a Entity<InputState>,
     pub preview_source_caret: Option<usize>,
     pub preview_translation_caret: Option<usize>,
     pub preview_source_focus: &'a FocusHandle,
@@ -120,6 +124,7 @@ struct ColorPickerSpec<'a> {
     language: UiLanguage,
     value: &'a str,
     active: bool,
+    color_code_input: &'a Entity<InputState>,
     set: fn(&mut NativeStyleSettings, &str),
 }
 
@@ -179,6 +184,19 @@ struct ToggleSpec {
 
 type RangeUpdate<V> = Rc<dyn Fn(&mut V, f32)>;
 
+fn localized_style_profile_name(profile: &NativeStyleProfile, language: UiLanguage) -> String {
+    match (profile.id.as_str(), profile.name.as_str()) {
+        ("style-1", "Horizontal") => text(language, TextKey::HorizontalStyle).to_string(),
+        ("style-2", "Vertical") => text(language, TextKey::VerticalStyle).to_string(),
+        (_, name) => {
+            name.strip_prefix("Style ").and_then(|number| number.parse::<usize>().ok()).map_or_else(
+                || name.to_string(),
+                |number| format!("{} {number}", text(language, TextKey::Style)),
+            )
+        }
+    }
+}
+
 pub fn render_style<V: 'static>(
     style: &NativeStyleSettings,
     state: StyleViewState<'_>,
@@ -194,6 +212,7 @@ pub fn render_style<V: 'static>(
         fonts,
         language,
         active_color_picker,
+        color_code_input,
         preview_source_caret,
         preview_translation_caret,
         preview_source_focus,
@@ -204,12 +223,16 @@ pub fn render_style<V: 'static>(
     let selected_profile_name = profiles
         .iter()
         .find(|profile| profile.id == selected_profile_id)
-        .map(|profile| profile.name.clone())
+        .map(|profile| localized_style_profile_name(profile, language))
         .unwrap_or_default();
     let profile_options = profiles
         .iter()
         .map(|profile| {
-            (profile.id.clone(), profile.name.clone(), profile.id == selected_profile_id)
+            (
+                profile.id.clone(),
+                localized_style_profile_name(profile, language),
+                profile.id == selected_profile_id,
+            )
         })
         .collect::<Vec<_>>();
     let view = cx.entity();
@@ -439,6 +462,7 @@ pub fn render_style<V: 'static>(
                 text(language, TextKey::SourceColor),
                 &style.source_color,
                 active_color_picker == Some("source-color"),
+                color_code_input,
                 language,
                 callbacks.on_color_toggle,
                 style,
@@ -551,6 +575,7 @@ pub fn render_style<V: 'static>(
                 text(language, TextKey::TranslationColor),
                 &style.translation_color,
                 active_color_picker == Some("translation-color"),
+                color_code_input,
                 language,
                 callbacks.on_color_toggle,
                 style,
@@ -637,6 +662,7 @@ pub fn render_style<V: 'static>(
                 text(language, TextKey::BackgroundColor),
                 &style.background_color,
                 active_color_picker == Some("background-color"),
+                color_code_input,
                 language,
                 callbacks.on_color_toggle,
                 style,
@@ -678,6 +704,7 @@ pub fn render_style<V: 'static>(
                 text(language, TextKey::ShadowColor),
                 &style.shadow_color,
                 active_color_picker == Some("shadow-color"),
+                color_code_input,
                 language,
                 callbacks.on_color_toggle,
                 style,
@@ -758,6 +785,7 @@ pub fn render_style<V: 'static>(
                 text(language, TextKey::OutlineColor),
                 &style.outline_color,
                 active_color_picker == Some("outline-color"),
+                color_code_input,
                 language,
                 callbacks.on_color_toggle,
                 style,
@@ -1055,9 +1083,9 @@ fn color_picker_control<V: 'static>(
     style: &NativeStyleSettings,
     cx: &mut Context<V>,
     on_change: fn(&mut V, NativeStyleSettings),
-    on_toggle: fn(&mut V, &str),
+    on_toggle: fn(&mut V, &str, &mut Window, &mut Context<V>),
 ) -> impl IntoElement {
-    let ColorPickerSpec { id, label, language, value, active, set } = spec;
+    let ColorPickerSpec { id, label, language, value, active, color_code_input, set } = spec;
     let channels = parse_rgb_channels(value);
     let (hue, saturation, brightness) = rgb_to_hsv(channels);
     let square = color_square_control(
@@ -1133,14 +1161,26 @@ fn color_picker_control<V: 'static>(
                         .child(Label::new(label))
                         .child(muted(value.to_uppercase(), cx)),
                 )
-                .on_click(cx.listener(move |view, _event, _window, _cx| {
-                    on_toggle(view, id);
+                .on_click(cx.listener(move |view, _event, window, cx| {
+                    on_toggle(view, id, window, cx);
                 })),
         )
         .when(active, |this| {
-            this.child(h_flex().justify_center().child(square))
-                .child(hue_bar)
-                .child(h_flex().justify_center().gap_3().child(red).child(green).child(blue))
+            this.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(Label::new(text(language, TextKey::ColorCode)))
+                    .child(
+                        Input::new(color_code_input)
+                            .accessibility_id(format!("color-code-{id}"))
+                            .aria_label(format!("{label}: {}", text(language, TextKey::ColorCode)))
+                            .w_40(),
+                    ),
+            )
+            .child(h_flex().justify_center().child(square))
+            .child(hue_bar)
+            .child(h_flex().justify_center().gap_3().child(red).child(green).child(blue))
         })
 }
 
@@ -1443,7 +1483,43 @@ fn parse_rgb_channels(color: &str) -> [u8; 3] {
     [255, 255, 255]
 }
 
+pub(crate) fn normalize_hex_color(value: &str) -> Option<String> {
+    let digits = value.trim().strip_prefix('#').unwrap_or(value.trim());
+    (digits.len() == 6 && digits.chars().all(|character| character.is_ascii_hexdigit()))
+        .then(|| format!("#{}", digits.to_ascii_lowercase()))
+}
+
+pub(crate) fn style_color_value<'a>(style: &'a NativeStyleSettings, id: &str) -> Option<&'a str> {
+    match id {
+        "source-color" => Some(&style.source_color),
+        "translation-color" => Some(&style.translation_color),
+        "background-color" => Some(&style.background_color),
+        "outline-color" => Some(&style.outline_color),
+        "shadow-color" => Some(&style.shadow_color),
+        _ => None,
+    }
+}
+
+pub(crate) fn set_style_color(style: &mut NativeStyleSettings, id: &str, color: &str) -> bool {
+    let target = match id {
+        "source-color" => &mut style.source_color,
+        "translation-color" => &mut style.translation_color,
+        "background-color" => &mut style.background_color,
+        "outline-color" => &mut style.outline_color,
+        "shadow-color" => &mut style.shadow_color,
+        _ => return false,
+    };
+    if target == color {
+        return false;
+    }
+    *target = color.to_string();
+    true
+}
+
 pub fn parse_rgb(color: &str) -> gpui::Rgba {
+    if color.eq_ignore_ascii_case("transparent") {
+        return gpui::rgba(0x00000000);
+    }
     let [red, green, blue] = parse_rgb_channels(color);
     gpui::rgba(u32::from_be_bytes([red, green, blue, 0xff]))
 }
@@ -1453,9 +1529,34 @@ mod tests {
     use gpui::{point, px, size, Bounds};
 
     use super::{
-        color_square_image, hsv_to_rgb, parse_rgb_channels, quantize_range_value, range_value,
-        rgb_to_hsv, step_rgb_channel, PREVIEW_HEIGHT_PX, PREVIEW_WIDTH_PX,
+        color_square_image, hsv_to_rgb, localized_style_profile_name, normalize_hex_color,
+        parse_rgb, parse_rgb_channels, quantize_range_value, range_value, rgb_to_hsv,
+        set_style_color, step_rgb_channel, style_color_value, PREVIEW_HEIGHT_PX, PREVIEW_WIDTH_PX,
     };
+    use crate::domain::{NativeStyleProfile, NativeStyleSettings, UiLanguage};
+
+    #[test]
+    fn default_style_profile_names_are_localized() {
+        let horizontal = NativeStyleProfile {
+            id: "style-1".to_string(),
+            name: "Horizontal".to_string(),
+            style: NativeStyleSettings::default(),
+        };
+        let vertical = NativeStyleProfile {
+            id: "style-2".to_string(),
+            name: "Vertical".to_string(),
+            style: NativeStyleSettings::default(),
+        };
+        let generated = NativeStyleProfile {
+            id: "style-3".to_string(),
+            name: "Style 3".to_string(),
+            style: NativeStyleSettings::default(),
+        };
+        assert_eq!(localized_style_profile_name(&horizontal, UiLanguage::Japanese), "横型");
+        assert_eq!(localized_style_profile_name(&vertical, UiLanguage::Japanese), "縦型");
+        assert_eq!(localized_style_profile_name(&generated, UiLanguage::Japanese), "スタイル 3");
+        assert_eq!(localized_style_profile_name(&horizontal, UiLanguage::English), "Horizontal");
+    }
 
     #[test]
     fn range_value_tracks_and_quantizes_pointer_position() {
@@ -1483,6 +1584,27 @@ mod tests {
     fn color_picker_parses_all_rgb_channels() {
         assert_eq!(parse_rgb_channels("#1a80ff"), [26, 128, 255]);
         assert_eq!(parse_rgb_channels("invalid"), [255, 255, 255]);
+        assert_eq!(parse_rgb("transparent").a, 0.0);
+    }
+
+    #[test]
+    fn color_codes_validate_and_update_every_editable_style_color() {
+        assert_eq!(normalize_hex_color("#1A80fF"), Some("#1a80ff".to_string()));
+        assert_eq!(normalize_hex_color("1A80fF"), Some("#1a80ff".to_string()));
+        assert_eq!(normalize_hex_color("#12345"), None);
+        assert_eq!(normalize_hex_color("#12345g"), None);
+
+        let mut style = NativeStyleSettings::default();
+        assert!(set_style_color(&mut style, "source-color", "#102030"));
+        assert!(set_style_color(&mut style, "translation-color", "#203040"));
+        assert!(set_style_color(&mut style, "background-color", "#304050"));
+        assert!(set_style_color(&mut style, "outline-color", "#405060"));
+        assert!(set_style_color(&mut style, "shadow-color", "#506070"));
+        assert_eq!(style_color_value(&style, "source-color"), Some("#102030"));
+        assert_eq!(style_color_value(&style, "translation-color"), Some("#203040"));
+        assert_eq!(style_color_value(&style, "background-color"), Some("#304050"));
+        assert_eq!(style_color_value(&style, "outline-color"), Some("#405060"));
+        assert_eq!(style_color_value(&style, "shadow-color"), Some("#506070"));
     }
 
     #[test]

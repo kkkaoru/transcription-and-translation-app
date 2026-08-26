@@ -93,10 +93,15 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(capture.contains("SetTranslationEnabled(bool)"));
     assert!(capture.contains("apply_turn_caption_update"));
     assert!(capture.contains("release_unused_process_memory"));
+    assert!(capture.contains("companion_route: desktop_pipeline_route()"));
+    assert!(capture.contains("self.companion_route = desktop_pipeline_route()"));
+    assert!(capture.contains("asr: ExecutionDevice::Desktop"));
+    assert!(capture.contains("azookey: ExecutionDevice::Desktop"));
+    assert!(capture.contains("translation: ExecutionDevice::Desktop"));
 
     let live = include_str!("live.rs");
     assert!(live.contains("live-translation-enabled"));
-    assert!(live.contains("when(translation_enabled"));
+    assert!(live.contains("settings.show_translation_result && translation_enabled"));
     assert!(live.contains("live-copy-error"));
     assert!(live.contains("live-refresh-devices"));
     assert!(live.contains("ClipboardItem::new_string"));
@@ -515,19 +520,31 @@ fn command_line_has_no_overlay_flag() {
 #[test]
 fn live_tab_contains_capture_output_controls_without_html_display_fields() {
     let output = include_str!("output.rs");
+    let live = include_str!("live.rs");
     let app = include_str!("app.rs");
     assert!(output.contains("output-window-open"));
     assert!(output.contains("output-browser-copy-url"));
     assert!(output.contains("CHROMA_KEY_COLORS"));
+    assert!(output.contains("TRANSPARENT_BACKGROUND"));
+    assert!(output.contains("TextKey::Transparent"));
     assert!(output.contains("capture_background_color"));
-    assert!(output.contains(".bg(parse_rgb(color))"));
-    assert!(output.contains("format!(\"✓ {}\", color.to_uppercase())"));
+    assert!(output.contains("transparent_black()"));
+    assert!(output.contains("format!(\"✓ {visible_label}\")"));
     assert!(output.contains("this.border_2().border_color(cx.theme().foreground)"));
     assert!(output.contains(".toggled(selected)"));
     assert!(!output.contains("selectable_text(style.capture_background_color"));
     assert!(!output.contains("output-browser-enabled"));
     assert!(!output.contains("NATIVE_BROWSER_SOURCE_HINT"));
+    assert!(live.contains("live-show-recognition-result"));
+    assert!(live.contains("live-show-translation-result"));
+    assert!(live.contains("caption_when_visible("));
+    assert!(live.contains("settings.show_recognition_result"));
+    assert!(live.contains("settings.show_translation_result && translation_enabled"));
+    assert!(live.contains(".when_some(source"));
+    assert!(live.contains(".when_some(translation"));
     assert!(app.contains(".child(render_output("));
+    assert!(app.contains("WindowBackgroundAppearance::Transparent"));
+    assert!(app.contains(".bg(transparent_black())"));
     assert!(app.contains("copy_browser_source_url"));
 }
 
@@ -652,6 +669,8 @@ fn app_settings_round_trip_language_translation_timeout_and_output() {
     let settings = NativeAppSettings {
         ui_language: UiLanguage::English,
         translation_enabled: false,
+        show_recognition_result: false,
+        show_translation_result: false,
         caption_timeout_ms: 7_000,
         caption_output_open_on_start: false,
         browser_source_enabled: false,
@@ -665,6 +684,8 @@ fn app_settings_round_trip_language_translation_timeout_and_output() {
     let loaded = load_app_settings(&dir).expect("load settings");
     assert_eq!(loaded.ui_language, UiLanguage::English);
     assert!(!loaded.translation_enabled);
+    assert!(!loaded.show_recognition_result);
+    assert!(!loaded.show_translation_result);
     assert_eq!(loaded.caption_timeout_ms, 7_000);
     assert!(!loaded.caption_output_open_on_start);
     assert!(!loaded.browser_source_enabled);
@@ -798,7 +819,10 @@ fn layout_uses_configured_max_characters() {
 fn window_options_keep_native_identity() {
     use crate::app::main_window_options;
     use crate::domain::{WINDOW_HEIGHT_PX, WINDOW_WIDTH_PX};
-    use gpui::{px, WindowBounds};
+    use gpui::{px, WindowBackgroundAppearance, WindowBounds};
+
+    let output = output_window_options();
+    assert_eq!(output.window_background, WindowBackgroundAppearance::Transparent);
 
     let options = main_window_options();
     assert_eq!(options.app_id.as_deref(), Some("com.kotobabeacon.native"));

@@ -9,7 +9,9 @@ use gpui_component::{
 };
 
 use crate::capture::CaptureController;
-use crate::domain::{format_rms, rms_level_color, rms_to_fraction, CaptureStatus, UiLanguage};
+use crate::domain::{
+    format_rms, rms_level_color, rms_to_fraction, CaptureStatus, NativeAppSettings, UiLanguage,
+};
 use crate::i18n::{text, TextKey};
 use crate::ui::{button, card, error_line, heading, muted, selectable_text};
 
@@ -20,6 +22,8 @@ pub struct LiveCallbacks<V> {
     pub on_start: fn(&mut V),
     pub on_stop: fn(&mut V),
     pub on_toggle_translation: fn(&mut V),
+    pub on_toggle_recognition_result: fn(&mut V),
+    pub on_toggle_translation_result: fn(&mut V),
 }
 
 impl<V> Clone for LiveCallbacks<V> {
@@ -33,12 +37,13 @@ impl<V> Copy for LiveCallbacks<V> {}
 pub fn render_live<V: 'static>(
     capture: &CaptureController,
     select_open: bool,
-    language: UiLanguage,
+    settings: &NativeAppSettings,
     cx: &mut Context<V>,
     callbacks: &LiveCallbacks<V>,
 ) -> impl IntoElement {
     let snapshot = capture.snapshot();
     let callbacks = *callbacks;
+    let language = settings.ui_language;
     let has_devices = !snapshot.devices.is_empty();
     let selected_device_id = snapshot.selected_device_id.as_deref();
     let selected = snapshot
@@ -83,8 +88,13 @@ pub fn render_live<V: 'static>(
             }))
     });
 
-    let source = caption_or_placeholder(&snapshot.source_text, language);
-    let translation = caption_or_placeholder(&snapshot.translation_text, language);
+    let source =
+        caption_when_visible(&snapshot.source_text, language, settings.show_recognition_result);
+    let translation = caption_when_visible(
+        &snapshot.translation_text,
+        language,
+        settings.show_translation_result && translation_enabled,
+    );
     let error_panel = snapshot.last_error.clone().map(|error| {
         let clipboard_error = error.clone();
         h_flex().justify_between().gap_2().child(error_line(error)).child(button(
@@ -161,16 +171,34 @@ pub fn render_live<V: 'static>(
                         .on_click(cx.listener(move |view, _checked, _window, _cx| {
                             (callbacks.on_toggle_translation)(view);
                         })),
+                )
+                .child(
+                    Switch::new("live-show-recognition-result")
+                        .label(text(language, TextKey::ShowRecognitionResult))
+                        .checked(settings.show_recognition_result)
+                        .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                            (callbacks.on_toggle_recognition_result)(view);
+                        })),
+                )
+                .child(
+                    Switch::new("live-show-translation-result")
+                        .label(text(language, TextKey::ShowTranslationResult))
+                        .checked(settings.show_translation_result)
+                        .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                            (callbacks.on_toggle_translation_result)(view);
+                        })),
                 ),
         )
         .when_some(error_panel, |this, panel| this.child(panel))
-        .child(
-            v_flex()
-                .gap_2()
-                .child(muted(text(language, TextKey::RecognitionResult), cx))
-                .child(selectable_text(source).text_lg()),
-        )
-        .when(translation_enabled, |this| {
+        .when_some(source, |this, source| {
+            this.child(
+                v_flex()
+                    .gap_2()
+                    .child(muted(text(language, TextKey::RecognitionResult), cx))
+                    .child(selectable_text(source).text_lg()),
+            )
+        })
+        .when_some(translation, |this, translation| {
             this.child(
                 v_flex()
                     .gap_2()
@@ -190,6 +218,10 @@ fn capture_status_label(status: CaptureStatus, language: UiLanguage) -> &'static
             CaptureStatus::Error => TextKey::StatusError,
         },
     )
+}
+
+fn caption_when_visible(value: &str, language: UiLanguage, visible: bool) -> Option<SharedString> {
+    visible.then(|| caption_or_placeholder(value, language))
 }
 
 fn caption_or_placeholder(value: &str, language: UiLanguage) -> SharedString {
@@ -215,6 +247,16 @@ mod tests {
         METER_CLIP_COLOR, METER_CLIP_THRESHOLD_DB, METER_MAX_DB, METER_MIN_DB, METER_NORMAL_COLOR,
         METER_NORMAL_THRESHOLD_DB, METER_QUIET_COLOR,
     };
+
+    #[test]
+    fn hidden_results_do_not_allocate_render_text() {
+        assert_eq!(caption_when_visible("recognition", UiLanguage::English, false), None);
+        assert_eq!(caption_when_visible("translation", UiLanguage::Japanese, false), None);
+        assert_eq!(
+            caption_when_visible("recognition", UiLanguage::English, true),
+            Some(SharedString::from("recognition")),
+        );
+    }
 
     #[test]
     fn capture_status_is_expressed_in_text_for_every_state() {

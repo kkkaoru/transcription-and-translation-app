@@ -12,10 +12,12 @@ use caption_bridge_browser_source::{BrowserSourceConfig, BrowserSourceServer, Br
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, size, App, Bounds, ClipboardItem, Context, Entity, FocusHandle, IntoElement,
-    KeyDownEvent, Pixels, Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    div, point, px, size, transparent_black, App, Bounds, ClipboardItem, Context, Entity,
+    FocusHandle, Focusable as _, IntoElement, KeyDownEvent, Pixels, Render, RenderImage, Size,
+    Subscription, Task, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions,
 };
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::Root;
 use rust_lib_kotoba_beacon_companion::api::simple::{ExecutionDevice, PipelineRoute};
 
@@ -43,7 +45,10 @@ use crate::i18n::{text, TextKey};
 use crate::live::{render_live, LiveCallbacks};
 use crate::output::{render_output, OutputCallbacks};
 use crate::settings::{render_settings, SettingsCallbacks, SettingsRuntimeInfo};
-use crate::style::{parse_rgb, render_style, StyleCallbacks, StyleTextTarget, StyleViewState};
+use crate::style::{
+    normalize_hex_color, parse_rgb, render_style, set_style_color, style_color_value,
+    StyleCallbacks, StyleTextTarget, StyleViewState,
+};
 use crate::ui::{image_view, render_image, sky_page, tab_bar};
 
 const OUTPUT_WINDOW_TITLE: &str = "Kotoba Beacon Caption Output";
@@ -78,6 +83,7 @@ pub struct MainView {
     fonts: Vec<String>,
     show_settings_details: bool,
     active_color_picker: Option<String>,
+    color_code_input: Entity<InputState>,
     persist_error: Option<String>,
     active_companion_device_id: Option<String>,
     focused_field: Option<FocusField>,
@@ -103,6 +109,7 @@ pub struct MainView {
     capture_view_compact: bool,
     pre_capture_window_size: Option<Size<Pixels>>,
     _quit_subscription: Subscription,
+    _color_code_subscription: Subscription,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,6 +213,7 @@ impl Render for CaptionOutputView {
 
 impl MainView {
     pub fn new(
+        window: &mut Window,
         cx: &mut Context<Self>,
         surfaces: Rc<RefCell<DebugSurfaces>>,
         config_dir: PathBuf,
@@ -214,6 +222,10 @@ impl MainView {
         app_settings: NativeAppSettings,
     ) -> Self {
         let style = style_catalog.selected().style.clone();
+        let color_code_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(style.source_color.clone()));
+        let color_code_subscription =
+            cx.subscribe_in(&color_code_input, window, Self::on_color_code_input_event);
         let fixture = ingest_fixture_caption().ok();
         let preview_source = fixture
             .as_ref()
@@ -261,6 +273,7 @@ impl MainView {
             fonts,
             show_settings_details: false,
             active_color_picker: None,
+            color_code_input,
             persist_error,
             active_companion_device_id: None,
             focused_field: None,
@@ -286,6 +299,7 @@ impl MainView {
             capture_view_compact: false,
             pre_capture_window_size: None,
             _quit_subscription: quit_subscription,
+            _color_code_subscription: color_code_subscription,
         }
     }
 
@@ -367,6 +381,58 @@ impl MainView {
     fn select_device(&mut self, id: &str) {
         self.capture.select_device(id);
         self.device_select_open = false;
+    }
+
+    fn on_color_code_input_event(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let Some(id) = self.active_color_picker.as_deref() else {
+            return;
+        };
+        let value = input.read(cx).value();
+        let Some(color) = normalize_hex_color(value.as_ref()) else {
+            return;
+        };
+        let mut next = self.style.clone();
+        if set_style_color(&mut next, id, &color) {
+            self.set_style(next);
+        }
+    }
+
+    fn toggle_color_picker(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_color_picker.as_deref() == Some(id) {
+            self.active_color_picker = None;
+            return;
+        }
+        self.active_color_picker = Some(id.to_string());
+        if let Some(value) = style_color_value(&self.style, id) {
+            self.color_code_input.update(cx, |input, cx| {
+                input.set_value(value, window, cx);
+            });
+        }
+    }
+
+    fn sync_color_code_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.active_color_picker.as_deref() else {
+            return;
+        };
+        let Some(value) = style_color_value(&self.style, id) else {
+            return;
+        };
+        let input = self.color_code_input.read(cx);
+        if input.focus_handle(cx).is_focused(window) || input.value().as_ref() == value {
+            return;
+        }
+        self.color_code_input.update(cx, |input, cx| {
+            input.set_value(value, window, cx);
+        });
     }
 
     fn set_style(&mut self, next: NativeStyleSettings) {
@@ -526,6 +592,16 @@ impl MainView {
             }
             Err(error) => self.persist_error = Some(error),
         }
+    }
+
+    fn toggle_recognition_result(&mut self) {
+        self.app_settings.show_recognition_result = !self.app_settings.show_recognition_result;
+        self.persist_settings();
+    }
+
+    fn toggle_translation_result(&mut self) {
+        self.app_settings.show_translation_result = !self.app_settings.show_translation_result;
+        self.persist_settings();
     }
 
     fn toggle_syphon(&mut self) {
@@ -809,6 +885,7 @@ pub(crate) fn next_caret(buffer: &str, caret: usize) -> usize {
 
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_color_code_input(window, cx);
         for image in self.stale_render_images.drain(..) {
             let _ = window.drop_image(image);
         }
@@ -824,7 +901,7 @@ impl Render for MainView {
                 .child(render_live(
                     &self.capture,
                     self.device_select_open,
-                    language,
+                    &self.app_settings,
                     cx,
                     &LiveCallbacks {
                         on_toggle_select: MainView::toggle_device_select,
@@ -841,6 +918,8 @@ impl Render for MainView {
                         },
                         on_stop: |view| view.capture.stop(),
                         on_toggle_translation: |view| view.toggle_translation(),
+                        on_toggle_recognition_result: |view| view.toggle_recognition_result(),
+                        on_toggle_translation_result: |view| view.toggle_translation_result(),
                     },
                 ))
                 .child(render_output(
@@ -879,6 +958,7 @@ impl Render for MainView {
                     fonts: &self.fonts,
                     language,
                     active_color_picker: self.active_color_picker.as_deref(),
+                    color_code_input: &self.color_code_input,
                     preview_source_caret: (self.focused_field == Some(FocusField::PreviewSource))
                         .then_some(self.preview_source_caret),
                     preview_translation_caret: (self.focused_field
@@ -951,12 +1031,8 @@ impl Render for MainView {
                         view.set_style(next);
                     },
                     on_delete_preview_image: |view| view.remove_preview_background_image(),
-                    on_color_toggle: |view, id| {
-                        if view.active_color_picker.as_deref() == Some(id) {
-                            view.active_color_picker = None;
-                        } else {
-                            view.active_color_picker = Some(id.to_string());
-                        }
+                    on_color_toggle: |view, id, window, cx| {
+                        view.toggle_color_picker(id, window, cx);
                     },
                 },
             )
@@ -1206,6 +1282,9 @@ pub(crate) fn output_window_options() -> WindowOptions {
         ))),
         focus: false,
         is_resizable: true,
+        // GPUI maps plain alpha to the native compositor on macOS, Windows,
+        // X11, and Wayland so OBS window capture can preserve transparent pixels.
+        window_background: WindowBackgroundAppearance::Transparent,
         app_id: Some(BUNDLE_ID.to_string()),
         ..Default::default()
     }
@@ -1300,7 +1379,7 @@ pub fn run() {
                 let scale_factor = window.scale_factor();
                 let view = cx.new(move |_| CaptionOutputView::new(style, scale_factor));
                 output_view_slot.borrow_mut().replace(view.clone());
-                cx.new(|cx| Root::new(view, window, cx).bordered(false))
+                cx.new(|cx| Root::new(view, window, cx).bordered(false).bg(transparent_black()))
             }) {
                 Ok(handle) => Some(handle),
                 Err(error) => {
@@ -1324,14 +1403,15 @@ pub fn run() {
             let style_catalog = style_catalog.clone();
             let dictionary_catalog = dictionary_catalog.clone();
             let app_settings = app_settings.clone();
-            let view = cx.new(move |cx| {
+            let view = cx.new(|cx| {
                 MainView::new(
+                    window,
                     cx,
-                    surfaces,
-                    config_dir,
-                    style_catalog,
-                    dictionary_catalog,
-                    app_settings,
+                    Rc::clone(&surfaces),
+                    config_dir.clone(),
+                    style_catalog.clone(),
+                    dictionary_catalog.clone(),
+                    app_settings.clone(),
                 )
             });
             main_view_slot_for_window.borrow_mut().replace(view.clone());
@@ -1456,7 +1536,9 @@ pub fn run() {
                                 )
                             });
                             slot.borrow_mut().replace(view.clone());
-                            cx.new(|cx| Root::new(view, window, cx).bordered(false))
+                            cx.new(|cx| {
+                                Root::new(view, window, cx).bordered(false).bg(transparent_black())
+                            })
                         })
                         .map(|handle| (handle, output_view_slot.borrow_mut().take()))
                     });

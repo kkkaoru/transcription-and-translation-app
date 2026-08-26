@@ -15,9 +15,9 @@ use parapper_engine::{
     CaptionUpdateMode, EngineConfig, EngineEvent, LocalTranslator, ParapperEngine,
 };
 use rust_lib_kotoba_beacon_companion::api::simple::{
-    convert_azookey, default_pipeline_route, encode_audio_boundary, encode_stage_request,
-    encode_translation_enabled, initialize_azookey_dictionary, release_azookey_dictionary,
-    should_continue_on_mobile, ExecutionDevice, MobileStageResult, PipelineRoute, ProcessingStage,
+    convert_azookey, encode_audio_boundary, encode_stage_request, encode_translation_enabled,
+    initialize_azookey_dictionary, release_azookey_dictionary, should_continue_on_mobile,
+    ExecutionDevice, MobileStageResult, PipelineRoute, ProcessingStage,
 };
 
 use crate::companion::{
@@ -201,7 +201,7 @@ impl CaptureController {
             current_caption_revision: 0,
             awaiting_translation_revision: None,
             recognition_in_progress: false,
-            companion_route: default_pipeline_route(),
+            companion_route: desktop_pipeline_route(),
             companion_server: None,
         };
         controller.refresh_devices();
@@ -249,7 +249,7 @@ impl CaptureController {
             return Err("Stop capture before disabling the mobile companion".to_string());
         }
         self.companion_server = None;
-        self.companion_route = default_pipeline_route();
+        self.companion_route = desktop_pipeline_route();
         Ok(())
     }
 
@@ -1205,6 +1205,14 @@ fn drain_mobile_final_results_with_timeout(
     ))
 }
 
+fn desktop_pipeline_route() -> PipelineRoute {
+    PipelineRoute {
+        asr: ExecutionDevice::Desktop,
+        azookey: ExecutionDevice::Desktop,
+        translation: ExecutionDevice::Desktop,
+    }
+}
+
 fn route_uses_mobile(route: PipelineRoute) -> bool {
     route.asr == ExecutionDevice::Mobile
         || route.azookey == ExecutionDevice::Mobile
@@ -1530,7 +1538,7 @@ mod tests {
             current_caption_revision: 0,
             awaiting_translation_revision: None,
             recognition_in_progress: false,
-            companion_route: super::default_pipeline_route(),
+            companion_route: super::desktop_pipeline_route(),
             companion_server: None,
         };
         let (stopped_tx, stopped_rx) = mpsc::sync_channel(1);

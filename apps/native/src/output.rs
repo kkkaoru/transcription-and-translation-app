@@ -1,7 +1,7 @@
 //! Capture-output configuration and Browser Source links.
 
 use gpui::prelude::*;
-use gpui::{black, white, Context, IntoElement};
+use gpui::{black, transparent_black, white, Context, Hsla, IntoElement};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::switch::Switch;
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, Selectable as _};
@@ -11,7 +11,9 @@ use crate::i18n::{text, TextKey};
 use crate::style::parse_rgb;
 use crate::ui::{card, error_line, heading};
 
-const CHROMA_KEY_COLORS: &[&str] = &["#00ff00", "#0000ff", "#ff00ff", "#000000", "#ffffff"];
+const TRANSPARENT_BACKGROUND: &str = "transparent";
+const CHROMA_KEY_COLORS: &[&str] =
+    &[TRANSPARENT_BACKGROUND, "#00ff00", "#0000ff", "#ff00ff", "#000000", "#ffffff"];
 
 pub struct OutputCallbacks<V> {
     pub on_open_window: fn(&mut V),
@@ -31,13 +33,27 @@ pub fn render_output<V: 'static>(
     let background_colors = CHROMA_KEY_COLORS.iter().map(|color| {
         let value = (*color).to_string();
         let selected = style.capture_background_color.eq_ignore_ascii_case(color);
-        let label =
-            if selected { format!("✓ {}", color.to_uppercase()) } else { color.to_uppercase() };
-        let foreground = if matches!(*color, "#0000ff" | "#000000") { white() } else { black() };
+        let transparent = color.eq_ignore_ascii_case(TRANSPARENT_BACKGROUND);
+        let visible_label = if transparent {
+            text(language, TextKey::Transparent).to_string()
+        } else {
+            color.to_uppercase()
+        };
+        let label = if selected { format!("✓ {visible_label}") } else { visible_label };
+        let background: Hsla =
+            if transparent { transparent_black() } else { parse_rgb(color).into() };
+        let foreground = if matches!(*color, "#0000ff" | "#000000") {
+            white()
+        } else if transparent {
+            cx.theme().foreground
+        } else {
+            black()
+        };
         Button::new(format!("output-background-{color}"))
             .label(label)
-            .bg(parse_rgb(color))
+            .bg(background)
             .text_color(foreground)
+            .when(transparent, |this| this.outline())
             .selected(selected)
             .toggled(selected)
             .when(selected, |this| this.border_2().border_color(cx.theme().foreground))
