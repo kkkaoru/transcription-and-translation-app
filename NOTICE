@@ -45,6 +45,14 @@ files are installed separately and are not committed to this repository. Keep
 the model card and attribution from <https://huggingface.co/quickmt/quickmt-ja-en>
 with redistributed model artifacts.
 
+## GPUI and GPUI Component
+
+The Native interface uses GPUI from Zed Industries and GPUI Component from
+Longbridge. Both are distributed under Apache-2.0. The exact dependency
+revisions are locked in `apps/native/Cargo.lock`; complete license texts are
+retained at `third-party/gpui-LICENSE-APACHE` and
+`third-party/gpui-component-LICENSE-APACHE`.
+
 ## Other bundled components
 
 Additional bundled runtimes retain their upstream notices in place, including

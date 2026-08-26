@@ -13,6 +13,7 @@ import {
   AZOOKEY_DICTIONARY_SOURCE,
   assembleNativeApp,
   BINARY_NAME,
+  NATIVE_NOTICE_SOURCES,
   PRODUCT_NAME,
 } from "./install-macos-native-app.mjs";
 
@@ -60,6 +61,14 @@ export const assemblePortableNativeRelease = ({ sourceBinary, outputDir, targetP
   const azookeyDir = join(outputDir, "azookey");
   mkdirSync(azookeyDir, { recursive: true });
   cpSync(AZOOKEY_DICTIONARY_SOURCE, join(azookeyDir, "system.azkdict.gz"));
+  const noticesDir = join(outputDir, "third-party");
+  mkdirSync(noticesDir, { recursive: true });
+  for (const [source, name] of NATIVE_NOTICE_SOURCES) {
+    if (!existsSync(source)) {
+      throw new Error(`missing Native notice ${source}`);
+    }
+    cpSync(source, join(noticesDir, name));
+  }
 
   const sourceDir = dirname(sourceBinary);
   const libraries = runtimeLibraryNames(targetPlatform, readdirSync(sourceDir));

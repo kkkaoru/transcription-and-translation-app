@@ -34,6 +34,14 @@ export const AZOOKEY_DICTIONARY_SOURCE = join(
   "system.azkdict.gz",
 );
 export const ORT_DYNAMIC_LIBRARY_TARGET = join("..", "Frameworks", NATIVE_RUNTIME_LIBRARY_NAMES[1]);
+export const NATIVE_NOTICE_SOURCES = [
+  [join(repoRoot, "NOTICE"), "NOTICE"],
+  [join(repoRoot, "third-party", "gpui-LICENSE-APACHE"), "gpui-LICENSE-APACHE"],
+  [
+    join(repoRoot, "third-party", "gpui-component-LICENSE-APACHE"),
+    "gpui-component-LICENSE-APACHE",
+  ],
+];
 
 const NATIVE_MANIFEST = join(repoRoot, "apps", "native", "Cargo.toml");
 const SYPHON_SOURCE = join(
@@ -190,10 +198,13 @@ export const assembleNativeApp = ({
   const contents = join(staging, "Contents");
   const macos = join(contents, "MacOS");
   const frameworks = join(contents, "Frameworks");
-  const azookeyResources = join(contents, "Resources", "azookey");
+  const resources = join(contents, "Resources");
+  const azookeyResources = join(resources, "azookey");
+  const notices = join(resources, "third-party");
   mkdirSync(macos, { recursive: true });
   mkdirSync(frameworks, { recursive: true });
   mkdirSync(azookeyResources, { recursive: true });
+  mkdirSync(notices, { recursive: true });
   writeFileSync(join(contents, "Info.plist"), nativeInfoPlist());
   runChecked("/bin/cp", [sourceBinary, join(macos, BINARY_NAME)]);
   runChecked("/bin/chmod", ["755", join(macos, BINARY_NAME)]);
@@ -202,6 +213,12 @@ export const assembleNativeApp = ({
     throw new Error(`missing bundled AzooKey dictionary ${AZOOKEY_DICTIONARY_SOURCE}`);
   }
   runChecked("/bin/cp", [AZOOKEY_DICTIONARY_SOURCE, join(azookeyResources, "system.azkdict.gz")]);
+  for (const [source, name] of NATIVE_NOTICE_SOURCES) {
+    if (!existsSync(source)) {
+      throw new Error(`missing Native notice ${source}`);
+    }
+    runChecked("/bin/cp", [source, join(notices, name)]);
+  }
   for (const library of NATIVE_RUNTIME_LIBRARY_NAMES) {
     const source = join(dirname(sourceBinary), library);
     if (!existsSync(source)) {

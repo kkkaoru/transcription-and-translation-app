@@ -70,9 +70,15 @@ describe("Native release packaging", () => {
       "kotoba-beacon-native",
       "libonnxruntime.so.1",
       "libsherpa-onnx-c-api.so",
+      "third-party",
     ]);
     assert.deepEqual(result.libraries, ["libonnxruntime.so.1", "libsherpa-onnx-c-api.so"]);
     assert.deepEqual(readdirSync(join(output, "azookey")), ["system.azkdict.gz"]);
+    assert.deepEqual(readdirSync(join(output, "third-party")).sort(), [
+      "NOTICE",
+      "gpui-LICENSE-APACHE",
+      "gpui-component-LICENSE-APACHE",
+    ]);
   });
 
   it("rejects incomplete runtime output", () => {
