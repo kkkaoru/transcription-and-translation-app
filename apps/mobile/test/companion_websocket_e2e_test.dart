@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kotoba_beacon_companion/src/companion_connection.dart';
 import 'package:kotoba_beacon_companion/src/companion_controller.dart';
@@ -10,6 +11,8 @@ import 'package:kotoba_beacon_companion/src/native_processing.dart';
 import 'package:kotoba_beacon_companion/src/rust/api/simple.dart';
 
 import 'rust_test_library.dart';
+
+const _processingChannel = MethodChannel('kotoba_beacon/processing');
 
 const _testCapabilities = MobileCapabilities(
   deviceId: 'android-test-1',
@@ -30,6 +33,14 @@ void main() {
   test(
     'native Bonjour discovery validates authenticated data',
     _testBonjourDiscovery,
+  );
+  test(
+    'iOS method channel returns Bonjour discovery data',
+    _testBonjourMethodChannel,
+  );
+  test(
+    'iOS method channel rejects an empty result',
+    _testEmptyBonjourMethodChannel,
   );
   test(
     'native Bonjour discovery rejects malformed data',
@@ -111,6 +122,46 @@ Future<void> _testBonjourDiscovery() async {
 
   expect(discovered.endpoint, 'ws://192.168.1.227:18183/companion');
   expect(discovered.token, '0123456789abcdef0123456789abcdef');
+}
+
+Future<void> _testBonjourMethodChannel() async {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(_processingChannel, (call) async {
+    expect(call.method, 'discoverCompanion');
+    expect(call.arguments, {'timeoutMillis': 1000});
+    return {
+      'endpoint': 'ws://192.168.1.227:18183/companion',
+      'token': '0123456789abcdef0123456789abcdef',
+    };
+  });
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(_processingChannel, null),
+  );
+
+  final discovered = await discoverCompanion(
+    timeout: const Duration(seconds: 1),
+    useNativeDiscovery: true,
+  );
+
+  expect(discovered.endpoint, 'ws://192.168.1.227:18183/companion');
+}
+
+Future<void> _testEmptyBonjourMethodChannel() async {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(_processingChannel, (_) async => null);
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(_processingChannel, null),
+  );
+
+  await expectLater(
+    discoverCompanion(
+      timeout: const Duration(seconds: 1),
+      useNativeDiscovery: true,
+    ),
+    throwsStateError,
+  );
 }
 
 Future<void> _testMalformedBonjourDiscovery() async {
