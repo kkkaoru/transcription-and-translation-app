@@ -188,6 +188,7 @@ fn field_editor<V: 'static>(
             .py_2()
             .rounded(cx.theme().radius)
             .border_1()
+            .when(caret.is_some(), |this| this.border_2())
             .border_color(if caret.is_some() { cx.theme().primary } else { cx.theme().input })
             .bg(cx.theme().background)
             .cursor_text()
