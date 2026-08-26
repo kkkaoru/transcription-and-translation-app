@@ -81,7 +81,7 @@ pub struct MainView {
     font_caret: usize,
     fonts: Vec<String>,
     font_select_open: bool,
-    show_advanced_settings: bool,
+    show_settings_details: bool,
     active_color_picker: Option<String>,
     persist_error: Option<String>,
     active_companion_device_id: Option<String>,
@@ -262,7 +262,7 @@ impl MainView {
             font_caret: 0,
             fonts,
             font_select_open: false,
-            show_advanced_settings: false,
+            show_settings_details: false,
             active_color_picker: None,
             persist_error,
             active_companion_device_id: None,
@@ -974,7 +974,7 @@ impl Render for MainView {
             .into_any_element(),
             AppTab::Settings => render_settings(
                 &self.app_settings,
-                self.show_advanced_settings,
+                self.show_settings_details,
                 &SettingsRuntimeInfo {
                     translation_model_installed: local_translation_model_installed(),
                     syphon_on: self.surfaces.borrow().syphon.is_some(),
@@ -999,8 +999,8 @@ impl Render for MainView {
                 },
                 cx,
                 SettingsCallbacks {
-                    on_toggle_advanced: |view| {
-                        view.show_advanced_settings = !view.show_advanced_settings;
+                    on_toggle_details: |view| {
+                        view.show_settings_details = !view.show_settings_details;
                     },
                     on_language: |view, language| {
                         view.app_settings.ui_language = language;

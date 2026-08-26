@@ -181,16 +181,15 @@ pub fn render_live<V: 'static>(
 }
 
 fn capture_status_label(status: CaptureStatus, language: UiLanguage) -> &'static str {
-    match (status, language) {
-        (CaptureStatus::Idle, UiLanguage::Japanese) => "状態: 待機中",
-        (CaptureStatus::Capturing, UiLanguage::Japanese) => "状態: 収録中",
-        (CaptureStatus::Stopping, UiLanguage::Japanese) => "状態: 停止処理中",
-        (CaptureStatus::Error, UiLanguage::Japanese) => "状態: エラー",
-        (CaptureStatus::Idle, UiLanguage::English) => "Status: Idle",
-        (CaptureStatus::Capturing, UiLanguage::English) => "Status: Capturing",
-        (CaptureStatus::Stopping, UiLanguage::English) => "Status: Stopping",
-        (CaptureStatus::Error, UiLanguage::English) => "Status: Error",
-    }
+    text(
+        language,
+        match status {
+            CaptureStatus::Idle => TextKey::StatusIdle,
+            CaptureStatus::Capturing => TextKey::StatusCapturing,
+            CaptureStatus::Stopping => TextKey::StatusStopping,
+            CaptureStatus::Error => TextKey::StatusError,
+        },
+    )
 }
 
 fn caption_or_placeholder(value: &str, language: UiLanguage) -> SharedString {

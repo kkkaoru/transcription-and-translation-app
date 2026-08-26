@@ -25,11 +25,12 @@ const PREVIEW_WIDTH_PX: f32 = 560.0;
 const PREVIEW_HEIGHT_PX: f32 = 157.5;
 
 macro_rules! slider {
-    ($id:expr, $label:expr, $value:expr, $min:expr, $max:expr, $step:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
+    ($id:expr, $label:expr, $language:expr, $value:expr, $min:expr, $max:expr, $step:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
         slider_control(
             SliderSpec {
                 id: $id,
                 label: $label,
+                language: $language,
                 value: $value,
                 min: $min,
                 max: $max,
@@ -46,7 +47,14 @@ macro_rules! slider {
 macro_rules! color_picker {
     ($id:expr, $label:expr, $value:expr, $active:expr, $language:expr, $on_toggle:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
         color_picker_control(
-            ColorPickerSpec { id: $id, label: $label, value: $value, active: $active, set: $set },
+            ColorPickerSpec {
+                id: $id,
+                label: $label,
+                language: $language,
+                value: $value,
+                active: $active,
+                set: $set,
+            },
             $style,
             $cx,
             $on_change,
@@ -102,6 +110,7 @@ pub struct FontPickerState<'a> {
 struct ColorPickerSpec<'a> {
     id: &'static str,
     label: &'static str,
+    language: UiLanguage,
     value: &'a str,
     active: bool,
     set: fn(&mut NativeStyleSettings, &str),
@@ -110,6 +119,7 @@ struct ColorPickerSpec<'a> {
 struct SliderSpec {
     id: &'static str,
     label: &'static str,
+    language: UiLanguage,
     value: f32,
     min: f32,
     max: f32,
@@ -120,6 +130,7 @@ struct SliderSpec {
 struct RangeSpec {
     id: String,
     label: &'static str,
+    language: UiLanguage,
     value: f32,
     min: f32,
     max: f32,
@@ -130,6 +141,7 @@ struct RangeSpec {
 struct ColorChannelSpec {
     id: String,
     label: &'static str,
+    language: UiLanguage,
     channel_index: usize,
     channels: [u8; 3],
     set: fn(&mut NativeStyleSettings, &str),
@@ -284,6 +296,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "font-weight",
                 text(language, TextKey::FontWeight),
+                language,
                 f32::from(style.font_weight),
                 100.0,
                 900.0,
@@ -296,6 +309,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "letter-spacing",
                 text(language, TextKey::LetterSpacing),
+                language,
                 style.letter_spacing_px,
                 0.0,
                 8.0,
@@ -308,6 +322,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "line-height",
                 text(language, TextKey::LineHeight),
+                language,
                 style.line_height,
                 0.8,
                 2.0,
@@ -326,6 +341,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "source-size",
                 text(language, TextKey::SourceSize),
+                language,
                 style.source_font_size_px,
                 12.0,
                 72.0,
@@ -350,6 +366,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "source-opacity",
                 text(language, TextKey::SourceOpacity),
+                language,
                 style.source_opacity,
                 0.0,
                 1.0,
@@ -362,6 +379,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "source-max",
                 text(language, TextKey::SourceMaxChars),
+                language,
                 style.source_max_chars as f32,
                 8.0,
                 80.0,
@@ -380,6 +398,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "translation-size",
                 text(language, TextKey::TranslationSize),
+                language,
                 style.translation_font_size_px,
                 12.0,
                 72.0,
@@ -404,6 +423,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "translation-opacity",
                 text(language, TextKey::TranslationOpacity),
+                language,
                 style.translation_opacity,
                 0.0,
                 1.0,
@@ -416,6 +436,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "translation-max",
                 text(language, TextKey::TranslationMaxChars),
+                language,
                 style.translation_max_chars as f32,
                 8.0,
                 80.0,
@@ -434,6 +455,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "position-x",
                 text(language, TextKey::PositionX),
+                language,
                 style.caption_x_percent,
                 5.0,
                 95.0,
@@ -446,6 +468,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "position-y",
                 text(language, TextKey::PositionY),
+                language,
                 style.caption_y_percent,
                 5.0,
                 95.0,
@@ -486,6 +509,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "background-opacity",
                 text(language, TextKey::BackgroundOpacity),
+                language,
                 style.background_opacity,
                 0.0,
                 1.0,
@@ -526,6 +550,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "shadow-blur",
                 text(language, TextKey::ShadowBlur),
+                language,
                 style.shadow_blur_px,
                 0.0,
                 20.0,
@@ -538,6 +563,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "shadow-antialias",
                 text(language, TextKey::ShadowAntialias),
+                language,
                 f32::from(style.shadow_antialias),
                 1.0,
                 4.0,
@@ -550,6 +576,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "shadow-x",
                 text(language, TextKey::ShadowOffsetX),
+                language,
                 style.shadow_offset_x,
                 -10.0,
                 10.0,
@@ -562,6 +589,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "shadow-y",
                 text(language, TextKey::ShadowOffsetY),
+                language,
                 style.shadow_offset_y,
                 -10.0,
                 10.0,
@@ -602,6 +630,7 @@ pub fn render_style<V: 'static>(
             .child(slider!(
                 "outline-width",
                 text(language, TextKey::OutlineWidth),
+                language,
                 style.outline_width_px,
                 0.0,
                 8.0,
@@ -742,7 +771,7 @@ fn slider_control<V: 'static>(
     cx: &mut Context<V>,
     on_change: fn(&mut V, NativeStyleSettings),
 ) -> impl IntoElement {
-    let SliderSpec { id, label, value, min, max, step, set } = spec;
+    let SliderSpec { id, label, language, value, min, max, step, set } = spec;
     let current = style.clone();
     let update = Rc::new(move |view: &mut V, next_value: f32| {
         let mut next = current.clone();
@@ -753,6 +782,7 @@ fn slider_control<V: 'static>(
         RangeSpec {
             id: id.to_string(),
             label,
+            language,
             value,
             min,
             max,
@@ -769,14 +799,14 @@ fn range_control<V: 'static>(
     cx: &mut Context<V>,
     update: RangeUpdate<V>,
 ) -> impl IntoElement {
-    let RangeSpec { id, label, value, min, max, step, accent } = spec;
+    let RangeSpec { id, label, language, value, min, max, step, accent } = spec;
     let fraction = ((value - min) / (max - min)).clamp(0.0, 1.0);
     let entity = cx.entity();
     let decrease_entity = entity.clone();
     let decrease_update = Rc::clone(&update);
     let decrease = Button::new(format!("{id}-decrease"))
         .label("−")
-        .tooltip(format!("Decrease {label}"))
+        .tooltip(format!("{}: {label}", text(language, TextKey::Decrease)))
         .disabled(value <= min)
         .on_click(move |_event, _window, app| {
             decrease_entity.update(app, |view, _| {
@@ -787,7 +817,7 @@ fn range_control<V: 'static>(
     let increase_update = Rc::clone(&update);
     let increase = Button::new(format!("{id}-increase"))
         .label("+")
-        .tooltip(format!("Increase {label}"))
+        .tooltip(format!("{}: {label}", text(language, TextKey::Increase)))
         .disabled(value >= max)
         .on_click(move |_event, _window, app| {
             increase_entity.update(app, |view, _| {
@@ -902,7 +932,7 @@ fn color_picker_control<V: 'static>(
     on_change: fn(&mut V, NativeStyleSettings),
     on_toggle: fn(&mut V, &str),
 ) -> impl IntoElement {
-    let ColorPickerSpec { id, label, value, active, set } = spec;
+    let ColorPickerSpec { id, label, language, value, active, set } = spec;
     let channels = parse_rgb_channels(value);
     let (hue, saturation, brightness) = rgb_to_hsv(channels);
     let square = color_square_control(
@@ -918,19 +948,40 @@ fn color_picker_control<V: 'static>(
         on_change,
     );
     let red = color_channel_stepper(
-        ColorChannelSpec { id: format!("{id}-red"), label: "R", channel_index: 0, channels, set },
+        ColorChannelSpec {
+            id: format!("{id}-red"),
+            label: "R",
+            language,
+            channel_index: 0,
+            channels,
+            set,
+        },
         style,
         cx,
         on_change,
     );
     let green = color_channel_stepper(
-        ColorChannelSpec { id: format!("{id}-green"), label: "G", channel_index: 1, channels, set },
+        ColorChannelSpec {
+            id: format!("{id}-green"),
+            label: "G",
+            language,
+            channel_index: 1,
+            channels,
+            set,
+        },
         style,
         cx,
         on_change,
     );
     let blue = color_channel_stepper(
-        ColorChannelSpec { id: format!("{id}-blue"), label: "B", channel_index: 2, channels, set },
+        ColorChannelSpec {
+            id: format!("{id}-blue"),
+            label: "B",
+            language,
+            channel_index: 2,
+            channels,
+            set,
+        },
         style,
         cx,
         on_change,
@@ -973,7 +1024,7 @@ fn color_channel_stepper<V: 'static>(
     cx: &mut Context<V>,
     on_change: fn(&mut V, NativeStyleSettings),
 ) -> impl IntoElement {
-    let ColorChannelSpec { id, label, channel_index, channels, set } = spec;
+    let ColorChannelSpec { id, label, language, channel_index, channels, set } = spec;
     let entity = cx.entity();
     let current = style.clone();
     let update = Rc::new(move |view: &mut V, next_channels: [u8; 3]| {
@@ -985,7 +1036,7 @@ fn color_channel_stepper<V: 'static>(
     let decrease_update = Rc::clone(&update);
     let decrease = Button::new(format!("{id}-decrease"))
         .label("−")
-        .tooltip(format!("{label}: decrease"))
+        .tooltip(format!("{label}: {}", text(language, TextKey::Decrease)))
         .disabled(channels[channel_index] == 0)
         .on_click(move |_event, _window, app| {
             decrease_entity.update(app, |view, _| {
@@ -994,7 +1045,7 @@ fn color_channel_stepper<V: 'static>(
         });
     let increase = Button::new(format!("{id}-increase"))
         .label("+")
-        .tooltip(format!("{label}: increase"))
+        .tooltip(format!("{label}: {}", text(language, TextKey::Increase)))
         .disabled(channels[channel_index] == u8::MAX)
         .on_click(move |_event, _window, app| {
             entity.update(app, |view, _| {

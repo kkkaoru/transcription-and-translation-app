@@ -514,24 +514,28 @@ fn settings_support_one_ui_language_at_a_time() {
     let settings = include_str!("settings.rs");
     assert!(settings.contains("settings-scroll"));
     assert!(settings.contains("overflow_y_scroll()"));
-    assert!(settings.contains("settings-show-advanced"));
-    assert!(settings.contains(".when(show_advanced"));
+    assert!(settings.contains("settings-show-details"));
+    assert!(settings.contains(".when(show_details"));
     assert!(settings.contains("stage_location_control"));
     assert!(settings.contains("ButtonGroup::new"));
     assert!(settings.contains(".outline()"));
-    assert!(settings.contains("label(\"Desktop\")"));
-    assert!(settings.contains("label(\"Mobile\")"));
-    assert!(settings.contains("accessibility_id(format!(\"{stage}: Desktop\"))"));
-    assert!(settings.contains("accessibility_id(format!(\"{stage}: Mobile\"))"));
+    assert!(settings.contains("label(text(language, TextKey::Desktop))"));
+    assert!(settings.contains("label(text(language, TextKey::Mobile))"));
     assert!(settings.contains(".selected(!mobile)"));
     assert!(settings.contains(".selected(mobile)"));
     assert!(settings.contains("copy-companion-endpoint"));
     assert!(settings.contains("copy-companion-token"));
-    assert!(settings.contains("Connected and authenticated"));
-    assert!(settings.contains("Waiting for mobile companion"));
-    assert!(settings.contains("Automatic discovery: Bonjour / UDP 18184"));
-    assert!(settings.contains("Synchronized route"));
-    assert!(settings.contains("Mobile platform"));
+    assert!(settings.contains("TextKey::ConnectedAuthenticated"));
+    assert!(settings.contains("TextKey::WaitingMobileCompanion"));
+    assert!(settings.contains("TextKey::AutomaticDiscovery"));
+    assert!(settings.contains("TextKey::SynchronizedRoute"));
+    assert!(settings.contains("TextKey::MobilePlatform"));
+    let i18n = include_str!("i18n.rs");
+    assert!(i18n.contains("TextKey::ShowDetails => \"詳細表示\""));
+    assert!(i18n.contains("TextKey::Desktop => \"デスクトップ\""));
+    assert!(i18n.contains("TextKey::CopyPairingToken => \"ペアリングトークンをコピー\""));
+    assert!(!settings.contains("Copy pairing token"));
+    assert!(!settings.contains("Copy LAN endpoint"));
 }
 
 #[test]
