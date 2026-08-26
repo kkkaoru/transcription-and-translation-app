@@ -7,7 +7,7 @@ vi.mock("@cloudflare/containers", () => ({
   switchPort: vi.fn((request: Request) => request),
 }));
 
-import { parseContainerRoute, warmupTargets } from "./index";
+import { fetchContainerBeforeDeadline, parseContainerRoute, warmupTargets } from "./index";
 
 describe("Zenz Container routing", () => {
   it("parses every profile dimension and preserves the upstream path", () => {
@@ -61,5 +61,69 @@ describe("Zenz Container routing", () => {
     expect(warmupTargets({ n5Enabled: true, ggufEnabled: false })).toStrictEqual([
       { path: "/rescore", port: 8081, body: '{"text":"テスト"}' },
     ]);
+  });
+
+  it("returns a response before the deadline without killing the container", async () => {
+    const destroy = vi.fn(() => Promise.resolve());
+    const response = await fetchContainerBeforeDeadline({
+      container: {
+        fetch: vi.fn(() => Promise.resolve(new Response("healthy"))),
+        destroy,
+      },
+      request: new Request("https://zenz.internal/health"),
+      port: 8080,
+      deadline: new Promise(() => undefined),
+    });
+
+    expect(await response.text()).toBe("healthy");
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("kills a container whose request exceeds the startup deadline", async () => {
+    const destroy = vi.fn(() => Promise.resolve());
+    const request = fetchContainerBeforeDeadline({
+      container: {
+        fetch: vi.fn(() => new Promise<Response>(() => undefined)),
+        destroy,
+      },
+      request: new Request("https://zenz.internal/health"),
+      port: 8080,
+      deadline: Promise.resolve(),
+    });
+
+    await expect(request).rejects.toThrow("Container request exceeded 90000ms and was killed");
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("kills a container that returns a server failure", async () => {
+    const destroy = vi.fn(() => Promise.resolve());
+    const request = fetchContainerBeforeDeadline({
+      container: {
+        fetch: vi.fn(() => Promise.resolve(new Response("unavailable", { status: 503 }))),
+        destroy,
+      },
+      request: new Request("https://zenz.internal/health"),
+      port: 8080,
+      deadline: new Promise(() => undefined),
+    });
+
+    await expect(request).rejects.toThrow("Container returned 503 and was killed");
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("kills a container when its startup fetch fails", async () => {
+    const destroy = vi.fn(() => Promise.resolve());
+    const request = fetchContainerBeforeDeadline({
+      container: {
+        fetch: vi.fn(() => Promise.reject(new Error("failed to start"))),
+        destroy,
+      },
+      request: new Request("https://zenz.internal/health"),
+      port: 8080,
+      deadline: new Promise(() => undefined),
+    });
+
+    await expect(request).rejects.toThrow("failed to start");
+    expect(destroy).toHaveBeenCalledTimes(1);
   });
 });

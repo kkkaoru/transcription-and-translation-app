@@ -12,8 +12,13 @@ interface Env {
   ZENZ_STANDARD_XSMALL_N5_ON: DurableObjectNamespace<ZenzStandardXsmallN5OnContainer>;
 }
 
+export interface ContainerStub {
+  fetch(request: Request): Promise<Response>;
+  destroy(): Promise<void>;
+}
+
 interface ContainerRoute {
-  container: DurableObjectStub<ZenzContainer>;
+  container: ContainerStub;
   upstreamPath: string;
   n5Enabled: boolean;
 }
@@ -39,9 +44,13 @@ export interface WarmupTarget {
 }
 
 interface ContainerFetchOptions {
-  container: DurableObjectStub<ZenzContainer>;
+  container: ContainerStub;
   request: Request;
   port: number;
+}
+
+interface DeadlineFetchOptions extends ContainerFetchOptions {
+  deadline: Promise<void>;
 }
 
 interface WarmContainerOptions {
@@ -63,6 +72,7 @@ const N5_PREFIX = "/n5";
 const N5_RESCORE_PATH = "/rescore";
 const N5_PORT = 8081;
 const CONTAINER_TIMING_HEADER = "x-kotoba-container-headers-ms";
+const CONTAINER_FETCH_TIMEOUT_MS = 90_000;
 const SLEEP_AFTER = "30s";
 const DEFAULT_PORT = 8080;
 const PATH_PATTERN = /^\/(basic|standard)\/(small|xsmall)\/(n5-off|n5-on)(\/.*)?$/;
@@ -132,6 +142,8 @@ export abstract class ZenzContainer extends Container {
   entrypoint = STANDARD_ENTRYPOINT;
 
   override async onActivityExpired(): Promise<void> {
+    // Do not use the library default (graceful SIGTERM): idle inference
+    // containers have no state to flush and must release compute immediately.
     await this.destroy();
   }
 }
@@ -210,34 +222,89 @@ const containerRoute = (pathname: string, env: Env): ContainerRoute | undefined 
 // Container.fetch already starts the instance and waits for its configured
 // ports. A separate /health fetch doubled the Durable Object proxy work on
 // every hot completion without adding readiness guarantees.
-const fetchContainer = (options: ContainerFetchOptions): Promise<Response> =>
-  options.container.fetch(switchPort(options.request, options.port));
+export const fetchContainerBeforeDeadline = async (
+  options: DeadlineFetchOptions,
+): Promise<Response> => {
+  const fetchPromise = options.container.fetch(switchPort(options.request, options.port));
+  const timeoutPromise = options.deadline.then(() => undefined);
+  try {
+    const response = await Promise.race([fetchPromise, timeoutPromise]);
+    if (!response) {
+      throw new Error(
+        `Container request exceeded ${String(CONTAINER_FETCH_TIMEOUT_MS)}ms and was killed`,
+      );
+    }
+    if (response.status < 500) return response;
+    await response.body?.cancel();
+    throw new Error(`Container returned ${String(response.status)} and was killed`);
+  } catch (error) {
+    await options.container.destroy();
+    throw error;
+  }
+};
+
+const fetchContainer = async (options: ContainerFetchOptions): Promise<Response> => {
+  const deadlineController = new AbortController();
+  try {
+    return await fetchContainerBeforeDeadline({
+      ...options,
+      deadline: scheduler.wait(CONTAINER_FETCH_TIMEOUT_MS, {
+        signal: deadlineController.signal,
+      }),
+    });
+  } finally {
+    deadlineController.abort();
+  }
+};
 
 const fetchContainerWithMetrics = async (
   options: ContainerFetchOptions & { profile: ParsedContainerRoute },
 ): Promise<Response> => {
   const startedAt = performance.now();
-  const response = await fetchContainer(options);
-  const elapsedMs = Math.max(0, performance.now() - startedAt);
-  // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured JSON logs
-  console.log(
-    JSON.stringify({
-      event: "zenz_container_metrics",
-      tier: options.profile.tier,
-      model: options.profile.model,
-      n5Mode: options.profile.n5Mode,
-      path: options.profile.upstreamPath,
-      elapsedMs,
+  try {
+    const response = await fetchContainer(options);
+    const elapsedMs = Math.max(0, performance.now() - startedAt);
+    // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured JSON logs
+    console.log(
+      JSON.stringify({
+        event: "zenz_container_metrics",
+        tier: options.profile.tier,
+        model: options.profile.model,
+        n5Mode: options.profile.n5Mode,
+        path: options.profile.upstreamPath,
+        elapsedMs,
+        status: response.status,
+        outcome: "completed",
+      }),
+    );
+    const headers = new Headers(response.headers);
+    headers.set(CONTAINER_TIMING_HEADER, String(elapsedMs));
+    return new Response(response.body, {
       status: response.status,
-    }),
-  );
-  const headers = new Headers(response.headers);
-  headers.set(CONTAINER_TIMING_HEADER, String(elapsedMs));
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+      statusText: response.statusText,
+      headers,
+    });
+  } catch (error) {
+    const elapsedMs = Math.max(0, performance.now() - startedAt);
+    // biome-ignore lint/suspicious/noConsole: Workers Observability ingests structured JSON logs
+    console.error(
+      JSON.stringify({
+        event: "zenz_container_metrics",
+        tier: options.profile.tier,
+        model: options.profile.model,
+        n5Mode: options.profile.n5Mode,
+        path: options.profile.upstreamPath,
+        elapsedMs,
+        status: 503,
+        outcome: "killed",
+        error: error instanceof Error ? error.message : "Unknown container failure",
+      }),
+    );
+    return Response.json(
+      { error: "selected container failed and was killed", elapsedMs },
+      { status: 503, headers: { [CONTAINER_TIMING_HEADER]: String(elapsedMs) } },
+    );
+  }
 };
 
 export const warmupTargets = (options: {
@@ -252,40 +319,52 @@ export const warmupTargets = (options: {
 
 const warmContainer = async (options: WarmContainerOptions): Promise<Response> => {
   const startedAt = performance.now();
-  const responses = await Promise.all(
-    warmupTargets({
-      n5Enabled: options.route.n5Enabled,
-      ggufEnabled: options.ggufEnabled,
-    }).map((target) => {
-      const targetUrl = new URL(options.url);
-      targetUrl.pathname = target.path;
-      return fetchContainer({
-        container: options.route.container,
-        request: new Request(targetUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: target.body,
-        }),
-        port: target.port,
-      });
-    }),
-  );
-  const failed = responses.find((response) => !response?.ok);
-  await Promise.all(responses.map((response) => response?.body?.cancel()));
-  if (failed) {
-    return Response.json({ error: "selected container warm-up failed" }, { status: 503 });
+  try {
+    const responses = await Promise.all(
+      warmupTargets({
+        n5Enabled: options.route.n5Enabled,
+        ggufEnabled: options.ggufEnabled,
+      }).map((target) => {
+        const targetUrl = new URL(options.url);
+        targetUrl.pathname = target.path;
+        return fetchContainer({
+          container: options.route.container,
+          request: new Request(targetUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: target.body,
+          }),
+          port: target.port,
+        });
+      }),
+    );
+    const failed = responses.find((response) => !response.ok);
+    await Promise.all(responses.map((response) => response.body?.cancel()));
+    if (failed) {
+      await options.route.container.destroy();
+      return Response.json({ error: "selected container warm-up failed" }, { status: 503 });
+    }
+    return Response.json({
+      ok: true,
+      warmed: warmupTargets({
+        n5Enabled: options.route.n5Enabled,
+        ggufEnabled: options.ggufEnabled,
+      }).map((target) => (target.port === N5_PORT ? "n5" : "gguf")),
+      elapsedMs: performance.now() - startedAt,
+    });
+  } catch (error) {
+    return Response.json(
+      {
+        error: "selected container warm-up failed and was killed",
+        detail: error instanceof Error ? error.message : "Unknown container failure",
+        elapsedMs: Math.max(0, performance.now() - startedAt),
+      },
+      { status: 503 },
+    );
   }
-  return Response.json({
-    ok: true,
-    warmed: warmupTargets({
-      n5Enabled: options.route.n5Enabled,
-      ggufEnabled: options.ggufEnabled,
-    }).map((target) => (target.port === N5_PORT ? "n5" : "gguf")),
-    elapsedMs: performance.now() - startedAt,
-  });
 };
 
-const releaseContainer = async (container: DurableObjectStub<ZenzContainer>): Promise<Response> => {
+const releaseContainer = async (container: ContainerStub): Promise<Response> => {
   await container.destroy();
   return Response.json({ ok: true, state: "destroyed" });
 };
