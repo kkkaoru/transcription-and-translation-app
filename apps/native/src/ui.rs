@@ -4,11 +4,10 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    black, img, white, App, ClickEvent, Context, Hsla, ImageSource, IntoElement, RenderImage,
-    Rgba as GpuiRgba, SharedString, Window,
+    img, App, ClickEvent, Context, ImageSource, IntoElement, RenderImage, SharedString, Window,
 };
 use gpui_component::alert::Alert;
-use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::label::Label;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{v_flex, ActiveTheme as _, StyledExt as _};
@@ -83,47 +82,10 @@ pub fn button(
 pub fn danger_button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
-    cx: &App,
+    _cx: &App,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    let background = cx.theme().button_danger;
-    let foreground = accessible_text_color(background);
-    let style = ButtonCustomVariant::new(cx)
-        .color(background)
-        .hover(background)
-        .active(background)
-        .foreground(foreground);
-    Button::new(id).custom(style).label(label).on_click(on_click)
-}
-
-fn accessible_text_color(background: Hsla) -> Hsla {
-    let background = GpuiRgba::from(background);
-    let black = black();
-    let white = white();
-    if contrast_ratio(background, GpuiRgba::from(white))
-        >= contrast_ratio(background, GpuiRgba::from(black))
-    {
-        white
-    } else {
-        black
-    }
-}
-
-fn contrast_ratio(first: GpuiRgba, second: GpuiRgba) -> f32 {
-    let first = relative_luminance(first);
-    let second = relative_luminance(second);
-    (first.max(second) + 0.05) / (first.min(second) + 0.05)
-}
-
-fn relative_luminance(color: GpuiRgba) -> f32 {
-    fn linear(channel: f32) -> f32 {
-        if channel <= 0.04045 {
-            channel / 12.92
-        } else {
-            ((channel + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    Button::new(id).outline().danger().label(label).on_click(on_click)
 }
 
 pub fn tab_bar<V: 'static>(
@@ -148,19 +110,4 @@ pub fn tab_bar<V: 'static>(
         .child(Tab::new().label(text(language, TextKey::Dictionary)))
         .child(Tab::new().label(text(language, TextKey::Output)))
         .child(Tab::new().label(text(language, TextKey::Settings)))
-}
-
-#[cfg(test)]
-mod tests {
-    use gpui::{rgba, Rgba};
-
-    use super::{accessible_text_color, contrast_ratio};
-
-    #[test]
-    fn danger_text_meets_wcag_aa_for_light_and_dark_red_backgrounds() {
-        for background in [rgba(0xef4444ff), rgba(0xb91c1cff)] {
-            let foreground = Rgba::from(accessible_text_color(background.into()));
-            assert!(contrast_ratio(background, foreground) >= 4.5);
-        }
-    }
 }
