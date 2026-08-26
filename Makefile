@@ -9,16 +9,16 @@ NATIVE_BINARY := apps/native/target/release/kotoba-beacon-native
 help:
 	@printf '%s\n' \
 		'Kotoba Beacon development targets:' \
-		'  make build           Build and package the macOS Native app without touching the running app' \
+		'  make build           Build, package, and replace the installed app without launching it' \
 		'  make native-release  Build the locked optimized Native executable only' \
 		'  make native-package  Build and package the app without installing or launching it' \
-		'  make native-install  Explicitly replace the installed app; refuses while it is running' \
+		'  make native-install  Replace the installed app without stopping or launching it' \
 		'  make native-replace  Alias for native-install' \
 		'  make parapper-fetch  Fetch locked Parapper Rust dependencies once' \
 		'  make parapper-check  Check Parapper with locked, offline dependencies'
 
-# Normal builds must never stop, launch, activate, or replace the installed app.
-build: native-package
+# Normal builds replace the installed bundle but never stop, launch, or activate the app.
+build: native-install
 
 native-release:
 	cargo build --locked --release --manifest-path $(NATIVE_MANIFEST)
@@ -27,10 +27,6 @@ native-package: native-release
 	bun run package:native
 
 native-install: native-package
-	@if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
-		echo 'Kotoba Beacon Native is running; quit it before make native-install.' >&2; \
-		exit 1; \
-	fi
 	node --input-type=module -e 'import { assembleNativeApp } from "./scripts/install-macos-native-app.mjs"; const result = assembleNativeApp({ sourceBinary: "$(NATIVE_BINARY)" }); console.log("Replaced " + result.installApp + " without launching it");'
 	codesign --verify --deep --strict "$$HOME/Applications/Kotoba Beacon Native.app"
 

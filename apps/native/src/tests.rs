@@ -169,16 +169,15 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(cargo_config.contains("target-feature=+crt-static"));
 
     let makefile = include_str!("../../../Makefile");
-    assert!(makefile.contains("build: native-package"));
+    assert!(makefile.contains("build: native-install"));
     assert!(makefile.contains("native-package: native-release"));
     assert!(makefile.contains("native-install: native-package"));
     assert!(makefile.contains("native-replace: native-install"));
     assert!(makefile.contains("cargo build --locked --release --manifest-path $(NATIVE_MANIFEST)"));
     assert!(makefile.contains("assembleNativeApp"));
-    assert!(makefile.contains("pgrep -x kotoba-beacon-native"));
+    assert!(!makefile.contains("pgrep -x kotoba-beacon-native"));
     assert!(!makefile.contains("pkill -TERM -x kotoba-beacon-native"));
     assert!(!makefile.contains("pkill -KILL -x kotoba-beacon-native"));
-    assert!(makefile.contains("quit it before make native-install"));
 
     let ci = include_str!("../../../.github/workflows/ci.yml");
     let native_test_step = ci
