@@ -439,7 +439,8 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(settings.contains("Label::new(stage).w_24()"));
     assert!(dictionary.contains("danger_button("));
     assert!(style.contains("danger_button("));
-    assert!(ui.contains(".outline().danger()"));
+    assert!(ui.contains("Button::new(id).outline().label(label)"));
+    assert!(!ui.contains(".danger()"));
     assert!(!ui.contains("button_danger"));
     assert!(dictionary.contains(".track_focus(&focus_handle)"));
     assert!(dictionary.contains(".tab_index(0)"));

@@ -7,7 +7,7 @@ use gpui::{
     img, App, ClickEvent, Context, ImageSource, IntoElement, RenderImage, SharedString, Window,
 };
 use gpui_component::alert::Alert;
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::Button;
 use gpui_component::label::Label;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{v_flex, ActiveTheme as _, StyledExt as _};
@@ -85,7 +85,7 @@ pub fn danger_button(
     _cx: &App,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    Button::new(id).outline().danger().label(label).on_click(on_click)
+    Button::new(id).outline().label(label).on_click(on_click)
 }
 
 pub fn tab_bar<V: 'static>(
