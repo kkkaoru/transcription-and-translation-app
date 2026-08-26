@@ -20,6 +20,14 @@ published Worker asset. The converter implementation and its upstream sources
 are referenced by the `submodules/AzooKeyKanaKanjiConverter` and
 `submodules/azooKey-Desktop` gitlinks.
 
+The mobile companion bundles `Miwa-Keita/zenz-v3.2-small-gguf` revision
+`c67e03e07d215c869f591b274c1631170d3e11fe` and
+`Miwa-Keita/zenz-v3.2-xsmall-gguf` revision
+`4f5423f0fad41a73b1242eb96fe5c12ae4fdca83`. Both model repositories declare
+Apache-2.0. The license text is included at
+`apps/mobile/assets/azookey/models/LICENSE`; do not remove it from mobile
+release artifacts.
+
 ## Vibrato / IPADIC dictionary data
 
 The bundled IPADIC-derived dictionary data contains notices for:
@@ -38,12 +46,25 @@ Worker assets. The BCCWJ project is identified at
 
 ## QuickMT / CTranslate2
 
-Native Japanese-to-English translation supports the `quickmt/quickmt-ja-en`
-model, distributed under CC BY 4.0. The model is loaded with the MIT-licensed
-CTranslate2 runtime through the MIT-licensed `ct2rs` bindings. QuickMT model
-files are installed separately and are not committed to this repository. Keep
-the model card and attribution from <https://huggingface.co/quickmt/quickmt-ja-en>
-with redistributed model artifacts.
+Desktop Native and the Mobile companion use the `quickmt/quickmt-ja-en` model,
+distributed under CC BY 4.0. The model is loaded with the MIT-licensed
+CTranslate2 runtime through the MIT-licensed `ct2rs` bindings. Mobile bundles
+the published CTranslate2 files together with the complete CC BY 4.0 text,
+model card, and attribution under `apps/mobile/assets/quickmt/`. Desktop model
+files remain installed separately. Keep the attribution from
+<https://huggingface.co/quickmt/quickmt-ja-en> with redistributed artifacts.
+
+## ReazonSpeech K2 v2 / sherpa-onnx / ONNX Runtime
+
+The Mobile companion can run the same Japanese ASR model family as Desktop
+Native using the Apache-2.0 ReazonSpeech K2 v2 character RNN-T Zipformer model,
+Apache-2.0 sherpa-onnx 1.13.3, and MIT-licensed ONNX Runtime 1.26.0. Mobile
+model cards, checksums, and complete license texts are retained under
+`apps/mobile/assets/asr/`. The iOS static runtime archives and their upstream
+license-bearing source crate are retained under `apps/mobile/rust/vendor/`.
+Keep attribution from
+<https://huggingface.co/reazon-research/reazonspeech-k2-v2> with redistributed
+artifacts.
 
 ## GPUI and GPUI Component
 

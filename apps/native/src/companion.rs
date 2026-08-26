@@ -62,7 +62,7 @@ impl CompanionConnectionSnapshot {
 #[derive(Debug)]
 pub enum CompanionInbound {
     StageResult(MobileStageResult),
-    Disconnected,
+    Disconnected { session_id: String },
 }
 
 pub(crate) enum CompanionOutbound {
@@ -264,8 +264,17 @@ fn run_server(listener: TcpListener, discovery_socket: UdpSocket, runtime: Serve
                 ) {
                     set_error(&runtime.snapshot, error);
                 }
+                let disconnected_session_id = runtime
+                    .snapshot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .session_id
+                    .clone();
                 mark_disconnected(&runtime.snapshot);
-                let _ = runtime.inbound_tx.try_send(CompanionInbound::Disconnected);
+                if let Some(session_id) = disconnected_session_id {
+                    let _ =
+                        runtime.inbound_tx.try_send(CompanionInbound::Disconnected { session_id });
+                }
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(IO_POLL_INTERVAL);
@@ -505,8 +514,9 @@ mod tests {
     };
     use rust_lib_kotoba_beacon_companion::api::simple::{
         decode_discovery_response, default_pipeline_route, encode_discovery_request,
-        encode_pair_request, encode_route_request, encode_session_configure, encode_stage_result,
-        ExecutionDevice, MobileCapabilities, PipelineRoute, ProcessingStage,
+        encode_pair_request, encode_route_configuration, encode_route_request,
+        encode_session_configure, encode_stage_result, ExecutionDevice, MobileCapabilities,
+        PipelineRoute, ProcessingStage,
     };
     use tungstenite::{connect, Message};
 
@@ -654,14 +664,15 @@ mod tests {
                 translation: ExecutionDevice::Desktop,
             }
         );
-        server.set_route(default_pipeline_route()).expect("desktop route update");
+        let default_route = default_pipeline_route();
+        server.set_route(default_route).expect("desktop route update");
         assert!(matches!(
             socket.read().expect("desktop route update"),
             Message::Text(text)
-                if text.contains("route.configure")
-                    && text.contains("\"asr\":\"mobile\"")
+                if text.as_str()
+                    == encode_route_configuration(default_route).expect("encode default route")
         ));
-        assert_eq!(server.snapshot().route, default_pipeline_route());
+        assert_eq!(server.snapshot().route, default_route);
         socket.close(None).expect("close companion client");
     }
 }

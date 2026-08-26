@@ -1,22 +1,101 @@
 use std::io::Read;
+#[cfg(any(feature = "mobile-gguf", feature = "mobile-quickmt", feature = "mobile-rust-asr"))]
+use std::path::Path;
 use std::sync::Mutex;
+#[cfg(feature = "mobile-gguf")]
+use std::time::Duration;
 
+#[cfg(feature = "mobile-gguf")]
+use candle_core::Device;
 use caption_bridge_azookey_rust::{convert_with_dictionary, AzooKeyDictionary, ConversionOptions};
+#[cfg(feature = "mobile-gguf")]
+use caption_bridge_azookey_rust::{
+    convert_with_verifier_with_limit, VerifierConversionOptions, VerifierPolicy,
+};
+#[cfg(feature = "mobile-gguf")]
+use caption_bridge_zenz_verifier::EmbeddedZenzDraftVerifier;
+#[cfg(feature = "mobile-quickmt")]
+use ct2rs::tokenizers::sentencepiece::Tokenizer;
+#[cfg(feature = "mobile-quickmt")]
+use ct2rs::{ComputeType, Config, Device as TranslationDevice, TranslationOptions, Translator};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 
 const PROTOCOL_VERSION: u16 = 1;
 const MAX_TEXT_CHARACTERS: usize = 2_048;
 const MAX_PAIRING_TOKEN_BYTES: usize = 128;
 const MAX_DICTIONARY_BYTES: u64 = 256 * 1024 * 1024;
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+const MOBILE_ASR_SAMPLE_RATE: i32 = 16_000;
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+const MOBILE_ASR_MAX_PCM_BYTES: usize = 20 * 60 * MOBILE_ASR_SAMPLE_RATE as usize * 2;
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+const MOBILE_ASR_REQUIRED_FILES: &[&str] = &[
+    "encoder-epoch-99-avg-1.int8.onnx",
+    "decoder-epoch-99-avg-1.onnx",
+    "joiner-epoch-99-avg-1.int8.onnx",
+    "tokens.txt",
+];
+#[cfg(feature = "mobile-quickmt")]
+const QUICKMT_MAX_INPUT_TOKENS: usize = 256;
+#[cfg(feature = "mobile-quickmt")]
+const QUICKMT_MAX_OUTPUT_TOKENS: usize = 256;
+#[cfg(feature = "mobile-quickmt")]
+const QUICKMT_REQUIRED_FILES: &[&str] = &[
+    "config.json",
+    "model.bin",
+    "source_vocabulary.json",
+    "target_vocabulary.json",
+    "src.spm.model",
+    "tgt.spm.model",
+];
 
 static AZOOKEY_DICTIONARY: Mutex<Option<AzooKeyDictionary>> = Mutex::new(None);
+#[cfg(feature = "mobile-gguf")]
+static AZOOKEY_VERIFIER: Mutex<Option<ActiveAzooKeyVerifier>> = Mutex::new(None);
+#[cfg(feature = "mobile-quickmt")]
+static QUICKMT_TRANSLATOR: Mutex<Option<MobileQuickMtEngine>> = Mutex::new(None);
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+static MOBILE_RUST_ASR: Mutex<Option<MobileRustAsrEngine>> = Mutex::new(None);
+
+#[cfg(feature = "mobile-gguf")]
+struct ActiveAzooKeyVerifier {
+    model: AzooKeyModel,
+    verifier: EmbeddedZenzDraftVerifier,
+}
+
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+struct MobileRustAsrEngine {
+    model_directory: String,
+    recognizer: OfflineRecognizer,
+}
+
+// The recognizer is owned by the FRB worker invoking this mutex-protected
+// engine. sherpa-onnx itself is not shared concurrently.
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+unsafe impl Send for MobileRustAsrEngine {}
+
+#[cfg(feature = "mobile-quickmt")]
+struct MobileQuickMtEngine {
+    model_directory: String,
+    translator: Translator<Tokenizer>,
+    options: TranslationOptions<String, String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionDevice {
     Desktop,
     Mobile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AzooKeyModel {
+    Small,
+    Xsmall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +237,16 @@ pub fn default_pipeline_route() -> PipelineRoute {
         azookey: ExecutionDevice::Mobile,
         translation: ExecutionDevice::Mobile,
     }
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
+pub fn default_azookey_model() -> AzooKeyModel {
+    AzooKeyModel::Small
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
+pub fn all_azookey_models() -> Vec<AzooKeyModel> {
+    vec![AzooKeyModel::Small, AzooKeyModel::Xsmall]
 }
 
 #[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
@@ -585,6 +674,199 @@ pub fn release_azookey_dictionary() {
     *active = None;
 }
 
+#[cfg(feature = "mobile-gguf")]
+pub fn prepare_azookey_model(
+    model: AzooKeyModel,
+    model_path: String,
+    tokenizer_directory: String,
+) -> Result<(), String> {
+    let revision = match model {
+        AzooKeyModel::Small => "zenz-v3.2-small-gguf@c67e03e07d215c869f591b274c1631170d3e11fe",
+        AzooKeyModel::Xsmall => "zenz-v3.2-xsmall-gguf@4f5423f0fad41a73b1242eb96fe5c12ae4fdca83",
+    };
+    {
+        let mut active = AZOOKEY_VERIFIER
+            .lock()
+            .map_err(|_| "AzooKey verifier lock is unavailable".to_string())?;
+        if active.as_ref().is_some_and(|active| active.model == model) {
+            return Ok(());
+        }
+        *active = None;
+    }
+    let verifier = EmbeddedZenzDraftVerifier::load(
+        Path::new(&model_path),
+        Path::new(&tokenizer_directory),
+        revision,
+        &Device::Cpu,
+    )
+    .map_err(|error| format!("could not load AzooKey {model:?} GGUF: {error}"))?;
+    let mut active =
+        AZOOKEY_VERIFIER.lock().map_err(|_| "AzooKey verifier lock is unavailable".to_string())?;
+    *active = Some(ActiveAzooKeyVerifier { model, verifier });
+    Ok(())
+}
+
+#[cfg(feature = "mobile-gguf")]
+pub fn release_azookey_model() {
+    let mut active = AZOOKEY_VERIFIER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *active = None;
+}
+
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+pub fn prepare_mobile_rust_asr(model_directory: String) -> Result<(), String> {
+    let model_path = Path::new(&model_directory);
+    if let Some(name) =
+        MOBILE_ASR_REQUIRED_FILES.iter().find(|name| !model_path.join(name).is_file())
+    {
+        return Err(format!(
+            "ReazonSpeech K2 v2 model file is missing: {}",
+            model_path.join(name).display()
+        ));
+    }
+    {
+        let active = MOBILE_RUST_ASR
+            .lock()
+            .map_err(|_| "Mobile Rust ASR lock is unavailable".to_string())?;
+        if active.as_ref().is_some_and(|active| active.model_directory == model_directory) {
+            return Ok(());
+        }
+    }
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config.transducer = OfflineTransducerModelConfig {
+        encoder: Some(model_path.join("encoder-epoch-99-avg-1.int8.onnx").display().to_string()),
+        decoder: Some(model_path.join("decoder-epoch-99-avg-1.onnx").display().to_string()),
+        joiner: Some(model_path.join("joiner-epoch-99-avg-1.int8.onnx").display().to_string()),
+    };
+    config.model_config.tokens = Some(model_path.join("tokens.txt").display().to_string());
+    config.model_config.provider = Some("cpu".to_string());
+    config.model_config.modeling_unit = Some("cjkchar".to_string());
+    config.model_config.num_threads = 1;
+    config.decoding_method = Some("greedy_search".to_string());
+    config.max_active_paths = 1;
+    let recognizer = OfflineRecognizer::create(&config)
+        .ok_or_else(|| "could not create Mobile sherpa-onnx recognizer".to_string())?;
+    let mut active =
+        MOBILE_RUST_ASR.lock().map_err(|_| "Mobile Rust ASR lock is unavailable".to_string())?;
+    *active = Some(MobileRustAsrEngine { model_directory, recognizer });
+    Ok(())
+}
+
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+pub fn transcribe_mobile_rust_asr(pcm16: Vec<u8>) -> Result<String, String> {
+    if pcm16.is_empty() {
+        return Ok(String::new());
+    }
+    if !pcm16.len().is_multiple_of(2) || pcm16.len() > MOBILE_ASR_MAX_PCM_BYTES {
+        return Err("Mobile Rust ASR requires bounded little-endian PCM16 audio".to_string());
+    }
+    let samples = pcm16
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0)
+        .collect::<Vec<_>>();
+    let active =
+        MOBILE_RUST_ASR.lock().map_err(|_| "Mobile Rust ASR lock is unavailable".to_string())?;
+    let engine = active.as_ref().ok_or_else(|| "Mobile Rust ASR is not prepared".to_string())?;
+    let stream = engine.recognizer.create_stream();
+    stream.accept_waveform(MOBILE_ASR_SAMPLE_RATE, &samples);
+    engine.recognizer.decode(&stream);
+    let result = stream
+        .get_result()
+        .ok_or_else(|| "could not read Mobile sherpa-onnx result".to_string())?;
+    Ok(result.text.trim().to_string())
+}
+
+#[cfg(all(feature = "mobile-rust-asr", any(target_os = "ios", target_os = "macos")))]
+pub fn release_mobile_rust_asr() {
+    let mut active = MOBILE_RUST_ASR.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *active = None;
+}
+
+#[cfg(all(feature = "mobile-rust-asr", not(any(target_os = "ios", target_os = "macos"))))]
+pub fn prepare_mobile_rust_asr(_model_directory: String) -> Result<(), String> {
+    Err("Mobile Rust sherpa-onnx ASR is currently available on iOS only".to_string())
+}
+
+#[cfg(all(feature = "mobile-rust-asr", not(any(target_os = "ios", target_os = "macos"))))]
+pub fn transcribe_mobile_rust_asr(_pcm16: Vec<u8>) -> Result<String, String> {
+    Err("Mobile Rust sherpa-onnx ASR is currently available on iOS only".to_string())
+}
+
+#[cfg(all(feature = "mobile-rust-asr", not(any(target_os = "ios", target_os = "macos"))))]
+pub fn release_mobile_rust_asr() {}
+
+#[cfg(feature = "mobile-quickmt")]
+pub fn prepare_quickmt_translation(model_directory: String) -> Result<(), String> {
+    let model_path = Path::new(&model_directory);
+    let missing = QUICKMT_REQUIRED_FILES.iter().find(|name| !model_path.join(name).is_file());
+    if let Some(name) = missing {
+        return Err(format!("QuickMT model file is missing: {}", model_path.join(name).display()));
+    }
+    {
+        let active = QUICKMT_TRANSLATOR
+            .lock()
+            .map_err(|_| "QuickMT translator lock is unavailable".to_string())?;
+        if active.as_ref().is_some_and(|active| active.model_directory == model_directory) {
+            return Ok(());
+        }
+    }
+    let tokenizer =
+        Tokenizer::from_file(model_path.join("src.spm.model"), model_path.join("tgt.spm.model"))
+            .map_err(|error| format!("could not load QuickMT tokenizers: {error}"))?;
+    let translator = Translator::with_tokenizer(model_path, tokenizer, &quickmt_config())
+        .map_err(|error| format!("could not load INT8 QuickMT translator: {error}"))?;
+    let mut active = QUICKMT_TRANSLATOR
+        .lock()
+        .map_err(|_| "QuickMT translator lock is unavailable".to_string())?;
+    *active = Some(MobileQuickMtEngine { model_directory, translator, options: quickmt_options() });
+    Ok(())
+}
+
+#[cfg(feature = "mobile-quickmt")]
+pub fn translate_quickmt(text: String) -> Result<String, String> {
+    let source = bounded_required_text(text, MAX_TEXT_CHARACTERS, "translation input")?;
+    let active = QUICKMT_TRANSLATOR
+        .lock()
+        .map_err(|_| "QuickMT translator lock is unavailable".to_string())?;
+    let engine = active.as_ref().ok_or_else(|| "QuickMT translator is not prepared".to_string())?;
+    let mut results = engine
+        .translator
+        .translate_batch(&[source.as_str()], &engine.options, None)
+        .map_err(|error| format!("QuickMT Japanese-to-English inference failed: {error}"))?;
+    let (translation, _) = results
+        .pop()
+        .ok_or_else(|| "QuickMT returned no Japanese-to-English translation".to_string())?;
+    Ok(translation.trim().to_string())
+}
+
+#[cfg(feature = "mobile-quickmt")]
+pub fn release_quickmt_translation() {
+    let mut active = QUICKMT_TRANSLATOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *active = None;
+}
+
+#[cfg(feature = "mobile-quickmt")]
+fn quickmt_config() -> Config {
+    Config {
+        device: TranslationDevice::CPU,
+        compute_type: ComputeType::INT8,
+        device_indices: vec![0],
+        tensor_parallel: false,
+        num_threads_per_replica: 1,
+        max_queued_batches: 1,
+        cpu_core_offset: -1,
+    }
+}
+
+#[cfg(feature = "mobile-quickmt")]
+fn quickmt_options() -> TranslationOptions<String, String> {
+    TranslationOptions {
+        max_input_length: QUICKMT_MAX_INPUT_TOKENS,
+        max_decoding_length: QUICKMT_MAX_OUTPUT_TOKENS,
+        max_batch_size: 1,
+        ..TranslationOptions::default()
+    }
+}
+
 pub fn convert_azookey(reading: String) -> Result<AzooKeyOutput, String> {
     let reading = bounded_required_text(reading, MAX_TEXT_CHARACTERS, "AzooKey input")?;
     let active = AZOOKEY_DICTIONARY
@@ -592,6 +874,26 @@ pub fn convert_azookey(reading: String) -> Result<AzooKeyOutput, String> {
         .map_err(|_| "AzooKey dictionary lock is unavailable".to_string())?;
     let dictionary =
         active.as_ref().ok_or_else(|| "AzooKey dictionary is not initialized".to_string())?;
+    #[cfg(feature = "mobile-gguf")]
+    {
+        let mut active_verifier = AZOOKEY_VERIFIER
+            .lock()
+            .map_err(|_| "AzooKey verifier lock is unavailable".to_string())?;
+        if let Some(active) = active_verifier.as_mut() {
+            let text = convert_with_verifier_with_limit(
+                &reading,
+                dictionary,
+                ConversionOptions::default(),
+                Some(&mut active.verifier),
+                VerifierConversionOptions::new(1, "mobile-candle-greedy-v1")
+                    .with_policy(VerifierPolicy::always_verify())
+                    .with_deadline(Duration::from_millis(1_500)),
+            )
+            .text()
+            .to_string();
+            return Ok(AzooKeyOutput { text });
+        }
+    }
     let text = convert_with_dictionary(&reading, dictionary, ConversionOptions::default())
         .into_iter()
         .next()
@@ -732,20 +1034,26 @@ fn required<T>(value: Option<T>, label: &str) -> Result<T, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{
         all_pipeline_routes, decode_desktop_command, decode_dictionary_bytes,
         decode_discovery_request, decode_discovery_response, decode_mobile_stage_result,
-        decode_pair_request, decode_session_configuration, default_pipeline_route,
-        encode_audio_boundary, encode_discovery_request, encode_discovery_response,
-        encode_pair_request, encode_route_configuration, encode_session_configure,
-        encode_session_ready, encode_stage_request, encode_stage_result,
-        encode_translation_enabled, pipeline_route_id, should_continue_on_mobile, stage_owner,
-        DesktopCommand, DiscoveryResponse, ExecutionDevice, MobileCapabilities, MobileStageResult,
-        PairRequest, PipelineRoute, ProcessingStage, SessionConfiguration,
+        decode_pair_request, decode_session_configuration, default_azookey_model,
+        default_pipeline_route, encode_audio_boundary, encode_discovery_request,
+        encode_discovery_response, encode_pair_request, encode_route_configuration,
+        encode_session_configure, encode_session_ready, encode_stage_request, encode_stage_result,
+        encode_translation_enabled, initialize_azookey_dictionary, pipeline_route_id,
+        prepare_azookey_model, prepare_mobile_rust_asr, prepare_quickmt_translation,
+        quickmt_config, quickmt_options, release_azookey_dictionary, release_azookey_model,
+        release_mobile_rust_asr, should_continue_on_mobile, stage_owner,
+        transcribe_mobile_rust_asr, AzooKeyModel, DesktopCommand, DiscoveryResponse,
+        ExecutionDevice, MobileCapabilities, MobileStageResult, PairRequest, PipelineRoute,
+        ProcessingStage, SessionConfiguration,
     };
 
     #[test]
-    fn default_route_runs_every_stage_on_mobile() {
+    fn defaults_use_all_mobile_stages_and_small_azookey() {
         assert_eq!(
             default_pipeline_route(),
             PipelineRoute {
@@ -754,6 +1062,103 @@ mod tests {
                 translation: ExecutionDevice::Mobile,
             }
         );
+        assert_eq!(default_azookey_model(), AzooKeyModel::Small);
+    }
+
+    #[test]
+    #[ignore = "loads both bundled GGUF files; run for release verification"]
+    fn bundled_small_and_xsmall_models_load_and_convert() {
+        let mobile_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("mobile root").to_path_buf();
+        let assets = mobile_root.join("assets/azookey");
+        initialize_azookey_dictionary(
+            std::fs::read(assets.join("system.azkdict.gz")).expect("dictionary asset"),
+        )
+        .expect("initialize dictionary");
+        for (model, directory) in [(AzooKeyModel::Small, "small"), (AzooKeyModel::Xsmall, "xsmall")]
+        {
+            prepare_azookey_model(
+                model,
+                assets
+                    .join("models")
+                    .join(directory)
+                    .join("ggml-model-Q5_K_M.gguf")
+                    .to_string_lossy()
+                    .into_owned(),
+                assets.join("tokenizer").to_string_lossy().into_owned(),
+            )
+            .expect("load bundled verifier");
+            let output =
+                super::convert_azookey("きょうははれ".to_string()).expect("convert with verifier");
+            assert!(!output.text.is_empty());
+            release_azookey_model();
+        }
+        release_azookey_dictionary();
+    }
+
+    #[test]
+    #[ignore = "loads the 391 MiB bundled QuickMT model; run for release verification"]
+    fn bundled_quickmt_model_loads_and_translates() {
+        let model_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("mobile root")
+            .join("assets/quickmt/quickmt-ja-en");
+        prepare_quickmt_translation(model_directory.to_string_lossy().into_owned())
+            .expect("load bundled QuickMT");
+        let output = super::translate_quickmt("こんにちは聞こえますか。".to_string())
+            .expect("translate with bundled QuickMT");
+
+        assert_eq!(output, "Hello, can you hear me?");
+        super::release_quickmt_translation();
+    }
+
+    #[test]
+    #[ignore = "loads the 161 MiB bundled ReazonSpeech model; run for release verification"]
+    fn bundled_mobile_rust_asr_loads_and_transcribes() {
+        let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .to_path_buf();
+        let model_directory = repository.join("apps/mobile/assets/asr/reazonspeech-k2-v2");
+        prepare_mobile_rust_asr(model_directory.to_string_lossy().into_owned())
+            .expect("load bundled ReazonSpeech model");
+        let wav = std::fs::read(
+            repository.join("apps/desktop/src/overlay/fixtures/greeting-kikoemasu.wav"),
+        )
+        .expect("read PCM fixture");
+        let data_offset =
+            wav.windows(4).position(|window| window == b"data").expect("WAV data chunk") + 8;
+        let output = transcribe_mobile_rust_asr(wav[data_offset..].to_vec())
+            .expect("transcribe with Mobile Rust ASR");
+
+        assert!(output.contains("きこえますか"), "unexpected ASR output: {output}");
+        release_mobile_rust_asr();
+    }
+
+    #[test]
+    fn mobile_quickmt_preserves_desktop_quality_and_resource_limits() {
+        let config = quickmt_config();
+        let options = quickmt_options();
+
+        assert_eq!(config.device, ct2rs::Device::CPU);
+        assert_eq!(config.compute_type, ct2rs::ComputeType::INT8);
+        assert_eq!(config.num_threads_per_replica, 1);
+        assert_eq!(config.max_queued_batches, 1);
+        assert_eq!(options.beam_size, 2);
+        assert_eq!(options.max_batch_size, 1);
+        assert_eq!(options.max_input_length, 256);
+        assert_eq!(options.max_decoding_length, 256);
+    }
+
+    #[test]
+    fn mobile_quickmt_rejects_an_incomplete_model() {
+        let directory = std::env::temp_dir().join("kotoba-mobile-missing-quickmt");
+        let error = prepare_quickmt_translation(directory.to_string_lossy().into_owned())
+            .expect_err("missing model must fail");
+
+        assert!(error.starts_with("QuickMT model file is missing: "));
+        assert!(error.ends_with("config.json"));
     }
 
     #[test]

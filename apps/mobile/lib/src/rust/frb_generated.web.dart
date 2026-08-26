@@ -27,6 +27,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  AzooKeyModel dco_decode_azoo_key_model(dynamic raw);
+
+  @protected
   AzooKeyOutput dco_decode_azoo_key_output(dynamic raw);
 
   @protected
@@ -49,6 +52,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int dco_decode_i_32(dynamic raw);
+
+  @protected
+  List<AzooKeyModel> dco_decode_list_azoo_key_model(dynamic raw);
 
   @protected
   List<PipelineRoute> dco_decode_list_pipeline_route(dynamic raw);
@@ -90,6 +96,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  AzooKeyModel sse_decode_azoo_key_model(SseDeserializer deserializer);
+
+  @protected
   AzooKeyOutput sse_decode_azoo_key_output(SseDeserializer deserializer);
 
   @protected
@@ -116,6 +125,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
+
+  @protected
+  List<AzooKeyModel> sse_decode_list_azoo_key_model(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<PipelineRoute> sse_decode_list_pipeline_route(
@@ -165,6 +179,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_azoo_key_model(AzooKeyModel self, SseSerializer serializer);
+
+  @protected
   void sse_encode_azoo_key_output(AzooKeyOutput self, SseSerializer serializer);
 
   @protected
@@ -202,6 +219,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_azoo_key_model(
+    List<AzooKeyModel> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_pipeline_route(

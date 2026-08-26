@@ -219,7 +219,7 @@ return ping(_that.nonce);case _:
 
 class DesktopCommand_SessionReady extends DesktopCommand {
   const DesktopCommand_SessionReady({required this.sessionId, required this.route}): super._();
-
+  
 
  final  String sessionId;
  final  PipelineRoute route;
@@ -287,7 +287,7 @@ as PipelineRoute,
 
 class DesktopCommand_ConfigureRoute extends DesktopCommand {
   const DesktopCommand_ConfigureRoute({required this.route}): super._();
-
+  
 
  final  PipelineRoute route;
 
@@ -353,7 +353,7 @@ as PipelineRoute,
 
 class DesktopCommand_StartAudio extends DesktopCommand {
   const DesktopCommand_StartAudio({required this.sessionId, required this.turnId, required this.revision}): super._();
-
+  
 
  final  String sessionId;
  final  BigInt turnId;
@@ -423,7 +423,7 @@ as BigInt,
 
 class DesktopCommand_EndAudio extends DesktopCommand {
   const DesktopCommand_EndAudio({required this.sessionId, required this.turnId, required this.revision}): super._();
-
+  
 
  final  String sessionId;
  final  BigInt turnId;
@@ -493,7 +493,7 @@ as BigInt,
 
 class DesktopCommand_RunAzookey extends DesktopCommand {
   const DesktopCommand_RunAzookey({required this.sessionId, required this.turnId, required this.revision, required this.text, required this.isFinal}): super._();
-
+  
 
  final  String sessionId;
  final  BigInt turnId;
@@ -567,7 +567,7 @@ as bool,
 
 class DesktopCommand_RunTranslation extends DesktopCommand {
   const DesktopCommand_RunTranslation({required this.sessionId, required this.turnId, required this.revision, required this.sourceText}): super._();
-
+  
 
  final  String sessionId;
  final  BigInt turnId;
@@ -639,7 +639,7 @@ as String,
 
 class DesktopCommand_StopSession extends DesktopCommand {
   const DesktopCommand_StopSession({required this.sessionId}): super._();
-
+  
 
  final  String sessionId;
 
@@ -705,7 +705,7 @@ as String,
 
 class DesktopCommand_SetTranslationEnabled extends DesktopCommand {
   const DesktopCommand_SetTranslationEnabled({required this.enabled}): super._();
-
+  
 
  final  bool enabled;
 
@@ -771,7 +771,7 @@ as bool,
 
 class DesktopCommand_Ping extends DesktopCommand {
   const DesktopCommand_Ping({required this.nonce}): super._();
-
+  
 
  final  BigInt nonce;
 

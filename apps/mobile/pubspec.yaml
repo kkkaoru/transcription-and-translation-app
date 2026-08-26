@@ -33,6 +33,9 @@ dependencies:
     sdk: flutter
   flutter_rust_bridge: 2.13.0
   freezed_annotation: ^3.1.0
+  integration_test:
+    sdk: flutter
+  path_provider: ^2.1.6
   rust_lib_kotoba_beacon_companion:
     path: rust_builder
 
@@ -42,8 +45,6 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   freezed: ^4.0.0
-  integration_test:
-    sdk: flutter
   very_good_analysis: ^10.3.0
 
 # For information on the generic Dart part of this file, see the
@@ -58,6 +59,32 @@ flutter:
   uses-material-design: true
   assets:
     - assets/azookey/system.azkdict.gz
+    - assets/azookey/models/LICENSE
+    - assets/azookey/models/small/ggml-model-Q5_K_M.gguf
+    - assets/azookey/models/xsmall/ggml-model-Q5_K_M.gguf
+    - assets/azookey/tokenizer/merges.txt
+    - assets/azookey/tokenizer/vocab.json
+    - assets/asr/MODEL-CARD.md
+    - assets/asr/ONNX-Runtime-LICENSE-MIT
+    - assets/asr/ReazonSpeech-K2-v2-LICENSE-APACHE-2.0
+    - assets/asr/SHA256SUMS
+    - assets/asr/sherpa-onnx-LICENSE-APACHE-2.0
+    - assets/asr/reazonspeech-k2-v2/decoder-epoch-99-avg-1.onnx
+    - assets/asr/reazonspeech-k2-v2/encoder-epoch-99-avg-1.int8.onnx
+    - assets/asr/reazonspeech-k2-v2/joiner-epoch-99-avg-1.int8.onnx
+    - assets/asr/reazonspeech-k2-v2/tokens.txt
+    - assets/quickmt/CTranslate2-LICENSE-MIT
+    - assets/quickmt/LICENSE-CC-BY-4.0
+    - assets/quickmt/MODEL-CARD.md
+    - assets/quickmt/SentencePiece-LICENSE-APACHE-2.0
+    - assets/quickmt/ct2rs-LICENSE-MIT
+    - assets/quickmt/NOTICE
+    - assets/quickmt/quickmt-ja-en/config.json
+    - assets/quickmt/quickmt-ja-en/model.bin
+    - assets/quickmt/quickmt-ja-en/source_vocabulary.json
+    - assets/quickmt/quickmt-ja-en/src.spm.model
+    - assets/quickmt/quickmt-ja-en/target_vocabulary.json
+    - assets/quickmt/quickmt-ja-en/tgt.spm.model
 
   # To add assets to your application, add an assets section, like this:
   # assets:

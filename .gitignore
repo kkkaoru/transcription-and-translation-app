@@ -40,6 +40,15 @@ models
 *.gguf
 *.onnx
 *.bin
+!apps/mobile/assets/azookey/models/
+!apps/mobile/assets/azookey/models/small/
+!apps/mobile/assets/azookey/models/xsmall/
+!apps/mobile/assets/quickmt/
+!apps/mobile/assets/quickmt/quickmt-ja-en/
+!apps/mobile/rust/vendor/**
+apps/mobile/rust/vendor/**/target/
+apps/mobile/rust/vendor/**/*.sh
+apps/mobile/rust/vendor/ct2rs/CTranslate2/third_party/cutlass/python/docs_src/
 !apps/azookey-compare/public/models/
 !apps/azookey-compare/public/models/ma-imitator-unidic-lite/
 !apps/azookey-compare/public/models/ma-imitator-unidic-lite/config.json

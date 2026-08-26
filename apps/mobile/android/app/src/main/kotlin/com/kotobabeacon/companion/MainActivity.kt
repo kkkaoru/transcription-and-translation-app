@@ -3,7 +3,6 @@ package com.kotobabeacon.companion
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.provider.Settings
-import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.genai.common.DownloadStatus
 import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.common.audio.AudioSource
@@ -13,10 +12,6 @@ import com.google.mlkit.genai.speechrecognition.SpeechRecognizerOptions
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerResponse
 import com.google.mlkit.genai.speechrecognition.speechRecognizerOptions
 import com.google.mlkit.genai.speechrecognition.speechRecognizerRequest
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.Translator
-import com.google.mlkit.nl.translate.TranslatorOptions
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -41,7 +36,6 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
     private var recognitionJob: Job? = null
     private var pipe: Array<ParcelFileDescriptor>? = null
     private var pipeOutput: FileOutputStream? = null
-    private var translator: Translator? = null
     private var session: RecognitionSession? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -70,14 +64,18 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
         when (call.method) {
             "capabilities" -> reportCapabilities(result)
             "prepareAsr" -> prepareAsr(call, result)
-            "prepareTranslation" -> prepareTranslation(call, result)
             "startAsr" -> startAsr(call, result)
             "appendPcm" -> appendPcm(call, result)
             "finishAsr" -> {
                 finishAsr()
                 result.success(null)
             }
-            "translate" -> translate(call, result)
+            "prepareTranslation", "translate" -> result.error(
+                "translation_unavailable",
+                "Android platform translation is unavailable; select Mobile Rust QuickMT",
+                null,
+            )
+            "releaseTranslation" -> result.success(null)
             "cancel" -> {
                 cancelProcessing()
                 result.success(null)
@@ -122,7 +120,7 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
                     "deviceName" to "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
                     "platform" to "android",
                     "asrAvailable" to asrAvailable,
-                    "translationAvailable" to true,
+                    "translationAvailable" to false,
                 )
             )
         }
@@ -265,54 +263,8 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
         )
     }
 
-    private fun prepareTranslation(call: MethodCall, result: MethodChannel.Result) {
-        val source = call.argument<String>("sourceLanguage")
-        val target = call.argument<String>("targetLanguage")
-        if (source != "ja" || target != "en") {
-            result.error("invalid_arguments", "Only Japanese-to-English translation is supported", null)
-            return
-        }
-        getTranslator().downloadModelIfNeeded(DownloadConditions.Builder().build())
-            .addOnSuccessListener { result.success(null) }
-            .addOnFailureListener { error ->
-                result.error("translation_model_unavailable", error.message, null)
-            }
-    }
-
-    private fun translate(call: MethodCall, result: MethodChannel.Result) {
-        val arguments = call.arguments as? Map<*, *>
-        val text = arguments?.get("text") as? String
-        val source = arguments?.get("sourceLanguage") as? String
-        val target = arguments?.get("targetLanguage") as? String
-        if (text.isNullOrBlank() || source != "ja" || target != "en") {
-            result.error("invalid_arguments", "Only non-empty Japanese-to-English translation is supported", null)
-            return
-        }
-        val activeTranslator = getTranslator()
-        activeTranslator.downloadModelIfNeeded(DownloadConditions.Builder().build())
-            .addOnSuccessListener {
-                activeTranslator.translate(text)
-                    .addOnSuccessListener(result::success)
-                    .addOnFailureListener { error ->
-                        result.error("translation_failed", error.message, null)
-                    }
-            }
-            .addOnFailureListener { error ->
-                result.error("translation_model_unavailable", error.message, null)
-            }
-    }
-
-    private fun getTranslator(): Translator = translator ?: Translation.getClient(
-        TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.JAPANESE)
-            .setTargetLanguage(TranslateLanguage.ENGLISH)
-            .build()
-    ).also { translator = it }
-
     private fun cancelProcessing() {
         cancelAsr()
-        translator?.close()
-        translator = null
     }
 
     private fun cancelAsr() {

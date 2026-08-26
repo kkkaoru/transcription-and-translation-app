@@ -508,6 +508,42 @@ fn fixture_and_preview_render() {
 }
 
 #[test]
+fn version_four_dmd_defaults_migrate_to_all_mobile() {
+    let dir = unique_temp_dir("settings-v4-dmd-defaults");
+    fs::write(
+        native_settings_path(&dir),
+        r#"{"version":4,"companionAsrOnMobile":false,"companionAzookeyOnMobile":true,"companionTranslationOnMobile":false,"companionDevices":[{"deviceId":"ios-1","deviceName":"iPhone","asrOnMobile":false,"azookeyOnMobile":true,"translationOnMobile":false}]}"#,
+    )
+    .expect("write version four settings");
+
+    let loaded = load_app_settings(&dir).expect("migrate settings");
+    assert_eq!(loaded.version, crate::domain::SETTINGS_VERSION);
+    assert!(loaded.companion_asr_on_mobile);
+    assert!(loaded.companion_azookey_on_mobile);
+    assert!(loaded.companion_translation_on_mobile);
+    assert!(loaded.companion_devices[0].asr_on_mobile);
+    assert!(loaded.companion_devices[0].azookey_on_mobile);
+    assert!(loaded.companion_devices[0].translation_on_mobile);
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn version_four_explicit_nondefault_route_is_preserved() {
+    let dir = unique_temp_dir("settings-v4-explicit-route");
+    fs::write(
+        native_settings_path(&dir),
+        r#"{"version":4,"companionAsrOnMobile":false,"companionAzookeyOnMobile":false,"companionTranslationOnMobile":false,"companionDevices":[]}"#,
+    )
+    .expect("write version four settings");
+
+    let loaded = load_app_settings(&dir).expect("migrate settings");
+    assert!(!loaded.companion_asr_on_mobile);
+    assert!(!loaded.companion_azookey_on_mobile);
+    assert!(!loaded.companion_translation_on_mobile);
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
 fn command_line_has_no_overlay_flag() {
     let launch = parse_debug_launch(["--overlay", "--syphon"]);
     assert!(launch.syphon);

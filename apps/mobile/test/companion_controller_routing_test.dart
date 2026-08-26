@@ -6,9 +6,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kotoba_beacon_companion/src/companion_connection.dart';
 import 'package:kotoba_beacon_companion/src/companion_controller.dart';
 import 'package:kotoba_beacon_companion/src/native_processing.dart';
-import 'package:kotoba_beacon_companion/src/rust/api/simple.dart';
+import 'package:kotoba_beacon_companion/src/rust/api/simple.dart'
+    hide defaultPipelineRoute;
 
 import 'rust_test_library.dart';
+
+const _allMobileRoute = PipelineRoute(
+  asr: ExecutionDevice.mobile,
+  azookey: ExecutionDevice.mobile,
+  translation: ExecutionDevice.mobile,
+);
+
+PipelineRoute defaultPipelineRoute() => _allMobileRoute;
 
 const _testCapabilities = MobileCapabilities(
   deviceId: 'ios-routing-1',
@@ -365,6 +374,23 @@ final class _RoutingProcessing implements ProcessingBackend {
   void emit(ProcessingEvent event) => _events.add(event);
 
   @override
+  Future<void> configureAsrProvider(MobileAsrProvider provider) async {}
+
+  @override
+  Future<void> configureTranslationProvider(
+    MobileTranslationProvider provider,
+  ) async {}
+
+  @override
+  Future<ProcessingProviderAvailability> providerAvailability() async =>
+      const ProcessingProviderAvailability(
+        speechAnalyzer: true,
+        sfSpeechRecognizer: true,
+        rustSherpaOnnx: true,
+        translationSession: true,
+      );
+
+  @override
   Future<void> prepareAsr(String locale) async {}
 
   @override
@@ -391,6 +417,9 @@ final class _RoutingProcessing implements ProcessingBackend {
 
   @override
   Future<MobileCapabilities> capabilities() async => _testCapabilities;
+
+  @override
+  Future<void> releaseTranslation() async {}
 
   @override
   Future<void> cancel() async => cancelCalls += 1;

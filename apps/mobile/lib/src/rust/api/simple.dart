@@ -9,12 +9,18 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'simple.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bounded_required_text`, `decode_dictionary_bytes`, `decode_wire`, `desktop_envelope`, `device_id`, `encode_desktop_message`, `encode_route_message`, `encode`, `required`, `supported_owner`, `validate_mobile_capabilities`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `WireEnvelope`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `bounded_required_text`, `decode_dictionary_bytes`, `decode_wire`, `desktop_envelope`, `device_id`, `encode_desktop_message`, `encode_route_message`, `encode`, `quickmt_config`, `quickmt_options`, `required`, `supported_owner`, `validate_mobile_capabilities`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ActiveAzooKeyVerifier`, `MobileQuickMtEngine`, `MobileRustAsrEngine`, `WireEnvelope`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 PipelineRoute defaultPipelineRoute() =>
     RustLib.instance.api.crateApiSimpleDefaultPipelineRoute();
+
+AzooKeyModel defaultAzookeyModel() =>
+    RustLib.instance.api.crateApiSimpleDefaultAzookeyModel();
+
+List<AzooKeyModel> allAzookeyModels() =>
+    RustLib.instance.api.crateApiSimpleAllAzookeyModels();
 
 List<PipelineRoute> allPipelineRoutes() =>
     RustLib.instance.api.crateApiSimpleAllPipelineRoutes();
@@ -163,8 +169,48 @@ Future<void> initializeAzookeyDictionary({required List<int> bytes}) => RustLib
 Future<void> releaseAzookeyDictionary() =>
     RustLib.instance.api.crateApiSimpleReleaseAzookeyDictionary();
 
+Future<void> prepareAzookeyModel({
+  required AzooKeyModel model,
+  required String modelPath,
+  required String tokenizerDirectory,
+}) => RustLib.instance.api.crateApiSimplePrepareAzookeyModel(
+  model: model,
+  modelPath: modelPath,
+  tokenizerDirectory: tokenizerDirectory,
+);
+
+Future<void> releaseAzookeyModel() =>
+    RustLib.instance.api.crateApiSimpleReleaseAzookeyModel();
+
+Future<void> prepareMobileRustAsr({required String modelDirectory}) => RustLib
+    .instance
+    .api
+    .crateApiSimplePrepareMobileRustAsr(modelDirectory: modelDirectory);
+
+Future<String> transcribeMobileRustAsr({required List<int> pcm16}) =>
+    RustLib.instance.api.crateApiSimpleTranscribeMobileRustAsr(pcm16: pcm16);
+
+Future<void> releaseMobileRustAsr() =>
+    RustLib.instance.api.crateApiSimpleReleaseMobileRustAsr();
+
+Future<void> prepareQuickmtTranslation({required String modelDirectory}) =>
+    RustLib.instance.api.crateApiSimplePrepareQuickmtTranslation(
+      modelDirectory: modelDirectory,
+    );
+
+Future<String> translateQuickmt({required String text}) =>
+    RustLib.instance.api.crateApiSimpleTranslateQuickmt(text: text);
+
+Future<void> releaseQuickmtTranslation() =>
+    RustLib.instance.api.crateApiSimpleReleaseQuickmtTranslation();
+
 Future<AzooKeyOutput> convertAzookey({required String reading}) =>
     RustLib.instance.api.crateApiSimpleConvertAzookey(reading: reading);
+
+enum AzooKeyModel {
+  small,
+  xsmall,
+}
 
 class AzooKeyOutput {
   final String text;

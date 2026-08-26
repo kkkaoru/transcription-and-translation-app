@@ -737,9 +737,15 @@ fn run_capture_inner(
                             &mut recognition_text,
                         )?;
                     }
-                    CompanionInbound::Disconnected => {
+                    CompanionInbound::Disconnected { session_id }
+                        if disconnected_current_session(
+                            &session_id,
+                            companion_session_id.as_deref(),
+                        ) =>
+                    {
                         return Err("mobile companion disconnected during capture".to_string());
                     }
+                    CompanionInbound::Disconnected { .. } => {}
                 }
             }
         }
@@ -1036,6 +1042,12 @@ fn route_asr_output(context: &RoutingContext<'_>, output: RoutedStageOutput) -> 
         update_mode: CaptionUpdateMode::Replace,
         is_final: output.is_final,
     });
+    // Keep immediate ASR partials visible, but do not oscillate the Desktop
+    // caption between raw ASR, Mobile AzooKey, and Mobile translation outputs.
+    // Mobile downstream work starts once per finalized turn.
+    if context.route.azookey == ExecutionDevice::Mobile && !output.is_final {
+        return Ok(());
+    }
     if context.route.azookey == ExecutionDevice::Mobile {
         if should_continue_on_mobile(context.route, ProcessingStage::Asr) {
             return Ok(());
@@ -1071,6 +1083,9 @@ fn route_azookey_output(
         is_final: output.is_final,
     });
     if !context.translation_enabled {
+        return Ok(());
+    }
+    if context.route.translation == ExecutionDevice::Mobile && !output.is_final {
         return Ok(());
     }
     if context.route.translation == ExecutionDevice::Mobile {
@@ -1193,9 +1208,12 @@ fn drain_mobile_final_results_with_timeout(
                     return Ok(());
                 }
             }
-            Some(CompanionInbound::Disconnected) => {
+            Some(CompanionInbound::Disconnected { session_id })
+                if disconnected_current_session(&session_id, context.session_id) =>
+            {
                 return Err("mobile companion disconnected before final output".to_string());
             }
+            Some(CompanionInbound::Disconnected { .. }) => {}
             None => thread::sleep(POLL_TIMEOUT),
         }
     }
@@ -1203,6 +1221,10 @@ fn drain_mobile_final_results_with_timeout(
         "mobile companion did not return {terminal_stage} within {} ms",
         timeout.as_millis()
     ))
+}
+
+fn disconnected_current_session(disconnected: &str, current: Option<&str>) -> bool {
+    current == Some(disconnected)
 }
 
 fn desktop_pipeline_route() -> PipelineRoute {
@@ -1332,14 +1354,15 @@ mod tests {
         ExecutionDevice, MobileStageResult, PipelineRoute,
     };
 
-    use crate::companion::{CompanionHandle, CompanionInbound};
+    use crate::companion::{CompanionHandle, CompanionInbound, CompanionOutbound};
 
     use super::{
-        apply_caption_update, apply_turn_caption_update, drain_mobile_final_results_with_timeout,
-        native_audio_config, publish_engine_events, queue_translation, translation_mailbox,
+        apply_caption_update, apply_turn_caption_update, disconnected_current_session,
+        drain_mobile_final_results_with_timeout, native_audio_config, publish_engine_events,
+        queue_translation, route_asr_output, route_azookey_output, translation_mailbox,
         CaptionUpdateMode, CaptureController, CaptureSnapshot, CaptureStatus, EngineEvent,
-        RoutingContext, TranslationCommand, TranslationRequest, WorkerCommand, WorkerEvent,
-        MAX_CAPTION_CHARACTERS,
+        RoutedStageOutput, RoutingContext, TranslationCommand, TranslationRequest, WorkerCommand,
+        WorkerEvent, MAX_CAPTION_CHARACTERS,
     };
 
     #[test]
@@ -1898,6 +1921,99 @@ mod tests {
     }
 
     #[test]
+    fn mobile_downstream_stages_wait_for_final_asr_to_prevent_caption_flicker() {
+        let (companion, _inbound_tx, outbound_rx) = CompanionHandle::test_channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(8);
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Desktop,
+                azookey: ExecutionDevice::Mobile,
+                translation: ExecutionDevice::Mobile,
+            },
+            companion: Some(&companion),
+            session_id: Some("session-1"),
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: true,
+        };
+
+        route_asr_output(
+            &routing,
+            RoutedStageOutput {
+                turn_id: 4,
+                revision: 9,
+                text: "きょう".to_string(),
+                is_final: false,
+            },
+        )
+        .expect("publish immediate ASR partial");
+
+        assert!(matches!(
+            event_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(WorkerEvent::Caption { source, is_final: false, .. }) if source == "きょう"
+        ));
+        assert!(outbound_rx.try_recv().is_err());
+
+        route_asr_output(
+            &routing,
+            RoutedStageOutput {
+                turn_id: 4,
+                revision: 10,
+                text: "きょう。".to_string(),
+                is_final: true,
+            },
+        )
+        .expect("route finalized ASR");
+        assert!(
+            matches!(outbound_rx.recv_timeout(Duration::from_millis(20)), Ok(CompanionOutbound::Text(message)) if message.contains("azookey.request"))
+        );
+    }
+
+    #[test]
+    fn mobile_translation_waits_for_final_azookey_result() {
+        let (companion, _inbound_tx, outbound_rx) = CompanionHandle::test_channel();
+        let (event_tx, _event_rx) = mpsc::sync_channel(8);
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Desktop,
+                azookey: ExecutionDevice::Desktop,
+                translation: ExecutionDevice::Mobile,
+            },
+            companion: Some(&companion),
+            session_id: Some("session-1"),
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: true,
+        };
+
+        route_azookey_output(
+            &routing,
+            RoutedStageOutput {
+                turn_id: 4,
+                revision: 9,
+                text: "今日".to_string(),
+                is_final: false,
+            },
+        )
+        .expect("publish AzooKey partial without translation");
+        assert!(outbound_rx.try_recv().is_err());
+
+        route_azookey_output(
+            &routing,
+            RoutedStageOutput {
+                turn_id: 4,
+                revision: 10,
+                text: "今日。".to_string(),
+                is_final: true,
+            },
+        )
+        .expect("route finalized AzooKey");
+        assert!(
+            matches!(outbound_rx.recv_timeout(Duration::from_millis(20)), Ok(CompanionOutbound::Text(message)) if message.contains("translation.request"))
+        );
+    }
+
+    #[test]
     fn final_mobile_translation_is_drained_before_capture_stops() {
         let (companion, inbound_tx, outbound_rx) = CompanionHandle::test_channel();
         let (event_tx, event_rx) = mpsc::sync_channel(8);
@@ -2081,7 +2197,9 @@ mod tests {
             translation_tx: None,
             translation_enabled: true,
         };
-        inbound_tx.send(CompanionInbound::Disconnected).expect("queue disconnect");
+        inbound_tx
+            .send(CompanionInbound::Disconnected { session_id: "session-1".to_string() })
+            .expect("queue disconnect");
         let mut caption_revision = 1;
         let mut source = "途中".to_string();
 
@@ -2098,6 +2216,13 @@ mod tests {
         );
         drop(event_rx);
         drop(outbound_rx);
+    }
+
+    #[test]
+    fn mobile_disconnect_is_scoped_to_authenticated_session() {
+        assert!(disconnected_current_session("session-1", Some("session-1")));
+        assert!(!disconnected_current_session("stale-session", Some("session-1")));
+        assert!(!disconnected_current_session("session-1", None));
     }
 
     #[test]

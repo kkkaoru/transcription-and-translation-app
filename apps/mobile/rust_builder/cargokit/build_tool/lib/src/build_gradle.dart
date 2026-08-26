@@ -20,6 +20,9 @@ class BuildGradle {
   final CargokitUserOptions userOptions;
 
   Future<void> build() async {
+    final outputRoot = Directory(Environment.outputDir);
+    if (outputRoot.existsSync()) outputRoot.deleteSync(recursive: true);
+    outputRoot.createSync(recursive: true);
     final targets = Environment.targetPlatforms
         .map((arch) {
           final target = Target.forFlutterName(arch);

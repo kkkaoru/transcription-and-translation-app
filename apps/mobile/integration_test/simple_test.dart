@@ -9,6 +9,8 @@ void main() {
 
   testWidgets('loads Rust-defined mobile default route', (tester) async {
     await tester.pumpWidget(const KotobaBeaconCompanionApp());
-    expect(find.text('処理場所 (mmm)'), findsOneWidget);
+    expect(find.text('連携機能'), findsOneWidget);
+    expect(find.textContaining('zenz-v3.2-small Q5_K_M GGUF'), findsOneWidget);
+    expect(find.textContaining('Mobile Rust: QuickMT'), findsOneWidget);
   });
 }

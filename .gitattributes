@@ -1,0 +1,6 @@
+# Preserve third-party and generated sources verbatim without applying local
+# whitespace policies to upstream formatting.
+apps/mobile/rust/vendor/** linguist-vendored -whitespace
+apps/mobile/lib/src/rust/** linguist-generated -whitespace
+apps/mobile/assets/**/*.md -whitespace
+apps/mobile/assets/**/*LICENSE* -whitespace

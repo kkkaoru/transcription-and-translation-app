@@ -60,7 +60,7 @@ pub const PREVIEW_PLATE_HEIGHT: u32 = 180;
 pub const DICTIONARY_SEARCH_LIMIT: usize = 50;
 pub const STYLE_VERSION: u32 = 2;
 #[cfg(any(feature = "gpui", test))]
-pub const SETTINGS_VERSION: u32 = 3;
+pub const SETTINGS_VERSION: u32 = 5;
 
 const FIXTURE_JSON: &str = r#"{"version":1,"type":"turn.final","session_id":"fixture-session","turn_session_id":7,"turn_id":3,"revision":2,"output_sequence":2,"segment_id":8,"previous_segment_id":7,"text":"こんにちは。","source_asr_model":"reazonspeech_k2_v2","source_language":"ja","detected_language":null,"audio_duration_ms":1280,"elapsed_ms":96}"#;
 const FLAG_SYPHON: &str = "--syphon";
@@ -613,7 +613,27 @@ pub fn load_app_settings(config_dir: &Path) -> Result<NativeAppSettings, String>
     if body.trim().is_empty() {
         return Ok(NativeAppSettings::default());
     }
-    serde_json::from_str(&body).map_err(|error| format!("Native settings JSON is invalid: {error}"))
+    let mut settings: NativeAppSettings = serde_json::from_str(&body)
+        .map_err(|error| format!("Native settings JSON is invalid: {error}"))?;
+    if settings.version < SETTINGS_VERSION {
+        let global_is_old_default = !settings.companion_asr_on_mobile
+            && settings.companion_azookey_on_mobile
+            && !settings.companion_translation_on_mobile;
+        if global_is_old_default {
+            settings.companion_asr_on_mobile = true;
+            settings.companion_translation_on_mobile = true;
+        }
+        for device in &mut settings.companion_devices {
+            let device_is_old_default =
+                !device.asr_on_mobile && device.azookey_on_mobile && !device.translation_on_mobile;
+            if device_is_old_default {
+                device.asr_on_mobile = true;
+                device.translation_on_mobile = true;
+            }
+        }
+        settings.version = SETTINGS_VERSION;
+    }
+    Ok(settings)
 }
 
 #[cfg(any(feature = "gpui", test))]

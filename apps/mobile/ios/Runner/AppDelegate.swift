@@ -1,11 +1,12 @@
 @preconcurrency import AVFoundation
 @preconcurrency import Flutter
-import Speech
+@preconcurrency import Speech
+import SwiftUI
 import Translation
 import UIKit
 
 @main
-@objc class AppDelegate: FlutterAppDelegate, @preconcurrency FlutterImplicitEngineDelegate {
+@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -32,10 +33,13 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
   private var eventSink: FlutterEventSink?
   private var bonjourDiscovery: BonjourCompanionDiscovery?
   private var speechProcessor: SpeechAnalyzerProcessor?
-  private var translationSession: TranslationSession?
+  private var sfSpeechProcessor: SFSpeechRecognizerProcessor?
+  private var translationManager = PlatformTranslationManager()
+  private weak var presentingViewController: UIViewController?
 
   static func register(with registrar: FlutterPluginRegistrar) {
     let plugin = CompanionProcessingPlugin()
+    plugin.presentingViewController = registrar.viewController
     let methodChannel = FlutterMethodChannel(
       name: methodChannel,
       binaryMessenger: registrar.messenger()
@@ -75,16 +79,19 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
         result(FlutterError(code: "invalid_arguments", message: "ASR locale is required", details: nil))
         return
       }
+      let provider = values["provider"] as? String ?? "platformSpeechAnalyzer"
       Task { @MainActor in
         do {
-          _ = try await SpeechAnalyzerProcessor.prepare(localeIdentifier: locale)
+          if provider == "platformSFSpeechRecognizer" {
+            try await SFSpeechRecognizerProcessor.prepare(localeIdentifier: locale)
+          } else {
+            _ = try await SpeechAnalyzerProcessor.prepareModel(localeIdentifier: locale)
+          }
           result(nil)
         } catch {
           result(FlutterError(code: "asr_unavailable", message: error.localizedDescription, details: nil))
         }
       }
-    case "prepareTranslation":
-      prepareTranslation(call.arguments, result: result)
     case "startAsr":
       startAsr(call.arguments, result: result)
     case "appendPcm":
@@ -93,7 +100,11 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
         return
       }
       do {
-        try speechProcessor?.append(data.data)
+        if let sfSpeechProcessor {
+          try sfSpeechProcessor.append(data.data)
+        } else {
+          try speechProcessor?.append(data.data)
+        }
         result(nil)
       } catch {
         result(FlutterError(code: "audio_conversion_failed", message: error.localizedDescription, details: nil))
@@ -101,16 +112,23 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
     case "finishAsr":
       Task { @MainActor in
         await speechProcessor?.finish()
+        sfSpeechProcessor?.finish()
         result(nil)
       }
+    case "prepareTranslation":
+      prepareTranslation(call.arguments, result: result)
     case "translate":
       translate(call.arguments, result: result)
+    case "releaseTranslation":
+      translationManager.release()
+      result(nil)
     case "cancel":
       Task { @MainActor in
         await speechProcessor?.cancel()
         speechProcessor = nil
-        if #available(iOS 26.0, *) { translationSession?.cancel() }
-        translationSession = nil
+        sfSpeechProcessor?.cancel()
+        sfSpeechProcessor = nil
+        translationManager.release()
         result(nil)
       }
     default:
@@ -133,12 +151,13 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
 
   private func reportCapabilities(result: @escaping FlutterResult) {
     Task { @MainActor in
-      let locale = Locale(identifier: "ja-JP")
-      let asrAvailable = await SpeechTranscriber.supportedLocale(equivalentTo: locale) != nil
-      let source = Locale.Language(identifier: "ja")
-      let target = Locale.Language(identifier: "en")
-      let translationStatus = await LanguageAvailability().status(from: source, to: target)
-      let translationAvailable = translationStatus != .unsupported
+      // The deployment target guarantees SpeechAnalyzer API availability.
+      // Locale/model validation is deferred to startAsr to avoid prompting
+      // for Speech permission during capability-only pairing.
+      let speechTranscriberAvailable = SpeechTranscriber.isAvailable
+      let sfSpeechRecognizerAvailable =
+        SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))?.supportsOnDeviceRecognition == true
+      let asrAvailable = speechTranscriberAvailable || sfSpeechRecognizerAvailable
       guard let identifier = UIDevice.current.identifierForVendor?.uuidString else {
         result(
           FlutterError(
@@ -154,8 +173,52 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
         "deviceName": UIDevice.current.name,
         "platform": "ios",
         "asrAvailable": asrAvailable,
-        "translationAvailable": translationAvailable,
+        "speechTranscriberAvailable": speechTranscriberAvailable,
+        "sfSpeechRecognizerAvailable": sfSpeechRecognizerAvailable,
+        "translationAvailable": true,
       ])
+    }
+  }
+
+  private func prepareTranslation(_ arguments: Any?, result: @escaping FlutterResult) {
+    guard
+      let values = arguments as? [String: Any],
+      values["sourceLanguage"] as? String == "ja",
+      values["targetLanguage"] as? String == "en",
+      let provider = values["provider"] as? String,
+      let presentingViewController
+    else {
+      result(FlutterError(code: "invalid_arguments", message: "Japanese-to-English translation provider is required", details: nil))
+      return
+    }
+    Task { @MainActor in
+      do {
+        try await translationManager.prepare(
+          provider: provider,
+          presentingViewController: presentingViewController
+        )
+        result(nil)
+      } catch {
+        result(FlutterError(code: "translation_unavailable", message: error.localizedDescription, details: nil))
+      }
+    }
+  }
+
+  private func translate(_ arguments: Any?, result: @escaping FlutterResult) {
+    guard
+      let values = arguments as? [String: Any],
+      let text = values["text"] as? String,
+      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      result(FlutterError(code: "invalid_arguments", message: "Translation text is required", details: nil))
+      return
+    }
+    Task { @MainActor in
+      do {
+        result(try await translationManager.translate(text))
+      } catch {
+        result(FlutterError(code: "translation_failed", message: error.localizedDescription, details: nil))
+      }
     }
   }
 
@@ -165,7 +228,8 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
       let sessionId = values["sessionId"] as? String,
       let turnId = values["turnId"] as? String,
       let revision = values["revision"] as? String,
-      let locale = values["locale"] as? String
+      let locale = values["locale"] as? String,
+      let provider = values["provider"] as? String
     else {
       result(FlutterError(code: "invalid_arguments", message: "ASR session metadata is required", details: nil))
       return
@@ -175,6 +239,22 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
       turnId: turnId,
       revision: revision
     )
+    if provider == "platformSFSpeechRecognizer" {
+      let processor = SFSpeechRecognizerProcessor { [weak self] event in
+        self?.eventSink?(event)
+      }
+      sfSpeechProcessor = processor
+      Task { @MainActor in
+        do {
+          try await processor.start(localeIdentifier: locale, metadata: metadata)
+          result(nil)
+        } catch {
+          self.emitError(stage: "asr", message: error.localizedDescription)
+          result(FlutterError(code: "asr_unavailable", message: error.localizedDescription, details: nil))
+        }
+      }
+      return
+    }
     let processor = SpeechAnalyzerProcessor { [weak self] event in
       self?.eventSink?(event)
     }
@@ -190,71 +270,6 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
     }
   }
 
-  private func prepareTranslation(_ arguments: Any?, result: @escaping FlutterResult) {
-    guard
-      let values = arguments as? [String: Any],
-      values["sourceLanguage"] as? String == "ja",
-      values["targetLanguage"] as? String == "en"
-    else {
-      result(FlutterError(code: "invalid_arguments", message: "Japanese-to-English languages are required", details: nil))
-      return
-    }
-    Task { @MainActor in
-      do {
-        let session = installedTranslationSession()
-        try await session.prepareTranslation()
-        result(nil)
-      } catch {
-        result(
-          FlutterError(
-            code: "translation_model_unavailable",
-            message: "Install the Japanese and English Translation models: \(error.localizedDescription)",
-            details: nil
-          )
-        )
-      }
-    }
-  }
-
-  private func translate(_ arguments: Any?, result: @escaping FlutterResult) {
-    guard
-      let values = arguments as? [String: Any],
-      let text = values["text"] as? String,
-      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      values["sourceLanguage"] as? String == "ja",
-      values["targetLanguage"] as? String == "en"
-    else {
-      result(FlutterError(code: "invalid_arguments", message: "Japanese-to-English text is required", details: nil))
-      return
-    }
-    Task { @MainActor in
-      do {
-        let session = installedTranslationSession()
-        try await session.prepareTranslation()
-        let response = try await session.translate(text)
-        result(response.targetText)
-      } catch {
-        result(
-          FlutterError(
-            code: "translation_model_unavailable",
-            message: "Install the Japanese and English Translation models: \(error.localizedDescription)",
-            details: nil
-          )
-        )
-      }
-    }
-  }
-
-  private func installedTranslationSession() -> TranslationSession {
-    if let translationSession { return translationSession }
-    let session = TranslationSession(
-      installedSource: Locale.Language(identifier: "ja"),
-      target: Locale.Language(identifier: "en")
-    )
-    translationSession = session
-    return session
-  }
-
   private func emitError(stage: String, message: String) {
     eventSink?(["type": "error", "stage": stage, "message": message])
   }
@@ -262,7 +277,7 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
 
 @MainActor
 private final class BonjourCompanionDiscovery: NSObject,
-  NetServiceBrowserDelegate, NetServiceDelegate
+  @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate
 {
   private static let serviceType = "_kotobabeacon._tcp."
 
@@ -350,6 +365,108 @@ private final class BonjourCompanionDiscovery: NSObject,
   }
 }
 
+@MainActor
+private final class PlatformTranslationManager {
+  private var host: UIHostingController<TranslationSessionHost>?
+  private var session: TranslationSession?
+  private var preparationCompleted = false
+
+  func prepare(
+    provider: String,
+    presentingViewController: UIViewController
+  ) async throws {
+    guard #available(iOS 26.4, *) else {
+      throw PlatformTranslationFailure.unsupportedProvider
+    }
+    try await prepareWithStrategy(
+      provider: provider,
+      presentingViewController: presentingViewController
+    )
+  }
+
+  @available(iOS 26.4, *)
+  private func prepareWithStrategy(
+    provider: String,
+    presentingViewController: UIViewController
+  ) async throws {
+    release()
+    let strategy: TranslationSession.Strategy
+    switch provider {
+    case "platformTranslationSession":
+      strategy = .lowLatency
+    case "platformTranslationSessionHighFidelity":
+      strategy = .highFidelity
+    default:
+      throw PlatformTranslationFailure.unsupportedProvider
+    }
+    let configuration = TranslationSession.Configuration(
+      source: Locale.Language(identifier: "ja"),
+      target: Locale.Language(identifier: "en"),
+      preferredStrategy: strategy
+    )
+    try await withCheckedThrowingContinuation { continuation in
+      let rootView = TranslationSessionHost(configuration: configuration) { [weak self] session in
+        guard let self, !self.preparationCompleted else { return }
+        do {
+          try await session.prepareTranslation()
+          self.session = session
+          self.preparationCompleted = true
+          continuation.resume()
+        } catch {
+          self.preparationCompleted = true
+          continuation.resume(throwing: error)
+        }
+      }
+      let host = UIHostingController(rootView: rootView)
+      self.host = host
+      presentingViewController.addChild(host)
+      presentingViewController.view.addSubview(host.view)
+      host.view.frame = CGRect(x: -2, y: -2, width: 1, height: 1)
+      host.view.alpha = 0.01
+      host.didMove(toParent: presentingViewController)
+    }
+  }
+
+  func translate(_ text: String) async throws -> String {
+    guard let session else { throw PlatformTranslationFailure.notPrepared }
+    let response = try await session.translate(text)
+    return response.targetText
+  }
+
+  func release() {
+    session?.cancel()
+    session = nil
+    preparationCompleted = false
+    host?.willMove(toParent: nil)
+    host?.view.removeFromSuperview()
+    host?.removeFromParent()
+    host = nil
+  }
+}
+
+private struct TranslationSessionHost: View {
+  let configuration: TranslationSession.Configuration
+  let onSession: @MainActor (TranslationSession) async -> Void
+
+  var body: some View {
+    Color.clear.translationTask(configuration) { session in
+      await onSession(session)
+    }
+  }
+}
+
+private enum PlatformTranslationFailure: LocalizedError {
+  case unsupportedProvider
+  case notPrepared
+
+  var errorDescription: String? {
+    switch self {
+    case .unsupportedProvider: "The selected TranslationSession strategy is unsupported"
+    case .notPrepared: "TranslationSession is not prepared"
+    }
+  }
+}
+
 private struct RecognitionMetadata: Sendable {
   let sessionId: String
   let turnId: String
@@ -357,7 +474,6 @@ private struct RecognitionMetadata: Sendable {
 }
 
 private enum SpeechAnalyzerFailure: LocalizedError {
-  case permissionDenied
   case unsupportedLocale
   case modelUnavailable
   case audioFormatUnavailable
@@ -366,12 +482,136 @@ private enum SpeechAnalyzerFailure: LocalizedError {
 
   var errorDescription: String? {
     switch self {
-    case .permissionDenied: "Speech recognition permission was denied"
     case .unsupportedLocale: "SpeechAnalyzer does not support the requested locale"
     case .modelUnavailable: "The SpeechAnalyzer language model could not be installed"
     case .audioFormatUnavailable: "SpeechAnalyzer did not provide a compatible PCM format"
     case .audioBufferCreationFailed: "Could not create a PCM input buffer"
     case .audioConversionFailed: "Could not convert PCM16 audio for SpeechAnalyzer"
+    }
+  }
+}
+
+@MainActor
+private final class SFSpeechRecognizerProcessor {
+  typealias EventHandler = @MainActor ([String: Any]) -> Void
+
+  private let eventHandler: EventHandler
+  private var recognizer: SFSpeechRecognizer?
+  private var request: SFSpeechAudioBufferRecognitionRequest?
+  private var task: SFSpeechRecognitionTask?
+  private var metadata: RecognitionMetadata?
+
+  init(eventHandler: @escaping EventHandler) {
+    self.eventHandler = eventHandler
+  }
+
+  func start(localeIdentifier: String, metadata: RecognitionMetadata) async throws {
+    cancel()
+    let recognizer = try await Self.prepare(localeIdentifier: localeIdentifier)
+    let request = SFSpeechAudioBufferRecognitionRequest()
+    request.shouldReportPartialResults = true
+    request.requiresOnDeviceRecognition = true
+    self.recognizer = recognizer
+    self.request = request
+    self.metadata = metadata
+    task = recognizer.recognitionTask(with: request) { [weak self] response, error in
+      Task { @MainActor in
+        guard let self, let metadata = self.metadata else { return }
+        if let response {
+          self.eventHandler([
+            "type": "asr",
+            "sessionId": metadata.sessionId,
+            "turnId": metadata.turnId,
+            "revision": metadata.revision,
+            "text": response.bestTranscription.formattedString,
+            "isFinal": response.isFinal,
+          ])
+        }
+        if let error {
+          self.eventHandler([
+            "type": "error",
+            "stage": "asr",
+            "message": error.localizedDescription,
+          ])
+        }
+      }
+    }
+  }
+
+  func append(_ pcm16: Data) throws {
+    guard let request else { return }
+    request.append(try Self.makePcm16Buffer(pcm16))
+  }
+
+  func finish() {
+    request?.endAudio()
+  }
+
+  func cancel() {
+    request?.endAudio()
+    task?.cancel()
+    task = nil
+    request = nil
+    recognizer = nil
+    metadata = nil
+  }
+
+  static func prepare(localeIdentifier: String) async throws -> SFSpeechRecognizer {
+    let status = await authorizationStatus()
+    guard status == .authorized else { throw SFSpeechFailure.permissionDenied }
+    guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier)) else {
+      throw SFSpeechFailure.unsupportedLocale
+    }
+    guard recognizer.supportsOnDeviceRecognition else {
+      throw SFSpeechFailure.onDeviceRecognitionUnavailable
+    }
+    return recognizer
+  }
+
+  private static func authorizationStatus() async -> SFSpeechRecognizerAuthorizationStatus {
+    let current = SFSpeechRecognizer.authorizationStatus()
+    if current != .notDetermined { return current }
+    return await withCheckedContinuation { continuation in
+      SFSpeechRecognizer.requestAuthorization { status in
+        continuation.resume(returning: status)
+      }
+    }
+  }
+
+  private static func makePcm16Buffer(_ bytes: Data) throws -> AVAudioPCMBuffer {
+    guard !bytes.isEmpty, bytes.count.isMultiple(of: 2),
+      let format = AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: 16_000,
+        channels: 1,
+        interleaved: false
+      )
+    else { throw SFSpeechFailure.invalidAudio }
+    let frameCount = AVAudioFrameCount(bytes.count / MemoryLayout<Int16>.size)
+    guard
+      let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
+      let samples = buffer.int16ChannelData?.pointee
+    else { throw SFSpeechFailure.invalidAudio }
+    buffer.frameLength = frameCount
+    _ = bytes.copyBytes(
+      to: UnsafeMutableBufferPointer(start: samples, count: Int(frameCount))
+    )
+    return buffer
+  }
+}
+
+private enum SFSpeechFailure: LocalizedError {
+  case permissionDenied
+  case unsupportedLocale
+  case onDeviceRecognitionUnavailable
+  case invalidAudio
+
+  var errorDescription: String? {
+    switch self {
+    case .permissionDenied: "SFSpeechRecognizer permission was denied"
+    case .unsupportedLocale: "SFSpeechRecognizer does not support Japanese"
+    case .onDeviceRecognitionUnavailable: "On-device SFSpeechRecognizer is unavailable"
+    case .invalidAudio: "SFSpeechRecognizer requires PCM16 16 kHz mono audio"
     }
   }
 }
@@ -395,7 +635,7 @@ private final class SpeechAnalyzerProcessor {
 
   func start(localeIdentifier: String, metadata: RecognitionMetadata) async throws {
     await cancel()
-    let transcriber = try await Self.prepare(localeIdentifier: localeIdentifier)
+    let transcriber = try await Self.prepareModel(localeIdentifier: localeIdentifier)
     guard
       let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
         compatibleWith: [transcriber]
@@ -465,31 +705,20 @@ private final class SpeechAnalyzerProcessor {
     metadata = nil
   }
 
-  static func prepare(localeIdentifier: String) async throws -> SpeechTranscriber {
-    guard await requestSpeechPermission() else {
-      throw SpeechAnalyzerFailure.permissionDenied
-    }
+  static func prepareModel(localeIdentifier: String) async throws -> SpeechTranscriber {
     let requestedLocale = Locale(identifier: localeIdentifier)
     guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
       throw SpeechAnalyzerFailure.unsupportedLocale
     }
+    guard SpeechTranscriber.isAvailable else {
+      throw SpeechAnalyzerFailure.modelUnavailable
+    }
     let transcriber = SpeechTranscriber(
       locale: locale,
-      transcriptionOptions: [],
-      reportingOptions: [.volatileResults],
-      attributeOptions: []
+      preset: .progressiveTranscription
     )
     try await ensureModelInstalled(transcriber, locale: locale)
     return transcriber
-  }
-
-  private static func requestSpeechPermission() async -> Bool {
-    if SFSpeechRecognizer.authorizationStatus() == .authorized { return true }
-    return await withCheckedContinuation { continuation in
-      SFSpeechRecognizer.requestAuthorization { status in
-        continuation.resume(returning: status == .authorized)
-      }
-    }
   }
 
   private static func ensureModelInstalled(

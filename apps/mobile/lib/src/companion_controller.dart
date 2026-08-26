@@ -14,6 +14,36 @@ void _ignoreConnectionState({required bool connected}) {}
 /// Reports whether the authenticated session is idle enough to change routes.
 typedef RouteControlsChanged = void Function({required bool enabled});
 
+final class _AzooKeyRequest {
+  const _AzooKeyRequest({
+    required this.sessionId,
+    required this.turnId,
+    required this.revision,
+    required this.text,
+    required this.isFinal,
+  });
+
+  final String sessionId;
+  final BigInt turnId;
+  final BigInt revision;
+  final String text;
+  final bool isFinal;
+}
+
+final class _TranslationRequest {
+  const _TranslationRequest({
+    required this.sessionId,
+    required this.turnId,
+    required this.revision,
+    required this.text,
+  });
+
+  final String sessionId;
+  final BigInt turnId;
+  final BigInt revision;
+  final String text;
+}
+
 /// Routes revision-scoped commands and stage results between Native and Mobile.
 final class CompanionController {
   /// Starts listening to [transport] and [processing] immediately.
@@ -76,10 +106,36 @@ final class CompanionController {
   Future<void> _commandTail = Future<void>.value();
   bool _mobileAsrStarting = false;
   bool _mobileAsrActive = false;
+  bool _azooKeyRunning = false;
+  bool _translationRunning = false;
   bool _translationEnabled = true;
+  _AzooKeyRequest? _pendingAzooKey;
+  _TranslationRequest? _pendingTranslation;
+
+  /// Stops subscriptions after the transport has already failed.
+  ///
+  /// The transport cancellation is deliberately not awaited because this can
+  /// be called from that subscription's own `onError` callback.
+  void disposeAfterTransportFailure() {
+    final transportSubscription = _transportSubscription;
+    final processingSubscription = _processingSubscription;
+    _transportSubscription = null;
+    _processingSubscription = null;
+    if (transportSubscription != null) {
+      unawaited(transportSubscription.cancel());
+    }
+    if (processingSubscription != null) {
+      unawaited(processingSubscription.cancel());
+    }
+    _pendingAzooKey = null;
+    _pendingTranslation = null;
+    unawaited(processing.cancel());
+  }
 
   /// Stops subscriptions, platform processing, and the transport session.
   Future<void> dispose() async {
+    _pendingAzooKey = null;
+    _pendingTranslation = null;
     await _transportSubscription?.cancel();
     await _processingSubscription?.cancel();
     await processing.cancel();
@@ -199,12 +255,14 @@ final class CompanionController {
             !_acceptRevision(turnId, revision)) {
           return;
         }
-        await _runAzooKey(
-          sessionId: sessionId,
-          turnId: turnId,
-          revision: revision,
-          text: text,
-          isFinal: isFinal,
+        _scheduleAzooKey(
+          _AzooKeyRequest(
+            sessionId: sessionId,
+            turnId: turnId,
+            revision: revision,
+            text: text,
+            isFinal: isFinal,
+          ),
         );
       case DesktopCommand_RunTranslation(
         :final sessionId,
@@ -218,23 +276,27 @@ final class CompanionController {
             !_acceptRevision(turnId, revision)) {
           return;
         }
-        await _runTranslation(
-          sessionId: sessionId,
-          turnId: turnId,
-          revision: revision,
-          text: sourceText,
+        _scheduleTranslation(
+          _TranslationRequest(
+            sessionId: sessionId,
+            turnId: turnId,
+            revision: revision,
+            text: sourceText,
+          ),
         );
       case DesktopCommand_SetTranslationEnabled(:final enabled):
         _translationEnabled = enabled;
         if (!enabled) onTranslation('');
       case DesktopCommand_StopSession():
-        onRouteControlsEnabled(enabled: true);
         _mobileAsrStarting = false;
         _mobileAsrActive = false;
         _pendingPcm.clear();
+        _pendingAzooKey = null;
+        _pendingTranslation = null;
         _latestRevisionByTurn.clear();
         _asrBaseRevisionByTurn.clear();
         await processing.cancel();
+        onRouteControlsEnabled(enabled: true);
         onStatus('デスクトップがセッションを停止しました');
       case DesktopCommand_Ping():
         // WebSocket ping/pong already keeps the connection alive. The control
@@ -270,12 +332,13 @@ final class CompanionController {
             isFinal: isFinal,
           ),
         );
-        if (shouldContinueOnMobile(
-          route: route,
-          completedStage: ProcessingStage.asr,
-        )) {
-          unawaited(
-            _runAzooKey(
+        if (isFinal &&
+            shouldContinueOnMobile(
+              route: route,
+              completedStage: ProcessingStage.asr,
+            )) {
+          _scheduleAzooKey(
+            _AzooKeyRequest(
               sessionId: sessionId,
               turnId: turnId,
               revision: outputRevision,
@@ -287,6 +350,28 @@ final class CompanionController {
       case ProcessingErrorEvent(:final stage, :final message):
         onStatus('$stage エラー: $message');
     }
+  }
+
+  void _scheduleAzooKey(_AzooKeyRequest request) {
+    _pendingAzooKey = request;
+    if (_azooKeyRunning) return;
+    _azooKeyRunning = true;
+    unawaited(_drainAzooKey());
+  }
+
+  Future<void> _drainAzooKey() async {
+    while (_pendingAzooKey != null) {
+      final request = _pendingAzooKey!;
+      _pendingAzooKey = null;
+      await _runAzooKey(
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+        revision: request.revision,
+        text: request.text,
+        isFinal: request.isFinal,
+      );
+    }
+    _azooKeyRunning = false;
   }
 
   Future<void> _runAzooKey({
@@ -311,20 +396,44 @@ final class CompanionController {
         ),
       );
       if (_translationEnabled &&
+          isFinal &&
           shouldContinueOnMobile(
             route: route,
             completedStage: ProcessingStage.azookey,
           )) {
-        await _runTranslation(
-          sessionId: sessionId,
-          turnId: turnId,
-          revision: revision,
-          text: output.text,
+        _scheduleTranslation(
+          _TranslationRequest(
+            sessionId: sessionId,
+            turnId: turnId,
+            revision: revision,
+            text: output.text,
+          ),
         );
       }
     } on Object catch (error) {
       onStatus('AzooKey エラー: $error');
     }
+  }
+
+  void _scheduleTranslation(_TranslationRequest request) {
+    _pendingTranslation = request;
+    if (_translationRunning) return;
+    _translationRunning = true;
+    unawaited(_drainTranslation());
+  }
+
+  Future<void> _drainTranslation() async {
+    while (_pendingTranslation != null) {
+      final request = _pendingTranslation!;
+      _pendingTranslation = null;
+      await _runTranslation(
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+        revision: request.revision,
+        text: request.text,
+      );
+    }
+    _translationRunning = false;
   }
 
   Future<void> _runTranslation({
@@ -362,6 +471,10 @@ final class CompanionController {
     _mobileAsrStarting = false;
     _mobileAsrActive = false;
     _pendingPcm.clear();
+    _pendingAzooKey = null;
+    _pendingTranslation = null;
+    _latestRevisionByTurn.clear();
+    _asrBaseRevisionByTurn.clear();
     await onRouteRequested(nextRoute);
     route = nextRoute;
   }

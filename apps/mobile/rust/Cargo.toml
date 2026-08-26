@@ -7,15 +7,34 @@ edition = "2021"
 crate-type = ["cdylib", "rlib", "staticlib"]
 
 [features]
-default = ["flutter"]
+default = ["flutter", "mobile-gguf", "mobile-quickmt", "mobile-rust-asr"]
 flutter = ["dep:flutter_rust_bridge"]
+mobile-gguf = ["dep:candle-core", "dep:caption-bridge-zenz-verifier"]
+mobile-quickmt = ["dep:ct2rs"]
+mobile-rust-asr = ["dep:sherpa-onnx"]
 
 [dependencies]
 caption-bridge-azookey-rust = { path = "../../../packages/azookey-rust" }
+caption-bridge-zenz-verifier = { path = "../../../packages/zenz-verifier-rust", features = ["candle"], optional = true }
+candle-core = { version = "0.11", optional = true }
 flate2 = "1"
 flutter_rust_bridge = { version = "=2.13.0", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["static"], optional = true }
+
+[target.'cfg(any(target_arch = "aarch64", target_arch = "arm"))'.dependencies]
+ct2rs = { version = "=0.10.0", default-features = false, features = ["ruy", "sentencepiece"], optional = true }
+
+[target.'cfg(not(any(target_arch = "aarch64", target_arch = "arm")))'.dependencies]
+ct2rs = { version = "=0.10.0", default-features = false, features = ["dnnl", "sentencepiece"], optional = true }
+
+[patch.crates-io]
+ct2rs = { path = "vendor/ct2rs" }
+sentencepiece-sys = { path = "vendor/sentencepiece-sys" }
+sherpa-onnx-sys = { path = "vendor/sherpa-onnx-sys" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

@@ -7,11 +7,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kotoba_beacon_companion/src/companion_connection.dart';
 import 'package:kotoba_beacon_companion/src/companion_controller.dart';
 import 'package:kotoba_beacon_companion/src/native_processing.dart';
-import 'package:kotoba_beacon_companion/src/rust/api/simple.dart';
+import 'package:kotoba_beacon_companion/src/rust/api/simple.dart'
+    hide defaultPipelineRoute;
 
 import 'rust_test_library.dart';
 
 const _processingChannel = MethodChannel('kotoba_beacon/processing');
+
+const _allMobileRoute = PipelineRoute(
+  asr: ExecutionDevice.mobile,
+  azookey: ExecutionDevice.mobile,
+  translation: ExecutionDevice.mobile,
+);
+
+PipelineRoute defaultPipelineRoute() => _allMobileRoute;
 
 const _testCapabilities = MobileCapabilities(
   deviceId: 'android-test-1',
@@ -23,6 +32,7 @@ const _testCapabilities = MobileCapabilities(
 );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(_initializeEndToEndTest);
   test(
     'WebSocket transport rejects non-LAN endpoint schemes',
@@ -303,6 +313,23 @@ final class _EndToEndProcessing implements ProcessingBackend {
   Stream<ProcessingEvent> get events => _events.stream;
 
   @override
+  Future<void> configureAsrProvider(MobileAsrProvider provider) async {}
+
+  @override
+  Future<void> configureTranslationProvider(
+    MobileTranslationProvider provider,
+  ) async {}
+
+  @override
+  Future<ProcessingProviderAvailability> providerAvailability() async =>
+      const ProcessingProviderAvailability(
+        speechAnalyzer: true,
+        sfSpeechRecognizer: true,
+        rustSherpaOnnx: true,
+        translationSession: true,
+      );
+
+  @override
   Future<void> prepareAsr(String locale) async {}
 
   @override
@@ -339,6 +366,9 @@ final class _EndToEndProcessing implements ProcessingBackend {
 
   @override
   Future<MobileCapabilities> capabilities() async => _testCapabilities;
+
+  @override
+  Future<void> releaseTranslation() async {}
 
   @override
   Future<void> cancel() async {}

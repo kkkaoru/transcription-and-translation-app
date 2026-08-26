@@ -25,6 +25,9 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -48,6 +51,5 @@ flutter {
 
 dependencies {
     implementation("com.google.mlkit:genai-speech-recognition:1.0.0-alpha1")
-    implementation("com.google.mlkit:translate:17.0.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 }
