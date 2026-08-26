@@ -9,6 +9,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::label::Label;
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::switch::Switch;
 use gpui_component::{
     h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, StyledExt as _,
@@ -179,42 +180,57 @@ pub fn render_style<V: 'static>(
         persist_error,
     } = state;
 
-    let mut profile_buttons = h_flex().flex_wrap().gap_2();
-    for profile in profiles {
-        let id = profile.id.clone();
-        let label = if profile.id == selected_profile_id {
-            format!("✓ {}", profile.name)
-        } else {
-            profile.name.clone()
-        };
-        profile_buttons = profile_buttons.child(button(
-            format!("style-profile-{}", profile.id),
-            label,
-            cx.listener(move |view, _event, _window, _cx| (callbacks.on_select_profile)(view, &id)),
-        ));
-    }
-    let profiles = card(cx)
-        .flex_shrink_0()
-        .child(heading(text(language, TextKey::StyleProfiles)))
-        .child(profile_buttons)
-        .child(
-            h_flex()
-                .flex_wrap()
-                .gap_2()
-                .child(button(
-                    "style-profile-add",
-                    text(language, TextKey::AddStyle),
-                    cx.listener(move |view, _event, _window, _cx| (callbacks.on_add_profile)(view)),
+    let selected_profile_name = profiles
+        .iter()
+        .find(|profile| profile.id == selected_profile_id)
+        .map(|profile| profile.name.clone())
+        .unwrap_or_default();
+    let profile_options = profiles
+        .iter()
+        .map(|profile| {
+            (profile.id.clone(), profile.name.clone(), profile.id == selected_profile_id)
+        })
+        .collect::<Vec<_>>();
+    let view = cx.entity();
+    let on_select_profile = callbacks.on_select_profile;
+    let profile_select = Button::new("style-profile-select")
+        .w_56()
+        .label(selected_profile_name)
+        .dropdown_caret(true)
+        .dropdown_menu(move |menu, _window, _cx| {
+            profile_options.iter().fold(menu, |menu, (id, name, selected)| {
+                let id = id.clone();
+                let view = view.clone();
+                menu.item(PopupMenuItem::new(name.clone()).checked(*selected).on_click(
+                    move |_event, _window, cx| {
+                        view.update(cx, |view, cx| {
+                            on_select_profile(view, &id);
+                            cx.notify();
+                        });
+                    },
                 ))
-                .child(
-                    Button::new("style-profile-delete")
-                        .danger()
-                        .label(text(language, TextKey::DeleteStyle))
-                        .on_click(cx.listener(move |view, _event, _window, _cx| {
-                            (callbacks.on_delete_profile)(view);
-                        })),
-                ),
-        );
+            })
+        });
+    let profiles = card(cx).p_2().flex_shrink_0().child(
+        h_flex()
+            .items_center()
+            .gap_2()
+            .child(heading(text(language, TextKey::StyleProfiles)))
+            .child(profile_select)
+            .child(button(
+                "style-profile-add",
+                text(language, TextKey::AddStyle),
+                cx.listener(move |view, _event, _window, _cx| (callbacks.on_add_profile)(view)),
+            ))
+            .child(
+                Button::new("style-profile-delete")
+                    .danger()
+                    .label(text(language, TextKey::DeleteStyle))
+                    .on_click(cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_delete_profile)(view);
+                    })),
+            ),
+    );
 
     let preview_image = div()
         .w(px(PREVIEW_WIDTH_PX))
