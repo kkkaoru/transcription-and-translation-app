@@ -1,7 +1,7 @@
 //! Capture-output configuration and Browser Source links.
 
 use gpui::prelude::*;
-use gpui::{Context, IntoElement};
+use gpui::{black, white, Context, IntoElement};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::switch::Switch;
 use gpui_component::{h_flex, v_flex, Selectable as _};
@@ -9,7 +9,7 @@ use gpui_component::{h_flex, v_flex, Selectable as _};
 use crate::domain::{NativeAppSettings, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
 use crate::style::parse_rgb;
-use crate::ui::{card, error_line, heading, selectable_text};
+use crate::ui::{card, error_line, heading};
 
 const CHROMA_KEY_COLORS: &[&str] = &["#00ff00", "#0000ff", "#ff00ff", "#000000", "#ffffff"];
 
@@ -30,8 +30,11 @@ pub fn render_output<V: 'static>(
     let language: UiLanguage = settings.ui_language;
     let background_colors = CHROMA_KEY_COLORS.iter().map(|color| {
         let value = (*color).to_string();
+        let foreground = if matches!(*color, "#0000ff" | "#000000") { white() } else { black() };
         Button::new(format!("output-background-{color}"))
             .label(color.to_uppercase())
+            .bg(parse_rgb(color))
+            .text_color(foreground)
             .selected(style.capture_background_color.eq_ignore_ascii_case(color))
             .toggled(style.capture_background_color.eq_ignore_ascii_case(color))
             .on_click(cx.listener(move |view, _event, _window, _cx| {
@@ -64,10 +67,6 @@ pub fn render_output<V: 'static>(
                 .gap_2()
                 .child(heading(text(language, TextKey::CaptureBackground)))
                 .child(h_flex().flex_wrap().gap_2().children(background_colors))
-                .child(
-                    selectable_text(style.capture_background_color.to_uppercase())
-                        .text_color(parse_rgb(&style.capture_background_color)),
-                )
                 .child(
                     Switch::new("output-window-startup")
                         .label(text(language, TextKey::OutputWindowAtStartup))

@@ -2,18 +2,17 @@
 
 use gpui::prelude::*;
 use gpui::{Context, IntoElement};
-use gpui_component::button::{Button, ButtonGroup};
+use gpui_component::button::Button;
 use gpui_component::group_box::{GroupBox, GroupBoxVariants as _};
-use gpui_component::label::Label;
 use gpui_component::switch::Switch;
-use gpui_component::{h_flex, v_flex, Selectable as _, StyledExt as _};
+use gpui_component::{h_flex, v_flex, Disableable as _, Selectable as _, StyledExt as _};
 use rust_lib_kotoba_beacon_companion::api::simple::{
     ExecutionDevice, MobileCapabilities, PipelineRoute,
 };
 
 use crate::domain::{NativeAppSettings, UiLanguage, BUILD_ID, RECOGNITION_MODE_LABEL};
 use crate::i18n::{text, TextKey};
-use crate::ui::{button, card, error_line, heading, muted, selectable_text};
+use crate::ui::{card, error_line, heading, muted, selectable_text};
 
 pub struct SettingsRuntimeInfo<'a> {
     pub translation_model_installed: bool,
@@ -24,7 +23,6 @@ pub struct SettingsRuntimeInfo<'a> {
     pub companion_session_id: Option<&'a str>,
     pub companion_route: Option<PipelineRoute>,
     pub companion_capabilities: Option<&'a MobileCapabilities>,
-    pub companion_saved_devices: usize,
     pub persist_error: Option<&'a str>,
 }
 
@@ -34,9 +32,7 @@ pub struct SettingsCallbacks<V> {
     pub on_toggle_translation: fn(&mut V),
     pub on_timeout: fn(&mut V, u64),
     pub on_toggle_syphon: fn(&mut V),
-    pub on_toggle_companion_asr: fn(&mut V),
-    pub on_toggle_companion_azookey: fn(&mut V),
-    pub on_toggle_companion_translation: fn(&mut V),
+    pub on_toggle_companion: fn(&mut V),
     pub on_copy_companion_endpoint: fn(&mut V, &mut Context<V>),
     pub on_copy_companion_token: fn(&mut V, &mut Context<V>),
 }
@@ -49,6 +45,8 @@ pub fn render_settings<V: 'static>(
     callbacks: SettingsCallbacks<V>,
 ) -> impl IntoElement {
     let language = settings.ui_language;
+    let companion_endpoint = runtime.companion_endpoint.map(str::to_string);
+    let companion_token = runtime.companion_pairing_token.map(str::to_string);
     let content = card(cx)
         .flex_shrink_0()
         .child(
@@ -124,43 +122,28 @@ pub fn render_settings<V: 'static>(
             GroupBox::new().outline().title(text(language, TextKey::MobileCompanion)).child(
                 v_flex()
                     .gap_3()
-                    .child(muted(text(language, TextKey::ProcessingAssignment), cx))
-                    .child(stage_location_control(
-                        "companion-asr",
-                        "ASR",
-                        language,
-                        settings.companion_asr_on_mobile,
-                        cx,
-                        callbacks.on_toggle_companion_asr,
-                    ))
-                    .child(stage_location_control(
-                        "companion-azookey",
-                        "AzooKey",
-                        language,
-                        settings.companion_azookey_on_mobile,
-                        cx,
-                        callbacks.on_toggle_companion_azookey,
-                    ))
-                    .child(stage_location_control(
-                        "companion-translation",
-                        text(language, TextKey::Translation),
-                        language,
-                        settings.companion_translation_on_mobile,
-                        cx,
-                        callbacks.on_toggle_companion_translation,
-                    ))
-                    .when_some(runtime.companion_endpoint.map(str::to_string), |this, endpoint| {
-                        this.child(
-                            h_flex()
-                                .gap_3()
-                                .child(button(
-                                    "copy-companion-endpoint",
-                                    text(language, TextKey::CopyLanEndpoint),
-                                    cx.listener(move |view, _event, _window, cx| {
+                    .child(
+                        Switch::new("settings-mobile-companion-enabled")
+                            .label(text(language, TextKey::MobileCompanion))
+                            .checked(settings.companion_enabled)
+                            .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                                (callbacks.on_toggle_companion)(view);
+                            })),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                Button::new("copy-companion-endpoint")
+                                    .label(text(language, TextKey::CopyLanEndpoint))
+                                    .disabled(!settings.companion_enabled)
+                                    .on_click(cx.listener(move |view, _event, _window, cx| {
                                         (callbacks.on_copy_companion_endpoint)(view, cx);
-                                    }),
-                                ))
-                                .when(show_details, |this| {
+                                    })),
+                            )
+                            .when_some(
+                                show_details.then_some(companion_endpoint).flatten(),
+                                |this, endpoint| {
                                     this.child(
                                         selectable_text(format!(
                                             "{}: {endpoint}",
@@ -168,33 +151,32 @@ pub fn render_settings<V: 'static>(
                                         ))
                                         .text_sm(),
                                     )
-                                }),
-                        )
-                    })
-                    .when_some(
-                        runtime.companion_pairing_token.map(str::to_string),
-                        |this, token| {
-                            this.child(
-                                h_flex()
-                                    .gap_3()
-                                    .child(button(
-                                        "copy-companion-token",
-                                        text(language, TextKey::CopyPairingToken),
-                                        cx.listener(move |view, _event, _window, cx| {
-                                            (callbacks.on_copy_companion_token)(view, cx);
-                                        }),
-                                    ))
-                                    .when(show_details, |this| {
-                                        this.child(
-                                            selectable_text(format!(
-                                                "{}: {token}",
-                                                text(language, TextKey::PairingToken)
-                                            ))
-                                            .text_sm(),
-                                        )
-                                    }),
+                                },
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                Button::new("copy-companion-token")
+                                    .label(text(language, TextKey::CopyPairingToken))
+                                    .disabled(!settings.companion_enabled)
+                                    .on_click(cx.listener(move |view, _event, _window, cx| {
+                                        (callbacks.on_copy_companion_token)(view, cx);
+                                    })),
                             )
-                        },
+                            .when_some(
+                                show_details.then_some(companion_token).flatten(),
+                                |this, token| {
+                                    this.child(
+                                        selectable_text(format!(
+                                            "{}: {token}",
+                                            text(language, TextKey::PairingToken)
+                                        ))
+                                        .text_sm(),
+                                    )
+                                },
+                            ),
                     )
                     .when(show_details, |this| this.child(companion_status(runtime, language))),
             ),
@@ -238,40 +220,6 @@ pub fn render_settings<V: 'static>(
     v_flex().id("settings-scroll").size_full().min_h_0().overflow_y_scroll().pb_3().child(content)
 }
 
-fn stage_location_control<V: 'static>(
-    id: &'static str,
-    stage: &'static str,
-    language: UiLanguage,
-    mobile: bool,
-    cx: &mut Context<V>,
-    on_change: fn(&mut V),
-) -> impl IntoElement {
-    h_flex().gap_3().child(Label::new(stage).w_24().font_semibold()).child(
-        ButtonGroup::new(id)
-            .w_56()
-            .outline()
-            .on_click(cx.listener(move |view, selected: &Vec<usize>, _window, _cx| {
-                if selected.first().is_some_and(|index| (*index == 1) != mobile) {
-                    on_change(view);
-                }
-            }))
-            .child(
-                Button::new(format!("{id}-desktop"))
-                    .flex_1()
-                    .label(text(language, TextKey::Desktop))
-                    .accessibility_id(format!("{stage}: {}", text(language, TextKey::Desktop)))
-                    .selected(!mobile),
-            )
-            .child(
-                Button::new(format!("{id}-mobile"))
-                    .flex_1()
-                    .label(text(language, TextKey::Mobile))
-                    .accessibility_id(format!("{stage}: {}", text(language, TextKey::Mobile)))
-                    .selected(mobile),
-            ),
-    )
-}
-
 fn companion_status(runtime: &SettingsRuntimeInfo<'_>, language: UiLanguage) -> impl IntoElement {
     let connection_status = text(
         language,
@@ -312,11 +260,6 @@ fn companion_status(runtime: &SettingsRuntimeInfo<'_>, language: UiLanguage) -> 
                 localized_pipeline_route(route, language)
             )))
         })
-        .child(selectable_text(format!(
-            "{}: {}",
-            text(language, TextKey::SavedDeviceRoutes),
-            runtime.companion_saved_devices,
-        )))
         .when_some(runtime.companion_capabilities.cloned(), |this, capabilities| {
             this.child(selectable_text(format!(
                 "{}: {}",

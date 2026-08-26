@@ -4,12 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use caption_bridge_dictionary::CustomDictionaryEntry;
-use rust_lib_kotoba_beacon_companion::api::simple::ExecutionDevice;
-
 use crate::app::{
-    capture_display_active, companion_route, delete_editable_text, erase_editable_text,
-    insert_editable_text, main_window_options, next_caret, output_window_options, previous_caret,
+    capture_display_active, delete_editable_text, erase_editable_text, insert_editable_text,
+    main_window_options, next_caret, output_window_options, previous_caret,
 };
 use crate::debug_surfaces::{
     caption_publication, prepare_caption_publication_with, CaptionPublication,
@@ -23,10 +20,11 @@ use crate::domain::{
     rasterize_live_caption_at_scale, rasterize_style_preview, replace_selected_dictionary_entries,
     save_app_settings, save_dictionary_catalog, save_style_catalog, save_style_settings,
     search_dictionary_entries, select_dictionary_profile, select_style_profile, AppTab,
-    CompanionDeviceSettings, NativeAppSettings, NativeDictionaryCatalog, NativeStyleCatalog,
-    NativeStyleSettings, UiLanguage, BINARY_NAME, BUILD_ID, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE,
+    NativeAppSettings, NativeDictionaryCatalog, NativeStyleCatalog, NativeStyleSettings,
+    UiLanguage, BINARY_NAME, BUILD_ID, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE,
     DEFAULT_PREVIEW_TRANSLATION, PRODUCT_NAME, TABS,
 };
+use caption_bridge_dictionary::CustomDictionaryEntry;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
@@ -456,7 +454,7 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(!ui.contains(".opacity("));
     assert!(live.contains("selectable_text(source).text_lg()"));
     assert!(live.contains(".primary()"));
-    assert!(settings.contains("Label::new(stage).w_24()"));
+    assert!(settings.contains("settings-mobile-companion-enabled"));
     assert!(dictionary.contains("danger_button("));
     assert!(style.contains("danger_button("));
     assert!(ui.contains("Button::new(id).outline().label(label)"));
@@ -522,7 +520,8 @@ fn live_tab_contains_capture_output_controls_without_html_display_fields() {
     assert!(output.contains("output-browser-copy-url"));
     assert!(output.contains("CHROMA_KEY_COLORS"));
     assert!(output.contains("capture_background_color"));
-    assert!(output.contains(".text_color(parse_rgb(&style.capture_background_color))"));
+    assert!(output.contains(".bg(parse_rgb(color))"));
+    assert!(!output.contains("selectable_text(style.capture_background_color"));
     assert!(!output.contains("output-browser-enabled"));
     assert!(!output.contains("NATIVE_BROWSER_SOURCE_HINT"));
     assert!(app.contains(".child(render_output("));
@@ -562,13 +561,14 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(settings.contains("overflow_y_scroll()"));
     assert!(settings.contains("settings-show-details"));
     assert!(settings.contains(".when(show_details"));
-    assert!(settings.contains("stage_location_control"));
-    assert!(settings.contains("ButtonGroup::new"));
-    assert!(settings.contains(".outline()"));
-    assert!(settings.contains("label(text(language, TextKey::Desktop))"));
-    assert!(settings.contains("label(text(language, TextKey::Mobile))"));
-    assert!(settings.contains(".selected(!mobile)"));
-    assert!(settings.contains(".selected(mobile)"));
+    assert!(settings.contains("settings-mobile-companion-enabled"));
+    assert!(settings.contains(".checked(settings.companion_enabled)"));
+    assert!(settings.contains(".disabled(!settings.companion_enabled)"));
+    assert!(!settings.contains("stage_location_control"));
+    assert!(!settings.contains("ButtonGroup::new"));
+    assert!(!settings.contains("companion_asr_on_mobile"));
+    assert!(!settings.contains("companion_azookey_on_mobile"));
+    assert!(!settings.contains("companion_translation_on_mobile"));
     assert!(settings.contains(".toggled(language == UiLanguage::Japanese)"));
     assert!(settings.contains(".toggled(settings.caption_timeout_ms == timeout)"));
     assert!(live.contains(".toggled(Some(device.id.as_str()) == selected_device_id)"));
@@ -578,13 +578,13 @@ fn settings_support_one_ui_language_at_a_time() {
         .find("TextKey::LanEndpoint")
         .map(|offset| endpoint_button + offset)
         .expect("detailed endpoint value");
-    assert!(settings[endpoint_button..endpoint_value].contains(".when(show_details"));
+    assert!(settings[endpoint_button..endpoint_value].contains("show_details.then_some"));
     let token_button = settings.find("copy-companion-token").expect("token copy button");
     let token_value = settings[token_button..]
         .find("TextKey::PairingToken")
         .map(|offset| token_button + offset)
         .expect("detailed token value");
-    assert!(settings[token_button..token_value].contains(".when(show_details"));
+    assert!(settings[token_button..token_value].contains("show_details.then_some"));
     assert!(settings.contains("TextKey::ConnectedAuthenticated"));
     assert!(settings.contains("TextKey::WaitingMobileCompanion"));
     assert!(settings.contains("TextKey::AutomaticDiscovery"));
@@ -644,19 +644,6 @@ fn old_style_json_migrates_with_defaults() {
 }
 
 #[test]
-fn companion_settings_map_each_stage_independently() {
-    let route = companion_route(&NativeAppSettings {
-        companion_asr_on_mobile: false,
-        companion_azookey_on_mobile: true,
-        companion_translation_on_mobile: false,
-        ..NativeAppSettings::default()
-    });
-    assert_eq!(route.asr, ExecutionDevice::Desktop);
-    assert_eq!(route.azookey, ExecutionDevice::Mobile);
-    assert_eq!(route.translation, ExecutionDevice::Desktop);
-}
-
-#[test]
 fn app_settings_round_trip_language_translation_timeout_and_output() {
     let dir = unique_temp_dir("settings");
     let settings = NativeAppSettings {
@@ -665,16 +652,10 @@ fn app_settings_round_trip_language_translation_timeout_and_output() {
         caption_timeout_ms: 7_000,
         caption_output_open_on_start: false,
         browser_source_enabled: false,
+        companion_enabled: false,
         companion_asr_on_mobile: false,
         companion_azookey_on_mobile: true,
         companion_translation_on_mobile: false,
-        companion_devices: vec![CompanionDeviceSettings {
-            device_id: "android-pixel-1".to_string(),
-            device_name: "Pixel".to_string(),
-            asr_on_mobile: true,
-            azookey_on_mobile: false,
-            translation_on_mobile: true,
-        }],
         ..NativeAppSettings::default()
     };
     save_app_settings(&dir, &settings).expect("save settings");
@@ -684,19 +665,16 @@ fn app_settings_round_trip_language_translation_timeout_and_output() {
     assert_eq!(loaded.caption_timeout_ms, 7_000);
     assert!(!loaded.caption_output_open_on_start);
     assert!(!loaded.browser_source_enabled);
-    assert!(!loaded.companion_asr_on_mobile);
+    assert!(!loaded.companion_enabled);
+    assert!(loaded.companion_asr_on_mobile);
     assert!(loaded.companion_azookey_on_mobile);
-    assert!(!loaded.companion_translation_on_mobile);
-    assert_eq!(
-        loaded.companion_devices,
-        vec![CompanionDeviceSettings {
-            device_id: "android-pixel-1".to_string(),
-            device_name: "Pixel".to_string(),
-            asr_on_mobile: true,
-            azookey_on_mobile: false,
-            translation_on_mobile: true,
-        }]
-    );
+    assert!(loaded.companion_translation_on_mobile);
+    assert!(loaded.companion_devices.is_empty());
+    let saved = fs::read_to_string(native_settings_path(&dir)).expect("read settings");
+    assert!(!saved.contains("companionAsrOnMobile"));
+    assert!(!saved.contains("companionAzookeyOnMobile"));
+    assert!(!saved.contains("companionTranslationOnMobile"));
+    assert!(!saved.contains("companionDevices"));
     assert!(native_settings_path(&dir).ends_with("settings.json"));
     fs::remove_dir_all(&dir).expect("cleanup");
 }

@@ -339,9 +339,14 @@ pub struct NativeAppSettings {
     pub caption_output_open_on_start: bool,
     pub browser_source_enabled: bool,
     pub syphon_enabled: bool,
+    pub companion_enabled: bool,
+    #[serde(skip_serializing)]
     pub companion_asr_on_mobile: bool,
+    #[serde(skip_serializing)]
     pub companion_azookey_on_mobile: bool,
+    #[serde(skip_serializing)]
     pub companion_translation_on_mobile: bool,
+    #[serde(skip_serializing)]
     pub companion_devices: Vec<CompanionDeviceSettings>,
 }
 
@@ -356,6 +361,7 @@ impl Default for NativeAppSettings {
             caption_output_open_on_start: true,
             browser_source_enabled: true,
             syphon_enabled: false,
+            companion_enabled: true,
             companion_asr_on_mobile: true,
             companion_azookey_on_mobile: true,
             companion_translation_on_mobile: true,

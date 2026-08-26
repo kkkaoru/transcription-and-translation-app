@@ -244,6 +244,15 @@ impl CaptureController {
         Ok(())
     }
 
+    pub fn disable_companion(&mut self) -> Result<(), String> {
+        if self.worker.is_some() {
+            return Err("Stop capture before disabling the mobile companion".to_string());
+        }
+        self.companion_server = None;
+        self.companion_route = default_pipeline_route();
+        Ok(())
+    }
+
     pub fn refresh_devices(&mut self) -> bool {
         let previous_selection = self.snapshot.selected_device_id.clone();
         let changed = match list_input_devices() {
