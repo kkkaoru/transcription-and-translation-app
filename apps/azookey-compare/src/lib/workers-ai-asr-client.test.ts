@@ -145,6 +145,28 @@ describe("workers-ai-asr-client", () => {
     });
   });
 
+  it("reports a Nova-3 language-script fallback to Whisper", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({
+        text: "ええ",
+        language: "ja",
+        model: "@cf/openai/whisper-large-v3-turbo",
+        requestedModel: "@cf/deepgram/nova-3",
+        asrModelFallback: "nova-3-unexpected-language-script",
+      }),
+    );
+
+    await expect(
+      transcribeWorkersAiAsr(workersAiAsrSmokeWavFile(), { language: "ja", fetchImpl }),
+    ).resolves.toMatchObject({
+      text: "ええ",
+      language: "ja",
+      model: "@cf/openai/whisper-large-v3-turbo",
+      requestedModel: "@cf/deepgram/nova-3",
+      asrModelFallback: "nova-3-unexpected-language-script",
+    });
+  });
+
   it("surfaces server errors without printing secrets", async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json(

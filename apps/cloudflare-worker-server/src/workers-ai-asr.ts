@@ -33,6 +33,11 @@ export const WORKERS_AI_ASR_MODEL = "@cf/deepgram/nova-3";
 export const WORKERS_AI_ASR_WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo";
 export type WorkersAiAsrModel = typeof WORKERS_AI_ASR_MODEL | typeof WORKERS_AI_ASR_WHISPER_MODEL;
 export const WORKERS_AI_ASR_LANGUAGE = "ja";
+export const WORKERS_AI_ASR_UNEXPECTED_SCRIPT_FALLBACK = "nova-3-unexpected-language-script";
+const JAPANESE_LANGUAGE = /^ja(?:-|$)/iu;
+const UNICODE_LETTER = /\p{Letter}/u;
+const JAPANESE_COMPATIBLE_LETTER =
+  /^[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]$/u;
 /** Browser Silero has already produced one complete utterance. */
 export const WORKERS_AI_ASR_CLIENT_SEGMENTATION = "client-silero-v1" as const;
 
@@ -79,11 +84,18 @@ export interface WorkersAiAsrEnvironment {
   WORKERS_AI_ASR_TIMEOUT_MS?: string;
 }
 
+export interface WorkersAiAsrModelFallback {
+  requestedModel: WorkersAiAsrModel;
+  model: WorkersAiAsrModel;
+  reason: typeof WORKERS_AI_ASR_UNEXPECTED_SCRIPT_FALLBACK;
+}
+
 export interface WorkersAiAsrTranscribeOptions {
   presegmented?: boolean;
   language?: string;
   autoDetectLanguage?: boolean;
   model?: WorkersAiAsrModel;
+  onModelFallback?: (fallback: WorkersAiAsrModelFallback) => void;
 }
 
 export interface WorkersAiAsrResponse {
@@ -140,6 +152,12 @@ const malformedResponse = (): GatewayError =>
     HTTP_BAD_GATEWAY,
     "asr_workers_ai_invalid_response",
     "Workers AI ASR response has no transcript field",
+  );
+
+/** Detect a provider result that cannot be Japanese despite an explicit ja hint. */
+export const hasUnexpectedJapaneseTranscriptScript = (transcript: string): boolean =>
+  [...transcript].some(
+    (character) => UNICODE_LETTER.test(character) && !JAPANESE_COMPATIBLE_LETTER.test(character),
   );
 
 const transcriptFromResult = (value: unknown, model: WorkersAiAsrModel): string => {
@@ -239,36 +257,68 @@ const withTimeout = async <T>(
   }
 };
 
-const transcribeUtterance = async (
-  runner: WorkersAiAsrRun,
-  pcm: Uint8Array,
-  timeoutMs: number,
-  model: WorkersAiAsrModel,
-  language: string | undefined,
-): Promise<string> => {
-  try {
-    const result = await withTimeout(
-      (signal) =>
-        runner(
-          model,
-          {
-            audio: {
-              body: wavBodyStream(pcm16ToWav(pcm)),
-              contentType: "audio/wav",
-            },
-            ...(language ? { language } : {}),
-            ...(model === WORKERS_AI_ASR_WHISPER_MODEL
-              ? { task: "transcribe", vad_filter: false, beam_size: 1 }
-              : {}),
+interface UtteranceTranscript {
+  text: string;
+  model: WorkersAiAsrModel;
+  fallback?: WorkersAiAsrModelFallback;
+}
+
+interface RunTranscriptionOptions {
+  runner: WorkersAiAsrRun;
+  pcm: Uint8Array;
+  timeoutMs: number;
+  model: WorkersAiAsrModel;
+  language?: string;
+}
+
+const runTranscriptionModel = async (options: RunTranscriptionOptions): Promise<string> => {
+  const result = await withTimeout(
+    (signal) =>
+      options.runner(
+        options.model,
+        {
+          audio: {
+            body: wavBodyStream(pcm16ToWav(options.pcm)),
+            contentType: "audio/wav",
           },
-          { signal },
-        ),
-      timeoutMs,
-    );
-    return transcriptFromResult(
-      result instanceof Response ? await resultFromRawResponse(result) : result,
-      model,
-    );
+          ...(options.language ? { language: options.language } : {}),
+          ...(options.model === WORKERS_AI_ASR_WHISPER_MODEL
+            ? { task: "transcribe", vad_filter: false, beam_size: 1 }
+            : {}),
+        },
+        { signal },
+      ),
+    options.timeoutMs,
+  );
+  return transcriptFromResult(
+    result instanceof Response ? await resultFromRawResponse(result) : result,
+    options.model,
+  );
+};
+
+const transcribeUtterance = async (
+  options: RunTranscriptionOptions,
+): Promise<UtteranceTranscript> => {
+  try {
+    const text = await runTranscriptionModel(options);
+    if (
+      options.model === WORKERS_AI_ASR_MODEL &&
+      options.language !== undefined &&
+      JAPANESE_LANGUAGE.test(options.language) &&
+      hasUnexpectedJapaneseTranscriptScript(text)
+    ) {
+      const fallback: WorkersAiAsrModelFallback = {
+        requestedModel: options.model,
+        model: WORKERS_AI_ASR_WHISPER_MODEL,
+        reason: WORKERS_AI_ASR_UNEXPECTED_SCRIPT_FALLBACK,
+      };
+      return {
+        text: await runTranscriptionModel({ ...options, model: fallback.model }),
+        model: fallback.model,
+        fallback,
+      };
+    }
+    return { text, model: options.model };
   } catch (error) {
     if (error instanceof GatewayError) {
       throw error;
@@ -338,14 +388,26 @@ export const createWorkersAiAsrTranscriber = (
     if (utterances.length === 0) {
       return postprocessWorkersAiAsrTranscript("").text;
     }
-    const transcripts = await utterances.reduce<Promise<string[]>>(async (previous, utterance) => {
-      const collected = await previous;
-      return [
-        ...collected,
-        await transcribeUtterance(runner, utterance.pcm, timeoutMs, model, language),
-      ];
-    }, Promise.resolve([]));
-    return postprocessWorkersAiAsrTranscript(transcripts.join("")).text;
+    const transcripts = await utterances.reduce<Promise<UtteranceTranscript[]>>(
+      async (previous, utterance) => {
+        const collected = await previous;
+        const transcript = await transcribeUtterance({
+          runner,
+          pcm: utterance.pcm,
+          timeoutMs,
+          model,
+          ...(language ? { language } : {}),
+        });
+        if (transcript.fallback) {
+          options.onModelFallback?.(transcript.fallback);
+        }
+        return [...collected, transcript];
+      },
+      Promise.resolve([]),
+    );
+    return postprocessWorkersAiAsrTranscript(
+      transcripts.map((transcript) => transcript.text).join(""),
+    ).text;
   };
 };
 
@@ -465,6 +527,7 @@ export const handleWorkersAiAsrTranscription = async (
     return jsonResponse(HTTP_BAD_REQUEST, { error: { code: "invalid_audio", message: detail } });
   }
   const transcribe = createWorkersAiAsrTranscriber(env, requestRun(options));
+  const modelFallbacks: WorkersAiAsrModelFallback[] = [];
   try {
     const processed = postprocessWorkersAiAsrTranscript(
       await transcribe(pcm, undefined, undefined, {
@@ -472,13 +535,18 @@ export const handleWorkersAiAsrTranscription = async (
         autoDetectLanguage: !language,
         ...(language ? { language } : {}),
         model,
+        onModelFallback: (fallback) => modelFallbacks.push(fallback),
       }),
     );
+    const fallback = modelFallbacks.at(-1);
     return jsonResponse(200, {
       text: processed.text,
       reading: processed.reading,
       language: language ?? "und",
-      model,
+      model: fallback?.model ?? model,
+      ...(fallback
+        ? { requestedModel: fallback.requestedModel, asrModelFallback: fallback.reason }
+        : {}),
       transport: "http",
       segmentation: presegmented ? WORKERS_AI_ASR_CLIENT_SEGMENTATION : "worker-energy-v1",
     });

@@ -88,6 +88,8 @@ export interface WorkersAiSpeechAsrPayload {
   reading: string;
   language: string;
   model: string;
+  requestedModel?: string;
+  asrModelFallback?: string;
   transport?: string;
   segmentation?: string;
 }
@@ -114,6 +116,12 @@ export const workersAiSpeechAsrPayload = (value: unknown): WorkersAiSpeechAsrPay
     reading: typeof value["reading"] === "string" ? value["reading"] : value["text"],
     language: typeof value["language"] === "string" ? value["language"] : "und",
     model: typeof value["model"] === "string" ? value["model"] : "@cf/deepgram/nova-3",
+    ...(typeof value["requestedModel"] === "string"
+      ? { requestedModel: value["requestedModel"] }
+      : {}),
+    ...(typeof value["asrModelFallback"] === "string"
+      ? { asrModelFallback: value["asrModelFallback"] }
+      : {}),
     ...(typeof value["transport"] === "string" ? { transport: value["transport"] } : {}),
     ...(typeof value["segmentation"] === "string" ? { segmentation: value["segmentation"] } : {}),
   };

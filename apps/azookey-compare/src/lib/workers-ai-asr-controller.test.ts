@@ -332,6 +332,31 @@ describe("WorkersAiAsrController VAD session", () => {
     controller.dispose();
   });
 
+  it("forwards ASR fallback metadata to the result UI", async () => {
+    installBrowser();
+    vi.mocked(transcribeWorkersAiAsr).mockResolvedValueOnce({
+      text: "ええ",
+      language: "ja",
+      model: "@cf/openai/whisper-large-v3-turbo",
+      requestedModel: "@cf/deepgram/nova-3",
+      asrModelFallback: "nova-3-unexpected-language-script",
+    });
+    const { controller, events } = await startController();
+
+    await controller.ingestVadFrame(LOUD_DB, START_MS);
+    await controller.ingestVadFrame(SILENT_DB, END_MS);
+
+    expect(events.onUtteranceFinal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "ええ",
+        model: "@cf/openai/whisper-large-v3-turbo",
+        requestedModel: "@cf/deepgram/nova-3",
+        asrModelFallback: "nova-3-unexpected-language-script",
+      }),
+    );
+    controller.dispose();
+  });
+
   it("keeps segmenting a second utterance while the first Cloudflare request is pending", async () => {
     installBrowser();
     let resolveFirst: ((value: { text: string }) => void) | undefined;

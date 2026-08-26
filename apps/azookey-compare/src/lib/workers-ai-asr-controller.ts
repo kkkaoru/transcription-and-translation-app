@@ -63,6 +63,8 @@ export interface WorkersAiAsrUtteranceFinal {
   pipeline?: string;
   logs?: WorkersAiPipelineLog[];
   model?: string;
+  requestedModel?: string;
+  asrModelFallback?: string;
   conversionModel?: BrowserConversionModel;
   containerProfile?: BrowserContainerProfile;
   usedCompletion?: boolean;
@@ -932,6 +934,8 @@ export class WorkersAiAsrController {
         ...(result.pipeline ? { pipeline: result.pipeline } : {}),
         ...(result.logs ? { logs: result.logs } : {}),
         ...(result.model ? { model: result.model } : {}),
+        ...(result.requestedModel ? { requestedModel: result.requestedModel } : {}),
+        ...(result.asrModelFallback ? { asrModelFallback: result.asrModelFallback } : {}),
         ...(result.conversionModel ? { conversionModel: result.conversionModel } : {}),
         ...(result.containerProfile ? { containerProfile: result.containerProfile } : {}),
         ...(typeof result.usedCompletion === "boolean"

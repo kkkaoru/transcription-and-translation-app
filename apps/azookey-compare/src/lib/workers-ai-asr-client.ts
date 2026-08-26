@@ -30,6 +30,8 @@ export interface WorkersAiAsrTranscriptionResult {
   reading?: string;
   language?: string;
   model?: string;
+  requestedModel?: string;
+  asrModelFallback?: string;
   transport?: string;
   segmentation?: string;
   convertedText?: string;
@@ -246,6 +248,8 @@ export const transcribeWorkersAiAsr = async (
     ...(body.reading ? { reading: body.reading } : {}),
     ...(body.language ? { language: body.language } : {}),
     ...(body.model ? { model: body.model } : {}),
+    ...(body.requestedModel ? { requestedModel: body.requestedModel } : {}),
+    ...(body.asrModelFallback ? { asrModelFallback: body.asrModelFallback } : {}),
     ...(body.transport ? { transport: body.transport } : {}),
     ...(body.segmentation ? { segmentation: body.segmentation } : {}),
     ...(body.convertedText ? { convertedText: body.convertedText } : {}),

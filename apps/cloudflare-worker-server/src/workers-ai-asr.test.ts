@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createWorkersAiAsrTranscriber,
   handleWorkersAiAsrTranscription,
+  hasUnexpectedJapaneseTranscriptScript,
   postprocessWorkersAiAsrTranscript,
   WORKERS_AI_ASR_CLIENT_SEGMENTATION,
   WORKERS_AI_ASR_DEFAULT_TIMEOUT_MS,
@@ -14,6 +15,7 @@ import {
   WORKERS_AI_ASR_MAX_TIMEOUT_MS,
   WORKERS_AI_ASR_MIN_TIMEOUT_MS,
   WORKERS_AI_ASR_MODEL,
+  WORKERS_AI_ASR_UNEXPECTED_SCRIPT_FALLBACK,
   WORKERS_AI_ASR_WHISPER_MODEL,
   type WorkersAiAsrRun,
   workersAiAsrTimeoutMs,
@@ -172,6 +174,62 @@ describe("Workers AI Nova-3 ASR adapter", () => {
       language: "en",
       model: "@cf/openai/whisper-large-v3-turbo",
     });
+  });
+
+  it("falls back from Nova-3 to Japanese Whisper when Nova emits an incompatible script", async () => {
+    expect(hasUnexpectedJapaneseTranscriptScript("مرحبا")).toBe(true);
+    expect(hasUnexpectedJapaneseTranscriptScript("こんにちは世界 OK 123")).toBe(false);
+    expect(hasUnexpectedJapaneseTranscriptScript("スーパーでVRChat")).toBe(false);
+    expect(hasUnexpectedJapaneseTranscriptScript("今日はOKです")).toBe(false);
+
+    const run = vi.fn<WorkersAiAsrRun>((model, input) => {
+      expect(input.language).toBe("ja");
+      return model === WORKERS_AI_ASR_MODEL
+        ? Promise.resolve(novaResult("مرحبا"))
+        : Promise.resolve({ text: "ええ" });
+    });
+    const form = new FormData();
+    form.set("file", wavFile());
+    form.set("language", "ja");
+    form.set("model", WORKERS_AI_ASR_MODEL);
+    form.set("segmentation", WORKERS_AI_ASR_CLIENT_SEGMENTATION);
+    const response = await handleWorkersAiAsrTranscription(
+      new Request(`https://worker.example${WORKERS_AI_ASR_HTTP_PATH}`, {
+        method: "POST",
+        body: form,
+      }),
+      {},
+      run,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      text: "ええ",
+      language: "ja",
+      model: WORKERS_AI_ASR_WHISPER_MODEL,
+      requestedModel: WORKERS_AI_ASR_MODEL,
+      asrModelFallback: WORKERS_AI_ASR_UNEXPECTED_SCRIPT_FALLBACK,
+    });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[1]?.[1]).toMatchObject({
+      language: "ja",
+      task: "transcribe",
+      vad_filter: false,
+      beam_size: 1,
+    });
+  });
+
+  it("does not fallback for auto-detected or explicitly non-Japanese Nova output", async () => {
+    const run = vi.fn<WorkersAiAsrRun>(() => Promise.resolve(novaResult("مرحبا")));
+    const transcribe = createWorkersAiAsrTranscriber({}, run);
+
+    await expect(
+      transcribe(pcm(), undefined, undefined, { autoDetectLanguage: true }),
+    ).resolves.toBe("مرحبا");
+    await expect(transcribe(pcm(), undefined, undefined, { language: "ar" })).resolves.toBe(
+      "مرحبا",
+    );
+    expect(run).toHaveBeenCalledTimes(2);
   });
 
   it("trusts browser Silero segmentation instead of applying the Worker RMS VAD twice", async () => {

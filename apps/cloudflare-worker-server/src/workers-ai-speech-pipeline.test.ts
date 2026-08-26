@@ -65,6 +65,23 @@ describe("Workers AI speech pipeline", () => {
       language: "und",
       model: "@cf/deepgram/nova-3",
     });
+    expect(
+      workersAiSpeechAsrPayload({
+        text: "ええ",
+        reading: "ええ",
+        language: "ja",
+        model: "@cf/openai/whisper-large-v3-turbo",
+        requestedModel: "@cf/deepgram/nova-3",
+        asrModelFallback: "nova-3-unexpected-language-script",
+      }),
+    ).toStrictEqual({
+      text: "ええ",
+      reading: "ええ",
+      language: "ja",
+      model: "@cf/openai/whisper-large-v3-turbo",
+      requestedModel: "@cf/deepgram/nova-3",
+      asrModelFallback: "nova-3-unexpected-language-script",
+    });
     expect(() => workersAiSpeechAsrPayload(null)).toThrow(
       "Workers AI ASR response is missing text",
     );

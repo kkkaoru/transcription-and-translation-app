@@ -29,6 +29,8 @@ interface PipelineResult {
   audioSeconds: number;
   pipeline: string;
   asrModel: string;
+  requestedAsrModel?: string;
+  asrModelFallback?: string;
   conversionModel: string;
   containerProfile?: BrowserContainerProfile;
   usedCompletion: boolean;
@@ -194,6 +196,8 @@ export default function ComparePage(): React.JSX.Element {
         audioSeconds: payload.audioSeconds,
         pipeline: payload.pipeline ?? "workers-ai-profiled-azookey-v4",
         asrModel: payload.model ?? "unknown",
+        ...(payload.requestedModel ? { requestedAsrModel: payload.requestedModel } : {}),
+        ...(payload.asrModelFallback ? { asrModelFallback: payload.asrModelFallback } : {}),
         conversionModel: payload.conversionModel ?? "not-run",
         ...(payload.containerProfile ? { containerProfile: payload.containerProfile } : {}),
         usedCompletion: payload.usedCompletion ?? false,
@@ -300,6 +304,12 @@ export default function ComparePage(): React.JSX.Element {
                 {result.asrModel} · {result.conversionModel} · 課金対象音声{" "}
                 {result.audioSeconds.toFixed(2)} 秒
               </small>
+              {result.asrModelFallback ? (
+                <small>
+                  ASR fallback: {result.requestedAsrModel ?? "Nova-3"} → {result.asrModel}
+                  （日本語と互換性のないscriptを検出）
+                </small>
+              ) : null}
               <small>
                 発話開始 {new Date(result.speechStartedAtMs).toLocaleTimeString("ja-JP")} · 発話終了{" "}
                 {new Date(result.speechEndedAtMs).toLocaleTimeString("ja-JP")} · 終了→結果{" "}
