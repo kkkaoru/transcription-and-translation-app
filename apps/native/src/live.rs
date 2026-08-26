@@ -5,7 +5,9 @@ use gpui::{relative, rgb, ClipboardItem, Context, IntoElement, SharedString};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::label::Label;
 use gpui_component::switch::Switch;
-use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _};
+use gpui_component::{
+    h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, StyledExt as _,
+};
 
 use crate::capture::CaptureController;
 use crate::domain::{format_rms, rms_level_color, rms_to_fraction, CaptureStatus, UiLanguage};
@@ -52,6 +54,7 @@ pub fn render_live<V: 'static>(
     let capturing = snapshot.status == CaptureStatus::Capturing;
     let active = matches!(snapshot.status, CaptureStatus::Capturing | CaptureStatus::Stopping);
     let translation_enabled = capture.translation_enabled();
+    let status_label = capture_status_label(snapshot.status, language);
 
     let trigger = Button::new("live-device-select")
         .label(selected)
@@ -130,7 +133,9 @@ pub fn render_live<V: 'static>(
         )
         .child(
             h_flex()
+                .flex_wrap()
                 .gap_2()
+                .child(Label::new(status_label).font_semibold())
                 .child(
                     Button::new("live-start")
                         .primary()
@@ -175,6 +180,19 @@ pub fn render_live<V: 'static>(
         })
 }
 
+fn capture_status_label(status: CaptureStatus, language: UiLanguage) -> &'static str {
+    match (status, language) {
+        (CaptureStatus::Idle, UiLanguage::Japanese) => "状態: 待機中",
+        (CaptureStatus::Capturing, UiLanguage::Japanese) => "状態: 収録中",
+        (CaptureStatus::Stopping, UiLanguage::Japanese) => "状態: 停止処理中",
+        (CaptureStatus::Error, UiLanguage::Japanese) => "状態: エラー",
+        (CaptureStatus::Idle, UiLanguage::English) => "Status: Idle",
+        (CaptureStatus::Capturing, UiLanguage::English) => "Status: Capturing",
+        (CaptureStatus::Stopping, UiLanguage::English) => "Status: Stopping",
+        (CaptureStatus::Error, UiLanguage::English) => "Status: Error",
+    }
+}
+
 fn caption_or_placeholder(value: &str, language: UiLanguage) -> SharedString {
     if value.is_empty() {
         text(language, TextKey::NoCaption).into()
@@ -198,6 +216,19 @@ mod tests {
         METER_CLIP_COLOR, METER_CLIP_THRESHOLD_DB, METER_MAX_DB, METER_MIN_DB, METER_NORMAL_COLOR,
         METER_NORMAL_THRESHOLD_DB, METER_QUIET_COLOR,
     };
+
+    #[test]
+    fn capture_status_is_expressed_in_text_for_every_state() {
+        for status in [
+            CaptureStatus::Idle,
+            CaptureStatus::Capturing,
+            CaptureStatus::Stopping,
+            CaptureStatus::Error,
+        ] {
+            assert!(capture_status_label(status, UiLanguage::English).starts_with("Status: "));
+            assert!(capture_status_label(status, UiLanguage::Japanese).starts_with("状態: "));
+        }
+    }
 
     #[test]
     fn rms_fraction_clamps_to_zero_and_one() {

@@ -114,6 +114,21 @@ enum FocusField {
     PreviewTranslation,
 }
 
+fn adjacent_text_field(field: FocusField, reverse: bool) -> Option<FocusField> {
+    match (field, reverse) {
+        (FocusField::Query | FocusField::Font, true)
+        | (FocusField::Word | FocusField::PreviewTranslation, false) => None,
+        (FocusField::Query, false) => Some(FocusField::Reading),
+        (FocusField::Reading, false) => Some(FocusField::Word),
+        (FocusField::Reading, true) => Some(FocusField::Query),
+        (FocusField::Word, true) => Some(FocusField::Reading),
+        (FocusField::Font, false) => Some(FocusField::PreviewSource),
+        (FocusField::PreviewSource, false) => Some(FocusField::PreviewTranslation),
+        (FocusField::PreviewSource, true) => Some(FocusField::Font),
+        (FocusField::PreviewTranslation, true) => Some(FocusField::PreviewSource),
+    }
+}
+
 impl CaptionOutputView {
     fn new(style: NativeStyleSettings, scale_factor: f32) -> Self {
         let image = render_image(rasterize_live_caption_at_scale(&style, "", "", scale_factor));
@@ -574,7 +589,7 @@ impl MainView {
         self.persist_dictionary(entries);
     }
 
-    fn apply_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn apply_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let accepts_input = match self.tab {
             AppTab::Dictionary => matches!(
                 self.focused_field,
@@ -590,15 +605,16 @@ impl MainView {
             return;
         }
         if event.keystroke.key == "tab" {
-            self.focused_field = match self.focused_field {
-                FocusField::Query => FocusField::Reading,
-                FocusField::Reading => FocusField::Word,
-                FocusField::Word => FocusField::Query,
-                FocusField::Font => FocusField::PreviewSource,
-                FocusField::PreviewSource => FocusField::PreviewTranslation,
-                FocusField::PreviewTranslation => FocusField::Font,
-            };
-            cx.notify();
+            let reverse = event.keystroke.modifiers.shift;
+            if let Some(next) = adjacent_text_field(self.focused_field, reverse) {
+                self.focused_field = next;
+                cx.notify();
+            } else if reverse {
+                window.focus_prev(cx);
+            } else {
+                window.focus_next(cx);
+            }
+            cx.stop_propagation();
             return;
         }
         self.apply_focused_text_key(event);
@@ -968,7 +984,7 @@ impl Render for MainView {
         sky_page(cx)
             .id("main-root")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|view, event, _window, cx| view.apply_key(event, cx)))
+            .on_key_down(cx.listener(|view, event, window, cx| view.apply_key(event, window, cx)))
             .children(
                 (!self.capture_view_compact)
                     .then(|| tab_bar(self.tab, language, cx, |view, tab| view.select_tab(tab))),
@@ -1351,4 +1367,31 @@ pub fn run() {
         .detach();
     });
     drop(instance_guard);
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::{adjacent_text_field, FocusField};
+
+    #[test]
+    fn tab_navigation_leaves_custom_text_groups_at_each_edge() {
+        assert_eq!(adjacent_text_field(FocusField::Query, true), None);
+        assert_eq!(adjacent_text_field(FocusField::Word, false), None);
+        assert_eq!(adjacent_text_field(FocusField::Font, true), None);
+        assert_eq!(adjacent_text_field(FocusField::PreviewTranslation, false), None);
+    }
+
+    #[test]
+    fn tab_navigation_moves_forward_and_backward_between_custom_fields() {
+        assert_eq!(adjacent_text_field(FocusField::Query, false), Some(FocusField::Reading));
+        assert_eq!(adjacent_text_field(FocusField::Reading, true), Some(FocusField::Query));
+        assert_eq!(
+            adjacent_text_field(FocusField::PreviewSource, false),
+            Some(FocusField::PreviewTranslation)
+        );
+        assert_eq!(
+            adjacent_text_field(FocusField::PreviewTranslation, true),
+            Some(FocusField::PreviewSource)
+        );
+    }
 }
