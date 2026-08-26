@@ -2,10 +2,14 @@
 
 use gpui::prelude::*;
 use gpui::{Context, IntoElement};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::label::Label;
+use gpui_component::switch::Switch;
+use gpui_component::{h_flex, v_flex, StyledExt as _};
 
 use crate::domain::{NativeAppSettings, UiLanguage, NATIVE_BROWSER_SOURCE_HINT};
 use crate::i18n::{text, TextKey};
-use crate::ui::{button, card, error_line, heading, state_button};
+use crate::ui::{card, error_line, heading};
 
 pub struct OutputCallbacks<V> {
     pub on_open_window: fn(&mut V),
@@ -22,47 +26,52 @@ pub fn render_output<V: 'static>(
     callbacks: OutputCallbacks<V>,
 ) -> impl IntoElement {
     let language: UiLanguage = settings.ui_language;
-    card()
+    card(cx)
         .child(heading(text(language, TextKey::Output)))
-        .child(button(
-            "output-window-open",
-            text(language, TextKey::OpenOutputWindow),
-            cx.listener(move |view, _event, _window, _cx| (callbacks.on_open_window)(view)),
-        ))
-        .child(state_button(
-            "output-window-startup",
-            format!(
-                "{}: {}",
-                text(language, TextKey::OutputWindowAtStartup),
-                text(
-                    language,
-                    if settings.caption_output_open_on_start { TextKey::On } else { TextKey::Off }
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new("output-window-open")
+                        .primary()
+                        .label(text(language, TextKey::OpenOutputWindow))
+                        .on_click(cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_open_window)(view);
+                        })),
                 )
-            ),
-            settings.caption_output_open_on_start,
-            cx.listener(move |view, _event, _window, _cx| {
-                (callbacks.on_toggle_window_startup)(view)
-            }),
-        ))
-        .child(state_button(
-            "output-browser-enabled",
-            format!(
-                "{}: {}",
-                text(language, TextKey::BrowserSource),
-                text(language, if browser_running { TextKey::On } else { TextKey::Off })
-            ),
-            browser_running,
-            cx.listener(move |view, _event, _window, _cx| (callbacks.on_toggle_browser)(view)),
-        ))
-        .child(button(
-            "output-browser-url",
-            NATIVE_BROWSER_SOURCE_HINT,
-            cx.listener(move |view, _event, _window, cx| (callbacks.on_copy_url)(view, cx)),
-        ))
-        .child(button(
-            "output-browser-copy-url",
-            text(language, TextKey::CopyBrowserUrl),
-            cx.listener(move |view, _event, _window, cx| (callbacks.on_copy_url)(view, cx)),
-        ))
+                .child(
+                    Button::new("output-browser-copy-url")
+                        .label(text(language, TextKey::CopyBrowserUrl))
+                        .on_click(cx.listener(move |view, _event, _window, cx| {
+                            (callbacks.on_copy_url)(view, cx);
+                        })),
+                ),
+        )
+        .child(
+            v_flex()
+                .gap_3()
+                .child(
+                    Switch::new("output-window-startup")
+                        .label(text(language, TextKey::OutputWindowAtStartup))
+                        .checked(settings.caption_output_open_on_start)
+                        .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                            (callbacks.on_toggle_window_startup)(view);
+                        })),
+                )
+                .child(
+                    Switch::new("output-browser-enabled")
+                        .label(text(language, TextKey::BrowserSource))
+                        .checked(browser_running)
+                        .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                            (callbacks.on_toggle_browser)(view);
+                        })),
+                ),
+        )
+        .child(
+            v_flex()
+                .gap_1()
+                .child(Label::new(text(language, TextKey::BrowserSource)).font_semibold())
+                .child(Label::new(NATIVE_BROWSER_SOURCE_HINT).text_sm()),
+        )
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
 }

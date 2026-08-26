@@ -4,9 +4,13 @@ use std::{rc::Rc, sync::Arc};
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, relative, rgb, Bounds, Context, ElementId, IntoElement, MouseDownEvent,
-    MouseMoveEvent, Pixels, Point, RenderImage, SharedString,
+    canvas, div, px, relative, rems, Bounds, Context, IntoElement, MouseDownEvent, MouseMoveEvent,
+    Pixels, Point, RenderImage, SharedString,
 };
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::label::Label;
+use gpui_component::switch::Switch;
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Selectable as _, StyledExt as _};
 
 use crate::domain::{NativeStyleProfile, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
@@ -51,7 +55,7 @@ macro_rules! color_picker {
 macro_rules! toggle {
     ($id:expr, $label:expr, $value:expr, $language:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
         toggle_control(
-            ToggleSpec { id: $id, label: $label, value: $value, language: $language, set: $set },
+            ToggleSpec { id: $id, label: $label, value: $value, set: $set },
             $style,
             $cx,
             $on_change,
@@ -140,7 +144,6 @@ struct ToggleSpec {
     id: &'static str,
     label: &'static str,
     value: bool,
-    language: UiLanguage,
     set: fn(&mut NativeStyleSettings, bool),
 }
 
@@ -166,8 +169,8 @@ pub fn render_style<V: 'static>(
         persist_error,
     } = state;
 
-    let mut profile_buttons = div().flex().flex_wrap().gap_2();
-    for (index, profile) in profiles.iter().enumerate() {
+    let mut profile_buttons = h_flex().flex_wrap().gap_2();
+    for profile in profiles {
         let id = profile.id.clone();
         let label = if profile.id == selected_profile_id {
             format!("✓ {}", profile.name)
@@ -175,18 +178,18 @@ pub fn render_style<V: 'static>(
             profile.name.clone()
         };
         profile_buttons = profile_buttons.child(button(
-            ElementId::named_usize("style-profile", index),
+            format!("style-profile-{}", profile.id),
             label,
             cx.listener(move |view, _event, _window, _cx| (callbacks.on_select_profile)(view, &id)),
         ));
     }
-    let profiles = card()
+    let profiles = card(cx)
         .flex_shrink_0()
         .child(heading(text(language, TextKey::StyleProfiles)))
         .child(profile_buttons)
         .child(
-            div()
-                .flex()
+            h_flex()
+                .flex_wrap()
                 .gap_2()
                 .child(button(
                     "style-profile-add",
@@ -202,11 +205,11 @@ pub fn render_style<V: 'static>(
                 )),
         );
 
-    let preview = card()
+    let preview = card(cx)
         .flex_shrink_0()
         .child(heading(text(language, TextKey::Preview)))
         .child(
-            div().flex().justify_center().child(
+            h_flex().justify_center().child(
                 div()
                     .w(px(PREVIEW_WIDTH_PX))
                     .h(px(PREVIEW_HEIGHT_PX))
@@ -218,8 +221,7 @@ pub fn render_style<V: 'static>(
             ),
         )
         .child(
-            div()
-                .flex()
+            h_flex()
                 .gap_3()
                 .child(preview_input(
                     "preview-source-input",
@@ -291,6 +293,7 @@ pub fn render_style<V: 'static>(
                 callbacks.on_change,
                 |next, value| next.line_height = value,
             )),
+        cx,
     );
 
     let source = setting_section(
@@ -344,6 +347,7 @@ pub fn render_style<V: 'static>(
                 callbacks.on_change,
                 |next, value| next.source_max_chars = value.round() as usize,
             )),
+        cx,
     );
 
     let translation = setting_section(
@@ -397,6 +401,7 @@ pub fn render_style<V: 'static>(
                 callbacks.on_change,
                 |next, value| next.translation_max_chars = value.round() as usize,
             )),
+        cx,
     );
 
     let placement = setting_section(
@@ -426,6 +431,7 @@ pub fn render_style<V: 'static>(
                 callbacks.on_change,
                 |next, value| next.caption_y_percent = value,
             )),
+        cx,
     );
 
     let background = setting_section(
@@ -465,6 +471,7 @@ pub fn render_style<V: 'static>(
                 callbacks.on_change,
                 |next, value| next.background_opacity = value,
             )),
+        cx,
     );
 
     let shadow = setting_section(
@@ -540,6 +547,7 @@ pub fn render_style<V: 'static>(
                 callbacks.on_change,
                 |next, value| next.shadow_offset_y = value,
             )),
+        cx,
     );
 
     let outline = setting_section(
@@ -579,41 +587,38 @@ pub fn render_style<V: 'static>(
                 callbacks.on_change,
                 |next, value| next.outline_width_px = value,
             )),
+        cx,
     );
 
-    div()
+    v_flex()
         .size_full()
         .min_h_0()
-        .flex()
-        .flex_col()
-        .gap_3()
+        .gap_4()
         .child(profiles)
         .child(preview)
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
         .child(
-            div()
+            v_flex()
                 .id("style-settings-scroll")
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
                 .pr_2()
                 .pb_4()
-                .flex()
-                .flex_col()
-                .gap_3()
+                .gap_4()
                 .child(typography)
-                .child(div().flex().gap_3().child(source).child(translation))
+                .child(h_flex().items_start().gap_4().child(source).child(translation))
                 .child(placement)
-                .child(div().flex().gap_3().child(background).child(shadow))
+                .child(h_flex().items_start().gap_4().child(background).child(shadow))
                 .child(outline),
         )
 }
 
-fn setting_section(title: &'static str, content: gpui::Div) -> gpui::Div {
-    card()
+fn setting_section(title: &'static str, content: gpui::Div, cx: &gpui::App) -> gpui::Div {
+    card(cx)
         .flex_1()
         .gap_3()
-        .child(div().text_lg().text_color(rgb(0x173f5f)).child(title))
+        .child(Label::new(title).text_lg().font_semibold())
         .child(content.flex().flex_col().gap_3())
 }
 
@@ -625,19 +630,19 @@ fn preview_input<V: 'static>(
     cx: &mut Context<V>,
     on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
 ) -> impl IntoElement {
-    div().flex_1().flex().flex_col().gap_1().child(muted(label)).child(
-        div()
+    v_flex().flex_1().gap_1().child(muted(label)).child(
+        h_flex()
             .id(id)
-            .min_h(px(34.0))
-            .px_2()
+            .min_h_8()
+            .px_3()
             .py_2()
-            .rounded_md()
+            .rounded(cx.theme().radius)
             .border_1()
-            .border_color(rgb(if caret.is_some() { 0x1aa6a6 } else { 0xb8cfdd }))
-            .bg(rgb(0xffffff))
+            .border_color(if caret.is_some() { cx.theme().primary } else { cx.theme().input })
+            .bg(cx.theme().background)
             .cursor_text()
             .on_click(cx.listener(move |view, _event, window, cx| on_focus(view, window, cx)))
-            .child(editable_text(value, caret)),
+            .child(editable_text(value, caret, cx)),
     )
 }
 
@@ -650,62 +655,55 @@ fn font_picker<V: 'static>(
 ) -> impl IntoElement {
     let on_font_focus = callbacks.on_font_focus;
     let on_font_select = callbacks.on_font_select;
-    let mut picker =
-        div().flex().flex_col().gap_1().child(muted(text(language, TextKey::FontFamily))).child(
-            div()
-                .id("font-search")
-                .px_2()
-                .py_2()
-                .rounded_md()
-                .border_1()
-                .border_color(rgb(0xb8cfdd))
-                .bg(rgb(0xffffff))
-                .cursor_pointer()
-                .on_click(
-                    cx.listener(move |view, _event, window, cx| on_font_focus(view, window, cx)),
-                )
-                .child(if state.query.is_empty() && state.caret.is_none() {
-                    editable_text(&style.font_family, None)
-                } else {
-                    editable_text(state.query, state.caret)
-                }),
-        );
+    let displayed_font = if state.query.is_empty() && state.caret.is_none() {
+        editable_text(&style.font_family, None, cx)
+    } else {
+        editable_text(state.query, state.caret, cx)
+    };
+    let mut picker = v_flex().gap_1().child(muted(text(language, TextKey::FontFamily))).child(
+        h_flex()
+            .id("font-search")
+            .min_h_8()
+            .px_3()
+            .py_2()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(if state.caret.is_some() { cx.theme().primary } else { cx.theme().input })
+            .bg(cx.theme().background)
+            .cursor_text()
+            .on_click(cx.listener(move |view, _event, window, cx| {
+                on_font_focus(view, window, cx);
+            }))
+            .child(displayed_font),
+    );
     if state.open {
         let query = state.query.to_lowercase();
         let options = state
             .families
             .iter()
             .filter(|family| query.is_empty() || family.to_lowercase().contains(&query))
-            .enumerate()
-            .map(|(index, family)| {
+            .map(|family| {
                 let family_value = family.clone();
-                div()
-                    .id(ElementId::named_usize("font-option", index))
-                    .px_2()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(0xe4eef4))
-                    .bg(rgb(0xffffff))
-                    .cursor_pointer()
+                Button::new(format!("font-option-{family}"))
+                    .ghost()
+                    .label(family.clone())
                     .font_family(family.clone())
-                    .hover(|style| style.bg(rgb(0xe7f7f7)))
                     .on_click(cx.listener(move |view, _event, _window, _cx| {
-                        on_font_select(view, &family_value)
+                        on_font_select(view, &family_value);
                     }))
-                    .child(SharedString::from(family.clone()))
             })
             .collect::<Vec<_>>();
         picker = picker.child(
-            div()
+            v_flex()
                 .id("font-options-scroll")
-                .max_h(px(240.0))
+                .max_h(rems(15.))
                 .overflow_y_scroll()
                 .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation())
+                .p_1()
                 .border_1()
-                .border_color(rgb(0xb8cfdd))
-                .rounded_md()
-                .flex()
-                .flex_col()
+                .border_color(cx.theme().border)
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().popover)
                 .children(options),
         );
     }
@@ -726,7 +724,15 @@ fn slider_control<V: 'static>(
         on_change(view, next);
     });
     range_control(
-        RangeSpec { id: id.to_string(), label, value, min, max, step, accent: rgb(0x1aa6a6) },
+        RangeSpec {
+            id: id.to_string(),
+            label,
+            value,
+            min,
+            max,
+            step,
+            accent: cx.theme().primary.into(),
+        },
         cx,
         update,
     )
@@ -767,47 +773,42 @@ fn range_control<V: 'static>(
     .left_0()
     .size_full();
 
-    div()
-        .flex()
-        .flex_col()
+    v_flex()
         .gap_1()
         .child(
-            div().flex().justify_between().child(SharedString::from(label)).child(
-                div()
+            h_flex().justify_between().child(Label::new(label)).child(
+                Label::new(format_slider_value(value, step))
+                    .text_sm()
                     .px_2()
-                    .rounded_md()
-                    .bg(rgb(0xeaf3f7))
-                    .child(SharedString::from(format_slider_value(value, step))),
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().muted),
             ),
         )
         .child(
-            div()
-                .id(ElementId::Name(id.into()))
+            h_flex()
+                .id(id)
                 .relative()
-                .h(px(24.0))
+                .h_6()
                 .w_full()
-                .flex()
-                .items_center()
                 .cursor_pointer()
-                .child(div().absolute().w_full().h(px(5.0)).rounded_full().bg(rgb(0xc9dce7)))
-                .child(div().w(relative(fraction)).h(px(5.0)).rounded_full().bg(accent))
+                .child(div().absolute().w_full().h_1().rounded_full().bg(cx.theme().input))
+                .child(div().w(relative(fraction)).h_1().rounded_full().bg(accent))
                 .child(
                     div()
-                        .ml(px(-8.0))
-                        .size(px(16.0))
+                        .ml_neg_2()
+                        .size_4()
                         .rounded_full()
                         .border_2()
-                        .border_color(rgb(0xffffff))
+                        .border_color(cx.theme().background)
                         .bg(accent),
                 )
                 .child(interaction),
         )
         .child(
-            div()
-                .flex()
+            h_flex()
                 .justify_between()
                 .text_xs()
-                .text_color(rgb(0x6a8394))
+                .text_color(cx.theme().muted_foreground)
                 .child(SharedString::from(format_slider_value(min, step)))
                 .child(SharedString::from(format_slider_value(max, step))),
         )
@@ -858,35 +859,32 @@ fn color_picker_control<V: 'static>(
         on_change,
     );
 
-    div()
-        .flex()
-        .flex_col()
+    v_flex()
         .gap_2()
         .child(
-            div()
-                .id(ElementId::Name(format!("{id}-toggle").into()))
-                .flex()
-                .items_center()
-                .gap_2()
-                .p_2()
-                .rounded_md()
-                .border_1()
-                .border_color(rgb(if active { 0x1aa6a6 } else { 0xb8cfdd }))
-                .bg(rgb(0xffffff))
-                .cursor_pointer()
-                .on_click(cx.listener(move |view, _event, _window, _cx| on_toggle(view, id)))
+            Button::new(format!("color-picker-{id}"))
+                .outline()
+                .selected(active)
                 .child(
-                    div()
-                        .size(px(28.0))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(rgb(0x9eb8c8))
-                        .bg(parse_rgb(value)),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .size_6()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                // This swatch represents user-selected caption data.
+                                .bg(parse_rgb(value)),
+                        )
+                        .child(Label::new(label))
+                        .child(muted(value.to_uppercase())),
                 )
-                .child(SharedString::from(label))
-                .child(muted(value.to_uppercase())),
+                .on_click(cx.listener(move |view, _event, _window, _cx| {
+                    on_toggle(view, id);
+                })),
         )
-        .when(active, |this| this.child(div().flex().justify_center().child(square)).child(hue_bar))
+        .when(active, |this| this.child(h_flex().justify_center().child(square)).child(hue_bar))
 }
 
 fn color_square_control<V: 'static>(
@@ -932,7 +930,7 @@ fn color_square_control<V: 'static>(
     .size_full();
 
     div()
-        .id(ElementId::Name(id.into()))
+        .id(id)
         .relative()
         .w(px(240.0))
         .h(px(180.0))
@@ -985,7 +983,7 @@ fn hue_bar_control<V: 'static>(
     .size_full();
 
     div()
-        .id(ElementId::Name(id.into()))
+        .id(id)
         .relative()
         .w(px(240.0))
         .h(px(20.0))
@@ -1002,36 +1000,15 @@ fn toggle_control<V: 'static>(
     cx: &mut Context<V>,
     on_change: fn(&mut V, NativeStyleSettings),
 ) -> impl IntoElement {
-    let ToggleSpec { id, label, value, language, set } = spec;
+    let ToggleSpec { id, label, value, set } = spec;
     let current = style.clone();
-    div()
-        .id(id)
-        .flex()
-        .justify_between()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(if value { 0x1aa6a6 } else { 0xc9dce7 }))
-        .bg(rgb(if value { 0xe7f7f7 } else { 0xf5f9fb }))
-        .cursor_pointer()
-        .on_click(cx.listener(move |view, _event, _window, _cx| {
+    Switch::new(id).label(label).checked(value).on_click(cx.listener(
+        move |view, checked, _window, _cx| {
             let mut next = current.clone();
-            set(&mut next, !value);
+            set(&mut next, *checked);
             on_change(view, next);
-        }))
-        .child(SharedString::from(label))
-        .child(
-            div()
-                .px_2()
-                .rounded_full()
-                .bg(rgb(if value { 0x1aa6a6 } else { 0x8ca5b5 }))
-                .text_color(rgb(0xffffff))
-                .child(SharedString::from(text(
-                    language,
-                    if value { TextKey::On } else { TextKey::Off },
-                ))),
-        )
+        },
+    ))
 }
 
 fn color_square_image(

@@ -1,14 +1,16 @@
 //! Live capture controls and recognition/translation results.
 
 use gpui::prelude::*;
-use gpui::{div, px, relative, rgb, ClipboardItem, Context, ElementId, IntoElement, SharedString};
+use gpui::{relative, rgb, ClipboardItem, Context, IntoElement, SharedString};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::label::Label;
+use gpui_component::switch::Switch;
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _};
 
 use crate::capture::CaptureController;
 use crate::domain::{format_rms, rms_level_color, rms_to_fraction, CaptureStatus, UiLanguage};
 use crate::i18n::{text, TextKey};
-use crate::ui::{
-    button, card, error_line, heading, muted, state_button, COLOR_CARD, COLOR_GHOST_HOVER,
-};
+use crate::ui::{button, card, error_line, heading, muted};
 
 pub struct LiveCallbacks<V> {
     pub on_toggle_select: fn(&mut V),
@@ -37,17 +39,12 @@ pub fn render_live<V: 'static>(
     let snapshot = capture.snapshot();
     let callbacks = *callbacks;
     let has_devices = !snapshot.devices.is_empty();
+    let selected_device_id = snapshot.selected_device_id.as_deref();
     let selected = snapshot
         .devices
         .iter()
-        .find(|device| Some(device.id.as_str()) == snapshot.selected_device_id.as_deref())
-        .map(|device| {
-            if device.is_default {
-                format!("{} ({})", device.name, text(language, TextKey::DefaultDevice))
-            } else {
-                device.name.clone()
-            }
-        })
+        .find(|device| Some(device.id.as_str()) == selected_device_id)
+        .map(|device| device_label(device.name.as_str(), device.is_default, language))
         .unwrap_or_else(|| text(language, TextKey::NoMicrophone).to_string());
     let level = snapshot.last_rms_dbfs;
     let level_fraction = rms_to_fraction(level);
@@ -56,150 +53,143 @@ pub fn render_live<V: 'static>(
     let active = matches!(snapshot.status, CaptureStatus::Capturing | CaptureStatus::Stopping);
     let translation_enabled = capture.translation_enabled();
 
-    let trigger = div()
-        .id("live-device-select")
-        .flex()
-        .items_center()
-        .justify_between()
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(0xd5e6f2))
-        .bg(rgb(COLOR_CARD))
-        .when(has_devices, |element| {
-            element.cursor_pointer().hover(|mut style| {
-                style.background = Some(rgb(COLOR_GHOST_HOVER).into());
-                style
-            })
-        })
+    let trigger = Button::new("live-device-select")
+        .outline()
+        .label(selected)
+        .dropdown_caret(true)
+        .disabled(!has_devices)
         .on_click(cx.listener(move |view, _event, _window, _cx| {
-            if has_devices {
-                (callbacks.on_toggle_select)(view);
-            }
-        }))
-        .child(SharedString::from(selected));
+            (callbacks.on_toggle_select)(view);
+        }));
 
-    let dropdown = if select_open && has_devices {
-        let options = snapshot
-            .devices
-            .iter()
-            .enumerate()
-            .map(|(index, device)| {
-                let label = if device.is_default {
-                    format!("{} ({})", device.name, text(language, TextKey::DefaultDevice))
-                } else {
-                    device.name.clone()
-                };
+    let dropdown = (select_open && has_devices).then(|| {
+        v_flex()
+            .gap_1()
+            .p_1()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .children(snapshot.devices.iter().map(|device| {
                 let id = device.id.clone();
-                div()
-                    .id(ElementId::named_usize("live-device-option", index))
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
+                Button::new(format!("live-device-option-{id}"))
+                    .ghost()
+                    .selected(Some(device.id.as_str()) == selected_device_id)
+                    .label(device_label(device.name.as_str(), device.is_default, language))
                     .on_click(cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_select_device)(view, &id)
+                        (callbacks.on_select_device)(view, &id);
                     }))
-                    .child(SharedString::from(label))
-            })
-            .collect::<Vec<_>>();
-        Some(div().flex().flex_col().bg(rgb(COLOR_CARD)).children(options))
-    } else {
-        None
-    };
-
-    let source = if snapshot.source_text.is_empty() {
-        text(language, TextKey::NoCaption).to_string()
-    } else {
-        snapshot.source_text.clone()
-    };
-    let translation = if snapshot.translation_text.is_empty() {
-        text(language, TextKey::NoCaption).to_string()
-    } else {
-        snapshot.translation_text.clone()
-    };
-    let error_panel = snapshot.last_error.clone().map(|error| {
-        let clipboard_error = error.clone();
-        div().flex().items_center().justify_between().gap_2().child(error_line(error)).child(
-            button(
-                "live-copy-error",
-                text(language, TextKey::CopyError),
-                move |_event, _window, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(clipboard_error.clone()));
-                },
-            ),
-        )
+            }))
     });
 
-    card()
+    let source = caption_or_placeholder(&snapshot.source_text, language);
+    let translation = caption_or_placeholder(&snapshot.translation_text, language);
+    let error_panel = snapshot.last_error.clone().map(|error| {
+        let clipboard_error = error.clone();
+        h_flex().justify_between().gap_2().child(error_line(error)).child(button(
+            "live-copy-error",
+            text(language, TextKey::CopyError),
+            move |_event, _window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(clipboard_error.clone()));
+            },
+        ))
+    });
+
+    card(cx)
         .child(heading(text(language, TextKey::Live)))
         .child(
-            div()
-                .flex()
-                .items_center()
+            h_flex()
                 .justify_between()
+                .gap_3()
                 .child(muted(text(language, TextKey::InputDevice)))
                 .child(button(
                     "live-refresh-devices",
                     text(language, TextKey::RefreshDevices),
                     cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_refresh_devices)(view)
+                        (callbacks.on_refresh_devices)(view);
                     }),
                 )),
         )
         .child(trigger)
         .when_some(dropdown, |this, menu| this.child(menu))
         .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
+            h_flex()
+                .gap_3()
                 .child(muted(format!("{}: {}", text(language, TextKey::Level), format_rms(level))))
-                .child(div().h(px(8.)).w(px(160.)).rounded_md().bg(rgb(0xd5e6f2)).child(
-                    div().h_full().rounded_md().bg(rgb(level_color)).w(relative(level_fraction)),
-                )),
+                .child(
+                    gpui::div().h_2().w_40().rounded_full().bg(cx.theme().muted).child(
+                        gpui::div()
+                            .h_full()
+                            .rounded_full()
+                            // The meter color is measured signal data, not application chrome.
+                            .bg(rgb(level_color))
+                            .w(relative(level_fraction)),
+                    ),
+                ),
         )
         .child(
-            div()
-                .flex()
+            h_flex()
                 .gap_2()
-                .child(state_button(
-                    "live-start",
-                    text(language, TextKey::Start),
-                    active,
-                    cx.listener(move |view, _event, _window, _cx| (callbacks.on_start)(view)),
-                ))
-                .child(state_button(
-                    "live-stop",
-                    text(language, TextKey::Stop),
-                    !capturing,
-                    cx.listener(move |view, _event, _window, _cx| (callbacks.on_stop)(view)),
-                ))
-                .child(state_button(
-                    "live-translation-enabled",
-                    format!(
-                        "{}: {}",
-                        text(language, TextKey::Translation),
-                        text(
-                            language,
-                            if translation_enabled { TextKey::Enabled } else { TextKey::Disabled }
-                        )
-                    ),
-                    translation_enabled,
-                    cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_toggle_translation)(view)
-                    }),
-                )),
+                .child(
+                    Button::new("live-start")
+                        .primary()
+                        .label(text(language, TextKey::Start))
+                        .disabled(active)
+                        .on_click(cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_start)(view);
+                        })),
+                )
+                .child(
+                    Button::new("live-stop")
+                        .label(text(language, TextKey::Stop))
+                        .disabled(!active)
+                        .on_click(cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_stop)(view);
+                        })),
+                )
+                .child(
+                    Switch::new("live-translation-enabled")
+                        .label(text(language, TextKey::Translation))
+                        .checked(translation_enabled)
+                        .disabled(capturing)
+                        .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                            (callbacks.on_toggle_translation)(view);
+                        })),
+                ),
         )
         .when_some(error_panel, |this, panel| this.child(panel))
-        .child(div().mt_2().child(SharedString::from(text(language, TextKey::RecognitionResult))))
-        .child(div().text_lg().child(SharedString::from(source)))
+        .child(
+            v_flex()
+                .gap_1()
+                .mt_2()
+                .child(muted(text(language, TextKey::RecognitionResult)))
+                .child(Label::new(source).text_lg()),
+        )
         .when(translation_enabled, |this| {
             this.child(
-                div().mt_2().child(SharedString::from(text(language, TextKey::TranslationResult))),
+                v_flex()
+                    .gap_1()
+                    .mt_2()
+                    .child(muted(text(language, TextKey::TranslationResult)))
+                    .child(Label::new(translation).text_lg()),
             )
-            .child(div().text_lg().child(SharedString::from(translation)))
         })
+}
+
+fn caption_or_placeholder(value: &str, language: UiLanguage) -> SharedString {
+    if value.is_empty() {
+        text(language, TextKey::NoCaption).into()
+    } else {
+        value.to_string().into()
+    }
+}
+
+fn device_label(name: &str, is_default: bool, language: UiLanguage) -> String {
+    if is_default {
+        format!("{} ({})", name, text(language, TextKey::DefaultDevice))
+    } else {
+        name.to_string()
+    }
 }
 
 #[cfg(test)]

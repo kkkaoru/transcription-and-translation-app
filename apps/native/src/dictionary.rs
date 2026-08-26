@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
-use gpui::{div, Context, ElementId, ExternalPaths, IntoElement, SharedString};
+use gpui::{Context, ExternalPaths, IntoElement, SharedString};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
 
 use crate::domain::{NativeDictionaryProfile, UiLanguage};
 use crate::i18n::{text, TextKey};
@@ -55,8 +57,8 @@ pub fn render_dictionary<V: 'static>(
         language,
         persist_error,
     } = state;
-    let mut dictionary_buttons = div().flex().flex_wrap().gap_2();
-    for (index, dictionary) in dictionaries.iter().enumerate() {
+    let mut dictionary_buttons = h_flex().flex_wrap().gap_2();
+    for dictionary in dictionaries {
         let id = dictionary.id.clone();
         let label = if dictionary.id == selected_dictionary_id {
             format!("✓ {}", dictionary.name)
@@ -64,7 +66,7 @@ pub fn render_dictionary<V: 'static>(
             dictionary.name.clone()
         };
         dictionary_buttons = dictionary_buttons.child(button(
-            ElementId::named_usize("dictionary-profile", index),
+            format!("dictionary-profile-{}", dictionary.id),
             label,
             cx.listener(move |view, _event, _window, _cx| {
                 (callbacks.on_select_dictionary)(view, &id)
@@ -72,44 +74,45 @@ pub fn render_dictionary<V: 'static>(
         ));
     }
 
-    let mut list = div().flex().flex_col().gap_1();
+    let mut list = v_flex().gap_2();
     if entries.is_empty() {
         list = list.child(muted(text(language, TextKey::NoEntries)));
     } else {
         list =
             list.child(muted(format!("{} {}", entries.len(), text(language, TextKey::EntryCount))));
-        for (index, entry) in entries.iter().enumerate() {
+        for entry in entries {
             let id = entry.id.clone();
             list = list.child(
-                div()
-                    .flex()
-                    .items_center()
+                h_flex()
                     .justify_between()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(gpui::rgb(0xf0f8ff))
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().muted)
                     .child(SharedString::from(format!("{} → {}", entry.reading, entry.word)))
-                    .child(button(
-                        ElementId::named_usize("dict-delete", index),
-                        text(language, TextKey::Delete),
-                        cx.listener(move |view, _event, _window, _cx| {
-                            (callbacks.on_delete)(view, &id)
-                        }),
-                    )),
+                    .child(
+                        Button::new(format!("dict-delete-{}", entry.id))
+                            .danger()
+                            .small()
+                            .label(text(language, TextKey::Delete))
+                            .on_click(cx.listener(move |view, _event, _window, _cx| {
+                                (callbacks.on_delete)(view, &id);
+                            })),
+                    ),
             );
         }
     }
 
-    card()
+    card(cx)
         .on_drop(cx.listener(move |view, paths: &ExternalPaths, _window, _cx| {
             (callbacks.on_import_paths)(view, paths.paths())
         }))
         .child(heading(text(language, TextKey::Dictionary)))
         .child(dictionary_buttons)
         .child(
-            div()
-                .flex()
+            h_flex()
+                .flex_wrap()
                 .gap_2()
                 .child(button(
                     "dictionary-profile-add",
@@ -175,24 +178,19 @@ fn field_editor<V: 'static>(
     cx: &mut Context<V>,
     on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
 ) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(div().w(gpui::px(100.)).child(SharedString::from(label)))
-        .child(
-            div()
-                .id(id)
-                .flex_1()
-                .min_h(gpui::px(32.0))
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .border_1()
-                .border_color(gpui::rgb(if caret.is_some() { 0x1aa6a6 } else { 0xd5e6f2 }))
-                .bg(gpui::rgb(0xffffff))
-                .cursor_text()
-                .on_click(cx.listener(move |view, _event, window, cx| on_focus(view, window, cx)))
-                .child(editable_text(value, caret)),
-        )
+    h_flex().gap_3().child(gpui_component::label::Label::new(label).w_24()).child(
+        h_flex()
+            .id(id)
+            .flex_1()
+            .min_h_8()
+            .px_3()
+            .py_2()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(if caret.is_some() { cx.theme().primary } else { cx.theme().input })
+            .bg(cx.theme().background)
+            .cursor_text()
+            .on_click(cx.listener(move |view, _event, window, cx| on_focus(view, window, cx)))
+            .child(editable_text(value, caret, cx)),
+    )
 }

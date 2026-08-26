@@ -80,19 +80,6 @@ pub enum AppTab {
     Settings,
 }
 
-#[cfg(any(feature = "gpui", test))]
-impl AppTab {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Live => TAB_LIVE,
-            Self::Style => TAB_STYLE,
-            Self::Dictionary => TAB_DICTIONARY,
-            Self::Output => TAB_OUTPUT,
-            Self::Settings => TAB_SETTINGS,
-        }
-    }
-}
-
 #[cfg(test)]
 impl AppTab {
     pub fn from_label(label: &str) -> Option<Self> {

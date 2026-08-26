@@ -1,12 +1,19 @@
 //! Runtime settings and build information.
 
 use gpui::prelude::*;
-use gpui::{div, Context, ElementId, IntoElement, SharedString};
-use rust_lib_kotoba_beacon_companion::api::simple::MobileCapabilities;
+use gpui::{Context, IntoElement};
+use gpui_component::button::Button;
+use gpui_component::group_box::{GroupBox, GroupBoxVariants as _};
+use gpui_component::label::Label;
+use gpui_component::switch::Switch;
+use gpui_component::{h_flex, v_flex, Selectable as _, StyledExt as _};
+use rust_lib_kotoba_beacon_companion::api::simple::{
+    pipeline_route_id, MobileCapabilities, PipelineRoute,
+};
 
 use crate::domain::{NativeAppSettings, UiLanguage, BUILD_ID, RECOGNITION_MODE_LABEL};
 use crate::i18n::{text, TextKey};
-use crate::ui::{button, card, error_line, heading, muted, state_button};
+use crate::ui::{button, card, error_line, heading, muted};
 
 pub struct SettingsRuntimeInfo<'a> {
     pub translation_model_installed: bool,
@@ -14,6 +21,8 @@ pub struct SettingsRuntimeInfo<'a> {
     pub companion_endpoint: Option<&'a str>,
     pub companion_pairing_token: Option<&'a str>,
     pub companion_device: Option<&'a str>,
+    pub companion_session_id: Option<&'a str>,
+    pub companion_route: Option<PipelineRoute>,
     pub companion_capabilities: Option<&'a MobileCapabilities>,
     pub companion_saved_devices: usize,
     pub persist_error: Option<&'a str>,
@@ -38,161 +47,203 @@ pub fn render_settings<V: 'static>(
     callbacks: SettingsCallbacks<V>,
 ) -> impl IntoElement {
     let language = settings.ui_language;
-    let translation_model_installed = runtime.translation_model_installed;
-    let syphon_on = runtime.syphon_on;
-    let companion_endpoint = runtime.companion_endpoint;
-    let companion_pairing_token = runtime.companion_pairing_token;
-    let companion_device = runtime.companion_device;
-    let companion_capabilities = runtime.companion_capabilities;
-    let companion_saved_devices = runtime.companion_saved_devices;
-    let persist_error = runtime.persist_error;
-    let timeout_segments = (1..=10)
-        .map(|seconds| {
-            let timeout = seconds * 1_000;
-            div()
-                .id(ElementId::named_usize("caption-timeout", seconds as usize))
-                .h(gpui::px(12.0))
-                .flex_1()
-                .rounded_md()
-                .bg(gpui::rgb(if settings.caption_timeout_ms >= timeout {
-                    0x1aa6a6
-                } else {
-                    0xd5e6f2
-                }))
-                .cursor_pointer()
-                .on_click(cx.listener(move |view, _event, _window, _cx| {
-                    (callbacks.on_timeout)(view, timeout)
-                }))
-        })
-        .collect::<Vec<_>>();
-
-    card()
+    card(cx)
         .child(heading(text(language, TextKey::Settings)))
-        .child(muted(text(language, TextKey::UiLanguage)))
         .child(
-            div()
-                .flex()
-                .gap_2()
-                .child(button(
-                    "language-japanese",
-                    text(language, TextKey::Japanese),
-                    cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_language)(view, UiLanguage::Japanese)
-                    }),
-                ))
-                .child(button(
-                    "language-english",
-                    text(language, TextKey::English),
-                    cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_language)(view, UiLanguage::English)
-                    }),
-                )),
+            GroupBox::new().outline().title(text(language, TextKey::UiLanguage)).child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("language-japanese")
+                            .selected(language == UiLanguage::Japanese)
+                            .label(text(language, TextKey::Japanese))
+                            .on_click(cx.listener(move |view, _event, _window, _cx| {
+                                (callbacks.on_language)(view, UiLanguage::Japanese);
+                            })),
+                    )
+                    .child(
+                        Button::new("language-english")
+                            .selected(language == UiLanguage::English)
+                            .label(text(language, TextKey::English))
+                            .on_click(cx.listener(move |view, _event, _window, _cx| {
+                                (callbacks.on_language)(view, UiLanguage::English);
+                            })),
+                    ),
+            ),
         )
-        .child(muted(format!(
-            "{}: {}",
-            text(language, TextKey::TranslationModel),
-            text(
-                language,
-                if translation_model_installed { TextKey::Installed } else { TextKey::Missing }
+        .child(
+            GroupBox::new().outline().title(text(language, TextKey::Translation)).child(
+                v_flex()
+                    .gap_2()
+                    .child(muted(format!(
+                        "{}: {}",
+                        text(language, TextKey::TranslationModel),
+                        text(
+                            language,
+                            if runtime.translation_model_installed {
+                                TextKey::Installed
+                            } else {
+                                TextKey::Missing
+                            },
+                        ),
+                    )))
+                    .child(
+                        Switch::new("translation-enabled")
+                            .label(text(language, TextKey::Translation))
+                            .checked(settings.translation_enabled)
+                            .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                                (callbacks.on_toggle_translation)(view);
+                            })),
+                    ),
+            ),
+        )
+        .child(
+            GroupBox::new()
+                .outline()
+                .title(match language {
+                    UiLanguage::Japanese => "モバイル連携",
+                    UiLanguage::English => "Mobile companion",
+                })
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(muted(match language {
+                            UiLanguage::Japanese => "各処理をDesktopまたはMobileへ割り当てます",
+                            UiLanguage::English => {
+                                "Assign each processing stage to Desktop or Mobile"
+                            }
+                        }))
+                        .child(
+                            Switch::new("companion-asr")
+                                .label("ASR on Mobile")
+                                .checked(settings.companion_asr_on_mobile)
+                                .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                                    (callbacks.on_toggle_companion_asr)(view);
+                                })),
+                        )
+                        .child(
+                            Switch::new("companion-azookey")
+                                .label("AzooKey on Mobile")
+                                .checked(settings.companion_azookey_on_mobile)
+                                .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                                    (callbacks.on_toggle_companion_azookey)(view);
+                                })),
+                        )
+                        .child(
+                            Switch::new("companion-translation")
+                                .label("Translation on Mobile")
+                                .checked(settings.companion_translation_on_mobile)
+                                .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                                    (callbacks.on_toggle_companion_translation)(view);
+                                })),
+                        )
+                        .child(companion_status(runtime))
+                        .when_some(
+                            runtime.companion_endpoint.map(str::to_string),
+                            |this, endpoint| {
+                                this.child(
+                                    h_flex()
+                                        .justify_between()
+                                        .gap_3()
+                                        .child(
+                                            Label::new(format!("LAN endpoint: {endpoint}"))
+                                                .text_sm(),
+                                        )
+                                        .child(button(
+                                            "copy-companion-endpoint",
+                                            "Copy LAN endpoint",
+                                            cx.listener(move |view, _event, _window, cx| {
+                                                (callbacks.on_copy_companion_endpoint)(view, cx);
+                                            }),
+                                        )),
+                                )
+                            },
+                        )
+                        .when_some(
+                            runtime.companion_pairing_token.map(str::to_string),
+                            |this, token| {
+                                this.child(
+                                    h_flex()
+                                        .justify_between()
+                                        .gap_3()
+                                        .child(
+                                            Label::new(format!("Pairing token: {token}")).text_sm(),
+                                        )
+                                        .child(button(
+                                            "copy-companion-token",
+                                            "Copy pairing token",
+                                            cx.listener(move |view, _event, _window, cx| {
+                                                (callbacks.on_copy_companion_token)(view, cx);
+                                            }),
+                                        )),
+                                )
+                            },
+                        ),
+                ),
+        )
+        .child(GroupBox::new().outline().title(text(language, TextKey::CaptionTimeout)).child(
+            h_flex().flex_wrap().gap_2().children((1_u64..=10).map(|seconds| {
+                let timeout = seconds * 1_000;
+                Button::new(format!("caption-timeout-{seconds}"))
+                    .selected(settings.caption_timeout_ms == timeout)
+                    .label(format!("{seconds}s"))
+                    .on_click(cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_timeout)(view, timeout);
+                    }))
+            })),
+        ))
+        .child(
+            GroupBox::new().outline().title(text(language, TextKey::RecognitionEngine)).child(
+                v_flex()
+                    .gap_2()
+                    .child(Label::new(RECOGNITION_MODE_LABEL).text_sm())
+                    .child(
+                        Switch::new("settings-syphon")
+                            .label(text(language, TextKey::Syphon))
+                            .checked(runtime.syphon_on)
+                            .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                                (callbacks.on_toggle_syphon)(view);
+                            })),
+                    )
+                    .child(muted(format!("{}: {BUILD_ID}", text(language, TextKey::BuildId),))),
+            ),
+        )
+        .when_some(runtime.persist_error.map(str::to_string), |this, error| {
+            this.child(error_line(error))
+        })
+}
+
+fn companion_status(runtime: &SettingsRuntimeInfo<'_>) -> impl IntoElement {
+    let connection_status = if runtime.companion_session_id.is_some() {
+        "Connected and authenticated"
+    } else {
+        "Waiting for mobile companion"
+    };
+    v_flex()
+        .gap_1()
+        .child(Label::new(format!("Connection: {connection_status}")).font_semibold())
+        .child(Label::new("Automatic discovery: UDP 18184"))
+        .child(Label::new(format!(
+            "Companion: {}",
+            runtime.companion_device.unwrap_or("not connected"),
+        )))
+        .when_some(runtime.companion_session_id.map(str::to_string), |this, session_id| {
+            this.child(Label::new(format!("Session: {session_id}")))
+        })
+        .when_some(runtime.companion_route, |this, route| {
+            this.child(Label::new(format!("Synchronized route: {}", pipeline_route_id(route))))
+        })
+        .child(Label::new(format!("Saved device routes: {}", runtime.companion_saved_devices,)))
+        .when_some(runtime.companion_capabilities.cloned(), |this, capabilities| {
+            this.child(Label::new(format!("Mobile platform: {}", capabilities.platform))).child(
+                Label::new(format!(
+                    "Mobile APIs — ASR: {}, AzooKey: {}, Translation: {}",
+                    availability_label(capabilities.asr_available),
+                    availability_label(capabilities.azookey_available),
+                    availability_label(capabilities.translation_available),
+                )),
             )
-        )))
-        .child(state_button(
-            "translation-enabled",
-            format!(
-                "{}: {}",
-                text(language, TextKey::Translation),
-                text(
-                    language,
-                    if settings.translation_enabled { TextKey::Enabled } else { TextKey::Disabled }
-                )
-            ),
-            settings.translation_enabled,
-            cx.listener(move |view, _event, _window, _cx| (callbacks.on_toggle_translation)(view)),
-        ))
-        .child(muted(match language {
-            UiLanguage::Japanese => "モバイル連携（Desktop / Mobileを個別選択）",
-            UiLanguage::English => "Mobile companion (select Desktop / Mobile per stage)",
-        }))
-        .child(state_button(
-            "companion-asr",
-            format!("ASR: {}", if settings.companion_asr_on_mobile { "Mobile" } else { "Desktop" }),
-            settings.companion_asr_on_mobile,
-            cx.listener(move |view, _event, _window, _cx| {
-                (callbacks.on_toggle_companion_asr)(view)
-            }),
-        ))
-        .child(state_button(
-            "companion-azookey",
-            format!(
-                "AzooKey: {}",
-                if settings.companion_azookey_on_mobile { "Mobile" } else { "Desktop" }
-            ),
-            settings.companion_azookey_on_mobile,
-            cx.listener(move |view, _event, _window, _cx| {
-                (callbacks.on_toggle_companion_azookey)(view)
-            }),
-        ))
-        .child(state_button(
-            "companion-translation",
-            format!(
-                "Translation: {}",
-                if settings.companion_translation_on_mobile { "Mobile" } else { "Desktop" }
-            ),
-            settings.companion_translation_on_mobile,
-            cx.listener(move |view, _event, _window, _cx| {
-                (callbacks.on_toggle_companion_translation)(view)
-            }),
-        ))
-        .when_some(companion_endpoint.map(str::to_string), |this, endpoint| {
-            this.child(muted(format!("LAN endpoint: {endpoint}"))).child(button(
-                "copy-companion-endpoint",
-                "Copy LAN endpoint",
-                cx.listener(move |view, _event, _window, cx| {
-                    (callbacks.on_copy_companion_endpoint)(view, cx)
-                }),
-            ))
         })
-        .when_some(companion_pairing_token.map(str::to_string), |this, token| {
-            this.child(muted(format!("Pairing token: {token}"))).child(button(
-                "copy-companion-token",
-                "Copy pairing token",
-                cx.listener(move |view, _event, _window, cx| {
-                    (callbacks.on_copy_companion_token)(view, cx)
-                }),
-            ))
-        })
-        .child(muted(format!("Companion: {}", companion_device.unwrap_or("not connected"))))
-        .child(muted(format!("Saved device routes: {companion_saved_devices}")))
-        .when_some(companion_capabilities.cloned(), |this, capabilities| {
-            this.child(muted(format!(
-                "Mobile APIs — ASR: {}, AzooKey: {}, Translation: {}",
-                availability_label(capabilities.asr_available),
-                availability_label(capabilities.azookey_available),
-                availability_label(capabilities.translation_available),
-            )))
-        })
-        .child(SharedString::from(format!(
-            "{}: {} ms",
-            text(language, TextKey::CaptionTimeout),
-            settings.caption_timeout_ms
-        )))
-        .child(div().flex().gap_1().children(timeout_segments))
-        .child(muted(format!(
-            "{}: {RECOGNITION_MODE_LABEL}",
-            text(language, TextKey::RecognitionEngine)
-        )))
-        .child(state_button(
-            "settings-syphon",
-            format!(
-                "{}: {}",
-                text(language, TextKey::Syphon),
-                text(language, if syphon_on { TextKey::On } else { TextKey::Off })
-            ),
-            syphon_on,
-            cx.listener(move |view, _event, _window, _cx| (callbacks.on_toggle_syphon)(view)),
-        ))
-        .child(muted(format!("{}: {BUILD_ID}", text(language, TextKey::BuildId))))
-        .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
 }
 
 fn availability_label(available: bool) -> &'static str {

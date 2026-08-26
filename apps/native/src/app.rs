@@ -12,10 +12,11 @@ use caption_bridge_browser_source::{BrowserSourceConfig, BrowserSourceServer, Br
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, rgb, size, App, Bounds, ClipboardItem, Context, FocusHandle, IntoElement,
-    KeyDownEvent, Pixels, Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    div, point, px, rgb, size, App, Bounds, ClipboardItem, Context, Entity, FocusHandle,
+    IntoElement, KeyDownEvent, Pixels, Render, RenderImage, Size, Subscription, Task,
+    TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
+use gpui_component::Root;
 use rust_lib_kotoba_beacon_companion::api::simple::{
     ExecutionDevice, PipelineRoute, ProcessingStage,
 };
@@ -916,6 +917,10 @@ impl Render for MainView {
                     companion_device: companion_snapshot
                         .as_ref()
                         .and_then(|snapshot| snapshot.device_name.as_deref()),
+                    companion_session_id: companion_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.session_id.as_deref()),
+                    companion_route: companion_snapshot.as_ref().map(|snapshot| snapshot.route),
                     companion_capabilities: companion_snapshot
                         .as_ref()
                         .and_then(|snapshot| snapshot.capabilities.as_ref()),
@@ -960,7 +965,7 @@ impl Render for MainView {
             .into_any_element(),
         };
 
-        sky_page()
+        sky_page(cx)
             .id("main-root")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|view, event, _window, cx| view.apply_key(event, cx)))
@@ -1144,6 +1149,7 @@ pub fn run() {
         return;
     }
     application.run(move |cx: &mut App| {
+        gpui_component::init(cx);
         let surfaces_result = start_debug_surfaces(launch);
         print_debug_status(launch, &surfaces_result);
         if let Err(error) = &surfaces_result {
@@ -1159,16 +1165,21 @@ pub fn run() {
 
         // Create Caption Output first so the subsequently created control window is above it
         // without activating the application or stealing focus from the developer's current app.
+        let output_view_slot: Rc<RefCell<Option<Entity<CaptionOutputView>>>> =
+            Rc::new(RefCell::new(None));
         let mut output_window = if app_settings.caption_output_open_on_start {
             let mut options = output_window_options();
             options.window_bounds = Some(WindowBounds::centered(
                 size(px(OUTPUT_WINDOW_WIDTH_PX), px(OUTPUT_WINDOW_HEIGHT_PX)),
                 cx,
             ));
+            let output_view_slot = Rc::clone(&output_view_slot);
             match cx.open_window(options, |window, cx| {
                 let style = style.clone();
                 let scale_factor = window.scale_factor();
-                cx.new(move |_| CaptionOutputView::new(style, scale_factor))
+                let view = cx.new(move |_| CaptionOutputView::new(style, scale_factor));
+                output_view_slot.borrow_mut().replace(view.clone());
+                cx.new(|cx| Root::new(view, window, cx).bordered(false))
             }) {
                 Ok(handle) => Some(handle),
                 Err(error) => {
@@ -1180,16 +1191,19 @@ pub fn run() {
             None
         };
 
+        let mut output_view = output_view_slot.borrow_mut().take();
+        let main_view_slot: Rc<RefCell<Option<Entity<MainView>>>> = Rc::new(RefCell::new(None));
         let mut options = main_window_options();
         options.window_bounds =
             Some(WindowBounds::centered(size(px(WINDOW_WIDTH_PX), px(WINDOW_HEIGHT_PX)), cx));
-        let window_handle = match cx.open_window(options, |_, cx| {
+        let main_view_slot_for_window = Rc::clone(&main_view_slot);
+        let window_handle = match cx.open_window(options, |window, cx| {
             let surfaces = Rc::clone(&surfaces);
             let config_dir = config_dir.clone();
             let style_catalog = style_catalog.clone();
             let dictionary_catalog = dictionary_catalog.clone();
             let app_settings = app_settings.clone();
-            cx.new(move |cx| {
+            let view = cx.new(move |cx| {
                 MainView::new(
                     cx,
                     surfaces,
@@ -1198,7 +1212,9 @@ pub fn run() {
                     dictionary_catalog,
                     app_settings,
                 )
-            })
+            });
+            main_view_slot_for_window.borrow_mut().replace(view.clone());
+            cx.new(|cx| Root::new(view, window, cx))
         }) {
             Ok(handle) => handle,
             Err(error) => {
@@ -1207,80 +1223,93 @@ pub fn run() {
                 return;
             }
         };
+        let Some(main_view) = main_view_slot.borrow_mut().take() else {
+            eprintln!("Could not retain the main component view");
+            cx.quit();
+            return;
+        };
         cx.activate(true);
         cx.spawn(async move |cx| loop {
             #[cfg(unix)]
             if termination_requested.load(Ordering::Relaxed) {
-                let _ = window_handle.update(cx, |view, _window, _cx| view.capture.stop());
+                main_view.update(cx, |view, _cx| view.capture.stop());
                 cx.update(|cx| cx.quit());
                 break;
             }
-            let update = window_handle.update(cx, |view, window, cx| {
-                let capture_changed = view.capture.poll(view.app_settings.caption_timeout_ms);
-                let companion_changed = view.sync_companion_device_settings();
-                let output_changed = view.publish_live_caption();
-                let check_output_window = should_check_output_window(
-                    output_changed,
-                    view.last_output_window_check.elapsed(),
-                );
-                if check_output_window {
-                    view.last_output_window_check = Instant::now();
-                }
-                let status = view.capture.snapshot().status;
-                view.update_capture_display(status, window);
-                let snapshot = view.capture.snapshot();
-                let output = output_changed.then(|| {
-                    (
-                        snapshot.source_text.clone(),
-                        snapshot.translation_text.clone(),
-                        view.style.clone(),
-                    )
-                });
-                if (capture_changed && view.tab == AppTab::Live) || companion_changed {
-                    cx.notify();
-                }
-                let poll_interval = if matches!(
-                    snapshot.status,
-                    CaptureStatus::Capturing | CaptureStatus::Stopping
-                ) {
-                    ACTIVE_POLL_INTERVAL
-                } else {
-                    IDLE_POLL_INTERVAL
-                };
-                let open_output = std::mem::take(&mut view.output_window_requested);
-                let output_snapshot = open_output.then(|| {
-                    (
-                        view.style.clone(),
-                        snapshot.source_text.clone(),
-                        snapshot.translation_text.clone(),
-                    )
-                });
-                (output, check_output_window, poll_interval, output_snapshot)
+            let update = window_handle.update(cx, |_root, window, cx| {
+                main_view.update(cx, |view, cx| {
+                    let capture_changed = view.capture.poll(view.app_settings.caption_timeout_ms);
+                    let companion_changed = view.sync_companion_device_settings();
+                    let output_changed = view.publish_live_caption();
+                    let check_output_window = should_check_output_window(
+                        output_changed,
+                        view.last_output_window_check.elapsed(),
+                    );
+                    if check_output_window {
+                        view.last_output_window_check = Instant::now();
+                    }
+                    let status = view.capture.snapshot().status;
+                    view.update_capture_display(status, window);
+                    let snapshot = view.capture.snapshot();
+                    let output = output_changed.then(|| {
+                        (
+                            snapshot.source_text.clone(),
+                            snapshot.translation_text.clone(),
+                            view.style.clone(),
+                        )
+                    });
+                    if (capture_changed && view.tab == AppTab::Live) || companion_changed {
+                        cx.notify();
+                    }
+                    let poll_interval = if matches!(
+                        snapshot.status,
+                        CaptureStatus::Capturing | CaptureStatus::Stopping
+                    ) {
+                        ACTIVE_POLL_INTERVAL
+                    } else {
+                        IDLE_POLL_INTERVAL
+                    };
+                    let open_output = std::mem::take(&mut view.output_window_requested);
+                    let output_snapshot = open_output.then(|| {
+                        (
+                            view.style.clone(),
+                            snapshot.source_text.clone(),
+                            snapshot.translation_text.clone(),
+                        )
+                    });
+                    (output, check_output_window, poll_interval, output_snapshot)
+                })
             });
             let Ok((output, check_output_window, poll_interval, output_snapshot)) = update else {
                 break;
             };
+            let output_view_for_update = output_view.clone();
             let output_closed = check_output_window
                 && output_window.as_ref().is_some_and(|handle| {
                     handle
-                        .update(cx, move |view, window, cx| {
-                            let Some((source, translation, style)) = output else {
+                        .update(cx, move |_root, window, cx| {
+                            let (Some(view), Some((source, translation, style))) =
+                                (output_view_for_update.as_ref(), output)
+                            else {
                                 return;
                             };
-                            if view.replace_caption(
-                                source,
-                                translation,
-                                style,
-                                window.scale_factor(),
-                                window,
-                            ) {
-                                cx.notify();
-                            }
+                            view.update(cx, |view, cx| {
+                                if view.replace_caption(
+                                    source,
+                                    translation,
+                                    style,
+                                    window.scale_factor(),
+                                    window,
+                                ) {
+                                    cx.notify();
+                                }
+                            });
                         })
                         .is_err()
                 });
             if output_closed {
                 output_window = None;
+                output_view = None;
             }
             if output_window.is_none() {
                 if let Some((style, source, translation)) = output_snapshot {
@@ -1290,20 +1319,29 @@ pub fn run() {
                             size(px(OUTPUT_WINDOW_WIDTH_PX), px(OUTPUT_WINDOW_HEIGHT_PX)),
                             cx,
                         ));
+                        let output_view_slot: Rc<RefCell<Option<Entity<CaptionOutputView>>>> =
+                            Rc::new(RefCell::new(None));
+                        let slot = Rc::clone(&output_view_slot);
                         cx.open_window(options, |window, cx| {
                             let scale_factor = window.scale_factor();
-                            cx.new(move |_| {
+                            let view = cx.new(move |_| {
                                 CaptionOutputView::with_caption(
                                     style,
                                     scale_factor,
                                     source,
                                     translation,
                                 )
-                            })
+                            });
+                            slot.borrow_mut().replace(view.clone());
+                            cx.new(|cx| Root::new(view, window, cx).bordered(false))
                         })
+                        .map(|handle| (handle, output_view_slot.borrow_mut().take()))
                     });
                     match opened {
-                        Ok(handle) => output_window = Some(handle),
+                        Ok((handle, view)) => {
+                            output_window = Some(handle);
+                            output_view = view;
+                        }
                         Err(error) => eprintln!("Could not open caption output: {error}"),
                     }
                 }

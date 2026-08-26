@@ -39,8 +39,6 @@ pub enum TextKey {
     TranslationModel,
     Installed,
     Missing,
-    Enabled,
-    Disabled,
     CaptionTimeout,
     RecognitionEngine,
     BuildId,
@@ -83,8 +81,6 @@ pub enum TextKey {
     Outline,
     OutlineColor,
     OutlineWidth,
-    On,
-    Off,
     Preview,
 }
 
@@ -136,8 +132,6 @@ fn japanese(key: TextKey) -> &'static str {
         TextKey::TranslationModel => "ローカル翻訳モデル",
         TextKey::Installed => "インストール済み",
         TextKey::Missing => "未インストール",
-        TextKey::Enabled => "有効",
-        TextKey::Disabled => "無効",
         TextKey::CaptionTimeout => "字幕を消すまでの時間",
         TextKey::RecognitionEngine => "認識エンジン",
         TextKey::BuildId => "ビルドID",
@@ -180,8 +174,6 @@ fn japanese(key: TextKey) -> &'static str {
         TextKey::Outline => "縁取り",
         TextKey::OutlineColor => "縁取りの色",
         TextKey::OutlineWidth => "縁取りの太さ",
-        TextKey::On => "オン",
-        TextKey::Off => "オフ",
         TextKey::Preview => "プレビュー",
     }
 }
@@ -225,8 +217,6 @@ fn english(key: TextKey) -> &'static str {
         TextKey::TranslationModel => "Local translation model",
         TextKey::Installed => "Installed",
         TextKey::Missing => "Not installed",
-        TextKey::Enabled => "Enabled",
-        TextKey::Disabled => "Disabled",
         TextKey::CaptionTimeout => "Caption display duration",
         TextKey::RecognitionEngine => "Recognition engine",
         TextKey::BuildId => "Build ID",
@@ -269,8 +259,6 @@ fn english(key: TextKey) -> &'static str {
         TextKey::Outline => "Outline",
         TextKey::OutlineColor => "Outline color",
         TextKey::OutlineWidth => "Outline width",
-        TextKey::On => "On",
-        TextKey::Off => "Off",
         TextKey::Preview => "Preview",
     }
 }

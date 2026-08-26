@@ -380,6 +380,35 @@ fn replaced_gpui_rasters_are_removed_from_the_gpu_atlas() {
 }
 
 #[test]
+fn native_ui_uses_gpui_component_roots_controls_and_theme_tokens() {
+    let manifest = include_str!("../Cargo.toml");
+    let app = include_str!("app.rs");
+    let ui = include_str!("ui.rs");
+    let live = include_str!("live.rs");
+    let output = include_str!("output.rs");
+    let settings = include_str!("settings.rs");
+    let dictionary = include_str!("dictionary.rs");
+    let style = include_str!("style.rs");
+
+    assert!(manifest.contains("gpui-component ="));
+    assert!(app.contains("gpui_component::init(cx)"));
+    assert!(app.contains("Root::new(view, window, cx)"));
+    assert!(ui.contains("TabBar::new"));
+    assert!(ui.contains("Button::new"));
+    assert!(live.contains("Switch::new"));
+    assert!(output.contains("Switch::new"));
+    assert!(settings.contains("GroupBox::new"));
+    assert!(dictionary.contains("Button::new"));
+    assert!(style.contains("Switch::new"));
+    assert!(style.contains("cx.theme().primary"));
+    assert!(!ui.contains("rgb(0x"));
+    assert!(!live.contains("rgb(0x"));
+    assert!(!output.contains("rgb(0x"));
+    assert!(!settings.contains("rgb(0x"));
+    assert!(!dictionary.contains("rgb(0x"));
+}
+
+#[test]
 fn app_content_has_no_identity_header_or_footer() {
     let source = include_str!("app.rs");
     assert!(!source.contains("child(heading(PRODUCT_NAME))"));
@@ -455,6 +484,11 @@ fn settings_support_one_ui_language_at_a_time() {
     let settings = include_str!("settings.rs");
     assert!(settings.contains("copy-companion-endpoint"));
     assert!(settings.contains("copy-companion-token"));
+    assert!(settings.contains("Connected and authenticated"));
+    assert!(settings.contains("Waiting for mobile companion"));
+    assert!(settings.contains("Automatic discovery: UDP 18184"));
+    assert!(settings.contains("Synchronized route"));
+    assert!(settings.contains("Mobile platform"));
 }
 
 #[test]
