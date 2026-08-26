@@ -10,7 +10,9 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::label::Label;
 use gpui_component::switch::Switch;
-use gpui_component::{h_flex, v_flex, ActiveTheme as _, Selectable as _, StyledExt as _};
+use gpui_component::{
+    h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, StyledExt as _,
+};
 
 use crate::domain::{NativeStyleProfile, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
@@ -746,6 +748,28 @@ fn range_control<V: 'static>(
     let RangeSpec { id, label, value, min, max, step, accent } = spec;
     let fraction = ((value - min) / (max - min)).clamp(0.0, 1.0);
     let entity = cx.entity();
+    let decrease_entity = entity.clone();
+    let decrease_update = Rc::clone(&update);
+    let decrease = Button::new(format!("{id}-decrease"))
+        .label("−")
+        .tooltip(format!("Decrease {label}"))
+        .disabled(value <= min)
+        .on_click(move |_event, _window, app| {
+            decrease_entity.update(app, |view, _| {
+                decrease_update(view, quantize_range_value(value - step, min, max, step));
+            });
+        });
+    let increase_entity = entity.clone();
+    let increase_update = Rc::clone(&update);
+    let increase = Button::new(format!("{id}-increase"))
+        .label("+")
+        .tooltip(format!("Increase {label}"))
+        .disabled(value >= max)
+        .on_click(move |_event, _window, app| {
+            increase_entity.update(app, |view, _| {
+                increase_update(view, quantize_range_value(value + step, min, max, step));
+            });
+        });
     let down_update = Rc::clone(&update);
     let move_update = update;
     let interaction = canvas(
@@ -776,12 +800,20 @@ fn range_control<V: 'static>(
     v_flex()
         .gap_2()
         .child(
-            h_flex().justify_between().child(Label::new(label)).child(
-                Label::new(format_slider_value(value, step))
-                    .text_sm()
-                    .px_2()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().muted),
+            h_flex().justify_between().gap_2().child(Label::new(label)).child(
+                h_flex()
+                    .gap_2()
+                    .child(decrease)
+                    .child(
+                        Label::new(format_slider_value(value, step))
+                            .min_w_12()
+                            .text_center()
+                            .text_sm()
+                            .px_2()
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().muted),
+                    )
+                    .child(increase),
             ),
         )
         .child(
@@ -822,8 +854,11 @@ fn range_value(
     step: f32,
 ) -> f32 {
     let fraction = ((position.x - bounds.origin.x) / bounds.size.width).clamp(0.0, 1.0);
-    let raw = min + (max - min) * fraction;
-    ((raw - min) / step).round().mul_add(step, min).clamp(min, max)
+    quantize_range_value(min + (max - min) * fraction, min, max, step)
+}
+
+fn quantize_range_value(value: f32, min: f32, max: f32, step: f32) -> f32 {
+    ((value - min) / step).round().mul_add(step, min).clamp(min, max)
 }
 
 fn format_slider_value(value: f32, step: f32) -> String {
@@ -1132,8 +1167,8 @@ mod tests {
     use gpui::{point, px, size, Bounds};
 
     use super::{
-        color_square_image, hsv_to_rgb, parse_rgb_channels, range_value, rgb_to_hsv,
-        PREVIEW_HEIGHT_PX, PREVIEW_WIDTH_PX,
+        color_square_image, hsv_to_rgb, parse_rgb_channels, quantize_range_value, range_value,
+        rgb_to_hsv, PREVIEW_HEIGHT_PX, PREVIEW_WIDTH_PX,
     };
 
     #[test]
@@ -1142,6 +1177,13 @@ mod tests {
         assert_eq!(range_value(bounds, point(px(110.0), px(30.0)), 0.0, 100.0, 1.0), 50.0);
         assert_eq!(range_value(bounds, point(px(-5.0), px(30.0)), 0.0, 100.0, 1.0), 0.0);
         assert_eq!(range_value(bounds, point(px(250.0), px(30.0)), 0.0, 100.0, 1.0), 100.0);
+    }
+
+    #[test]
+    fn keyboard_step_controls_quantize_and_clamp_slider_values() {
+        assert!((quantize_range_value(1.26, 0.0, 2.0, 0.1) - 1.3).abs() < f32::EPSILON * 2.0);
+        assert_eq!(quantize_range_value(-1.0, 0.0, 2.0, 0.1), 0.0);
+        assert_eq!(quantize_range_value(3.0, 0.0, 2.0, 0.1), 2.0);
     }
 
     #[test]
