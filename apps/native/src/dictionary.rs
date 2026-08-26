@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
-use gpui::{Context, ExternalPaths, FocusHandle, IntoElement, SharedString};
+use gpui::{Context, ExternalPaths, FocusHandle, IntoElement, Role, SharedString};
 use gpui_component::{h_flex, v_flex, ActiveTheme as _};
 
 use crate::domain::{NativeDictionaryProfile, UiLanguage};
@@ -195,6 +195,9 @@ fn field_editor<V: 'static>(
             .track_focus(&focus_handle)
             .tab_index(0)
             .accessibility_id(label)
+            .role(Role::TextInput)
+            .aria_label(label)
+            .aria_value(value)
             .flex_1()
             .min_h_8()
             .px_3()

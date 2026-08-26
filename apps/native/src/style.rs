@@ -5,7 +5,7 @@ use std::{rc::Rc, sync::Arc};
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, relative, rems, Bounds, Context, FocusHandle, IntoElement, MouseDownEvent,
-    MouseMoveEvent, Pixels, Point, RenderImage, SharedString,
+    MouseMoveEvent, Pixels, Point, RenderImage, Role, SharedString,
 };
 use gpui_component::button::Button;
 use gpui_component::label::Label;
@@ -699,6 +699,9 @@ fn preview_input<V: 'static>(
             .track_focus(&focus_handle)
             .tab_index(0)
             .accessibility_id(label)
+            .role(Role::TextInput)
+            .aria_label(label)
+            .aria_value(value)
             .min_h_8()
             .px_3()
             .py_2()
@@ -727,6 +730,11 @@ fn font_picker<V: 'static>(
     let on_font_focus = callbacks.on_font_focus;
     let on_font_select = callbacks.on_font_select;
     let font_focus = state.focus_handle.clone();
+    let accessibility_value = if state.query.is_empty() && state.caret.is_none() {
+        style.font_family.as_str()
+    } else {
+        state.query
+    };
     let displayed_font = if state.query.is_empty() && state.caret.is_none() {
         editable_text(&style.font_family, None, cx)
     } else {
@@ -738,6 +746,9 @@ fn font_picker<V: 'static>(
             .track_focus(&font_focus)
             .tab_index(0)
             .accessibility_id(text(language, TextKey::FontFamily))
+            .role(Role::TextInput)
+            .aria_label(text(language, TextKey::FontFamily))
+            .aria_value(accessibility_value)
             .min_h_8()
             .px_3()
             .py_2()

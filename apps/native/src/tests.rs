@@ -440,11 +440,18 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(dictionary.contains(".track_focus(&focus_handle)"));
     assert!(dictionary.contains(".tab_index(0)"));
     assert!(dictionary.contains(".accessibility_id(label)"));
+    assert!(dictionary.contains(".role(Role::TextInput)"));
+    assert!(dictionary.contains(".aria_label(label)"));
+    assert!(dictionary.contains(".aria_value(value)"));
     assert!(style.contains(".track_focus(&focus_handle)"));
     assert!(style.contains(".track_focus(&font_focus)"));
     assert!(style.contains(".tab_index(0)"));
     assert!(style.contains(".accessibility_id(label)"));
     assert!(style.contains(".accessibility_id(text(language, TextKey::FontFamily))"));
+    assert!(style.contains(".role(Role::TextInput)"));
+    assert!(style.contains(".aria_label(label)"));
+    assert!(style.contains(".aria_value(value)"));
+    assert!(style.contains(".aria_value(accessibility_value)"));
     assert!(dictionary.contains("border_color(cx.theme().foreground)"));
     assert!(style.contains("border_color(cx.theme().foreground)"));
     assert!(style.contains(".accessibility_id(format!(\"{}: {label}\""));
