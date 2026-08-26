@@ -1,0 +1,29 @@
+include: package:very_good_analysis/analysis_options.yaml
+
+analyzer:
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
+  errors:
+    todo: error
+  exclude:
+    # Flutter Rust Bridge and Cargokit output is regenerated from Rust and must
+    # retain the generator's own analyzer contract. Every hand-written Dart
+    # source under lib/, test/, and integration_test/ remains included.
+    - lib/src/rust/**
+    - rust_builder/**
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
+
+formatter:
+  page_width: 80
+
+dart_code_linter:
+  metrics:
+    maximum-nesting-level: 3
