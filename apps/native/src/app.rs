@@ -84,7 +84,7 @@ pub struct MainView {
     active_color_picker: Option<String>,
     persist_error: Option<String>,
     active_companion_device_id: Option<String>,
-    focused_field: FocusField,
+    focused_field: Option<FocusField>,
     focus_handle: FocusHandle,
     surfaces: Rc<RefCell<DebugSurfaces>>,
     preview_source: String,
@@ -112,6 +112,14 @@ enum FocusField {
     Font,
     PreviewSource,
     PreviewTranslation,
+}
+
+fn dismissible_keyboard_context(
+    focused_field: Option<FocusField>,
+    device_select_open: bool,
+    font_select_open: bool,
+) -> bool {
+    focused_field.is_some() || device_select_open || font_select_open
 }
 
 fn adjacent_app_tab(tab: AppTab, reverse: bool) -> AppTab {
@@ -256,7 +264,7 @@ impl MainView {
             active_color_picker: None,
             persist_error,
             active_companion_device_id: None,
-            focused_field: FocusField::Reading,
+            focused_field: None,
             focus_handle: cx.focus_handle(),
             surfaces,
             preview_source,
@@ -308,6 +316,7 @@ impl MainView {
 
     fn select_tab(&mut self, tab: AppTab) {
         self.tab = tab;
+        self.focused_field = None;
         if tab == AppTab::Style {
             if self.fonts.is_empty() {
                 self.fonts = caption_bridge_render::font_families();
@@ -605,6 +614,22 @@ impl MainView {
     }
 
     fn apply_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "escape"
+            && dismissible_keyboard_context(
+                self.focused_field,
+                self.device_select_open,
+                self.font_select_open,
+            )
+        {
+            self.focused_field = None;
+            self.device_select_open = false;
+            self.font_select_open = false;
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+
         if event.keystroke.key == "tab" && event.keystroke.modifiers.control {
             self.select_tab(adjacent_app_tab(self.tab, event.keystroke.modifiers.shift));
             cx.notify();
@@ -615,11 +640,11 @@ impl MainView {
         let accepts_input = match self.tab {
             AppTab::Dictionary => matches!(
                 self.focused_field,
-                FocusField::Query | FocusField::Reading | FocusField::Word
+                Some(FocusField::Query | FocusField::Reading | FocusField::Word)
             ),
             AppTab::Style => matches!(
                 self.focused_field,
-                FocusField::Font | FocusField::PreviewSource | FocusField::PreviewTranslation
+                Some(FocusField::Font | FocusField::PreviewSource | FocusField::PreviewTranslation)
             ),
             _ => false,
         };
@@ -628,8 +653,9 @@ impl MainView {
         }
         if event.keystroke.key == "tab" {
             let reverse = event.keystroke.modifiers.shift;
-            if let Some(next) = adjacent_text_field(self.focused_field, reverse) {
-                self.focused_field = next;
+            let field = self.focused_field.expect("accepts_input requires a focused text field");
+            if let Some(next) = adjacent_text_field(field, reverse) {
+                self.focused_field = Some(next);
                 cx.notify();
             } else if reverse {
                 window.focus_prev(cx);
@@ -644,11 +670,12 @@ impl MainView {
     }
 
     fn apply_focused_text_key(&mut self, event: &KeyDownEvent) {
-        let preview_text_field = matches!(
-            self.focused_field,
-            FocusField::PreviewSource | FocusField::PreviewTranslation
-        );
-        let (buffer, caret) = match self.focused_field {
+        let Some(focused_field) = self.focused_field else {
+            return;
+        };
+        let preview_text_field =
+            matches!(focused_field, FocusField::PreviewSource | FocusField::PreviewTranslation);
+        let (buffer, caret) = match focused_field {
             FocusField::Query => (&mut self.query, &mut self.query_caret),
             FocusField::Reading => (&mut self.draft_reading, &mut self.reading_caret),
             FocusField::Word => (&mut self.draft_word, &mut self.word_caret),
@@ -775,15 +802,16 @@ impl Render for MainView {
                         query: &self.font_query,
                         families: &self.fonts,
                         open: self.font_select_open,
-                        caret: (self.focused_field == FocusField::Font).then_some(self.font_caret),
+                        caret: (self.focused_field == Some(FocusField::Font))
+                            .then_some(self.font_caret),
                     },
                     language,
                     active_color_picker: self.active_color_picker.as_deref(),
-                    preview_source_caret: (self.focused_field == FocusField::PreviewSource)
+                    preview_source_caret: (self.focused_field == Some(FocusField::PreviewSource))
                         .then_some(self.preview_source_caret),
                     preview_translation_caret: (self.focused_field
-                        == FocusField::PreviewTranslation)
-                        .then_some(self.preview_translation_caret),
+                        == Some(FocusField::PreviewTranslation))
+                    .then_some(self.preview_translation_caret),
                     persist_error: persist.as_deref(),
                 },
                 cx,
@@ -802,7 +830,7 @@ impl Render for MainView {
                     },
                     on_change: |view, next| view.set_style(next),
                     on_font_focus: |view, window, cx| {
-                        view.focused_field = FocusField::Font;
+                        view.focused_field = Some(FocusField::Font);
                         view.font_caret = view.font_query.len();
                         view.font_select_open = true;
                         window.focus(&view.focus_handle, cx);
@@ -817,13 +845,13 @@ impl Render for MainView {
                         view.set_style(next);
                     },
                     on_preview_source_focus: |view, window, cx| {
-                        view.focused_field = FocusField::PreviewSource;
+                        view.focused_field = Some(FocusField::PreviewSource);
                         view.preview_source_caret = view.preview_source.len();
                         window.focus(&view.focus_handle, cx);
                         cx.notify();
                     },
                     on_preview_translation_focus: |view, window, cx| {
-                        view.focused_field = FocusField::PreviewTranslation;
+                        view.focused_field = Some(FocusField::PreviewTranslation);
                         view.preview_translation_caret = view.preview_translation.len();
                         window.focus(&view.focus_handle, cx);
                         cx.notify();
@@ -846,11 +874,12 @@ impl Render for MainView {
                     query: &self.query,
                     draft_reading: &self.draft_reading,
                     draft_word: &self.draft_word,
-                    query_caret: (self.focused_field == FocusField::Query)
+                    query_caret: (self.focused_field == Some(FocusField::Query))
                         .then_some(self.query_caret),
-                    reading_caret: (self.focused_field == FocusField::Reading)
+                    reading_caret: (self.focused_field == Some(FocusField::Reading))
                         .then_some(self.reading_caret),
-                    word_caret: (self.focused_field == FocusField::Word).then_some(self.word_caret),
+                    word_caret: (self.focused_field == Some(FocusField::Word))
+                        .then_some(self.word_caret),
                     language,
                     persist_error: persist.as_deref(),
                 },
@@ -874,19 +903,19 @@ impl Render for MainView {
                     },
                     on_import_paths: |view, paths| view.import_dictionary_paths(paths),
                     on_focus_query: |view, window, cx| {
-                        view.focused_field = FocusField::Query;
+                        view.focused_field = Some(FocusField::Query);
                         view.query_caret = view.query.len();
                         window.focus(&view.focus_handle, cx);
                         cx.notify();
                     },
                     on_focus_reading: |view, window, cx| {
-                        view.focused_field = FocusField::Reading;
+                        view.focused_field = Some(FocusField::Reading);
                         view.reading_caret = view.draft_reading.len();
                         window.focus(&view.focus_handle, cx);
                         cx.notify();
                     },
                     on_focus_word: |view, window, cx| {
-                        view.focused_field = FocusField::Word;
+                        view.focused_field = Some(FocusField::Word);
                         view.word_caret = view.draft_word.len();
                         window.focus(&view.focus_handle, cx);
                         cx.notify();
@@ -1393,7 +1422,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod focus_tests {
-    use super::{adjacent_app_tab, adjacent_text_field, AppTab, FocusField};
+    use super::{
+        adjacent_app_tab, adjacent_text_field, dismissible_keyboard_context, AppTab, FocusField,
+    };
+
+    #[test]
+    fn escape_context_covers_text_fields_and_open_selection_menus() {
+        assert!(dismissible_keyboard_context(Some(FocusField::Query), false, false));
+        assert!(dismissible_keyboard_context(None, true, false));
+        assert!(dismissible_keyboard_context(None, false, true));
+        assert!(!dismissible_keyboard_context(None, false, false));
+    }
 
     #[test]
     fn control_tab_cycles_all_app_tabs_in_both_directions() {
