@@ -19,6 +19,13 @@ import {
   type WorkersAiAsrState,
   type WorkersAiAsrUtteranceFinal,
 } from "../lib/workers-ai-asr-controller";
+import {
+  addWorkersAiAsrUsage,
+  emptyWorkersAiAsrAudioSeconds,
+  WORKERS_AI_ASR_USD_PER_AUDIO_MINUTE,
+  type WorkersAiAsrAudioSeconds,
+  workersAiAsrCostUsd,
+} from "../lib/workers-ai-asr-cost";
 import { isWorkersAiAsrCaptureSupported } from "../lib/workers-ai-asr-support";
 
 interface PipelineResult {
@@ -44,6 +51,7 @@ interface PipelineResult {
 
 interface UsageTotals {
   audioSeconds: number;
+  asrAudioSeconds: WorkersAiAsrAudioSeconds;
   workerRequests: number;
   workerCpuMs: number;
   containerActiveMs: number;
@@ -51,7 +59,6 @@ interface UsageTotals {
 }
 
 interface CostEstimate {
-  audioSeconds: number;
   asrUsd: number;
   requestUsd: number;
   cpuUsd: number;
@@ -64,15 +71,12 @@ interface MicrophoneOption {
   label: string;
 }
 
-const ASR_PRICES: Record<BrowserAsrModel, number> = {
-  "@cf/deepgram/nova-3": 0.0052,
-  "@cf/openai/whisper-large-v3-turbo": 0.00051,
-};
 const WORKER_USD_PER_MILLION_REQUESTS = 0.3;
 const WORKER_USD_PER_MILLION_CPU_MS = 0.02;
 const ONE_MILLION = 1_000_000;
 const EMPTY_USAGE: UsageTotals = {
   audioSeconds: 0,
+  asrAudioSeconds: emptyWorkersAiAsrAudioSeconds(),
   workerRequests: 0,
   workerCpuMs: 0,
   containerActiveMs: 0,
@@ -112,14 +116,12 @@ const formatUsd = (value: number): string =>
 const elapsedWorkerCpuMs = (logs: WorkersAiPipelineLog[]): number =>
   logs.filter((entry) => entry.stage !== "asr").reduce((sum, entry) => sum + entry.elapsedMs, 0);
 
-const estimateCost = (usage: UsageTotals, asrModel: BrowserAsrModel): CostEstimate => {
-  const audioSeconds = usage.audioSeconds;
-  const asrUsd = (audioSeconds / 60) * ASR_PRICES[asrModel];
+const estimateCost = (usage: UsageTotals): CostEstimate => {
+  const asrUsd = workersAiAsrCostUsd(usage.asrAudioSeconds);
   const requestUsd = (usage.workerRequests / ONE_MILLION) * WORKER_USD_PER_MILLION_REQUESTS;
   const cpuUsd = (usage.workerCpuMs / ONE_MILLION) * WORKER_USD_PER_MILLION_CPU_MS;
   const containerUsd = usage.containerUsd;
   return {
-    audioSeconds,
     asrUsd,
     requestUsd,
     cpuUsd,
@@ -211,13 +213,19 @@ export default function ComparePage(): React.JSX.Element {
       setResults((current) => prependResultHistory(current, nextResult));
       setUsage((current) => ({
         audioSeconds: current.audioSeconds + payload.audioSeconds,
+        asrAudioSeconds: addWorkersAiAsrUsage(
+          current.asrAudioSeconds,
+          payload,
+          asrModel,
+          payload.audioSeconds,
+        ),
         workerRequests: current.workerRequests + 1,
         workerCpuMs: current.workerCpuMs + elapsedWorkerCpuMs(logs),
         containerActiveMs: current.containerActiveMs + containerActiveMs,
         containerUsd: current.containerUsd + containerCostUsd(billedTier, containerActiveMs),
       }));
     },
-    [computeTier],
+    [asrModel, computeTier],
   );
 
   const createController = useCallback((): WorkersAiAsrController => {
@@ -266,7 +274,7 @@ export default function ComparePage(): React.JSX.Element {
   }, [createController, state]);
 
   const result = results[0];
-  const cost = useMemo(() => estimateCost(usage, asrModel), [asrModel, usage]);
+  const cost = useMemo(() => estimateCost(usage), [usage]);
   const activeStage = state === "listening" ? "capture" : interim === "認識中…" ? "asr" : undefined;
   const settingsDisabled = state !== "idle" && state !== "error";
 
@@ -452,12 +460,18 @@ export default function ComparePage(): React.JSX.Element {
             <strong>{formatUsd(cost.totalUsd)}</strong>
           </div>
           <dl className="cost-breakdown">
-            <div>
-              <dt>
-                {asrModel} ({cost.audioSeconds.toFixed(1)} 秒)
-              </dt>
-              <dd>{formatUsd(cost.asrUsd)}</dd>
-            </div>
+            {(Object.entries(usage.asrAudioSeconds) as [BrowserAsrModel, number][]).map(
+              ([model, audioSeconds]) => (
+                <div key={model}>
+                  <dt>
+                    {model} billed audio ({audioSeconds.toFixed(1)} 秒)
+                  </dt>
+                  <dd>
+                    {formatUsd((audioSeconds / 60) * WORKERS_AI_ASR_USD_PER_AUDIO_MINUTE[model])}
+                  </dd>
+                </div>
+              ),
+            )}
             <div>
               <dt>Worker requests ({usage.workerRequests})</dt>
               <dd>{formatUsd(cost.requestUsd)}</dd>
@@ -480,7 +494,8 @@ export default function ComparePage(): React.JSX.Element {
           <p className="fine-print">
             Nova-3 と Whisper は browser Silero が確定した発話だけを送信します。マイク開始中の無音は
             課金対象音声へ加算しません。Whisper は $0.00051/音声分、Nova-3 は $0.0052/音声分。
-            Container は選択tierの処理時間から推定し、停止時に明示release、異常終了時も1分でdestroy
+            Nova-3からWhisperへfallbackした発話は同じ音声時間を両モデルへ加算します。 Container
+            は選択tierの処理時間から推定し、停止時に明示release、異常終了時も1分でdestroy
             します。cold start、無料枠、Cloudflareの実請求CPU差分は含みません。
           </p>
         </article>

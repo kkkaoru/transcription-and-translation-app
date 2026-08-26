@@ -31,7 +31,9 @@ describe("Cloudflare speech verification page", () => {
     const html = renderToStaticMarkup(createElement(ComparePage));
 
     expect(html).toMatch(/料金と処理時間/);
-    expect(html).toMatch(/@cf\/deepgram\/nova-3 \(0.0 秒\)/);
+    expect(html).toMatch(/@cf\/deepgram\/nova-3 billed audio \(0.0 秒\)/);
+    expect(html).toMatch(/@cf\/openai\/whisper-large-v3-turbo billed audio \(0.0 秒\)/);
+    expect(html).toMatch(/Nova-3からWhisperへfallbackした発話は同じ音声時間を両モデルへ加算/);
     expect(html).toMatch(/Worker requests \(0\)/);
     expect(html).toMatch(/Vibrato \+ AzooKey Worker CPU \(0.0 ms\)/);
     expect(html).toMatch(/マイク開始中の無音は/);
