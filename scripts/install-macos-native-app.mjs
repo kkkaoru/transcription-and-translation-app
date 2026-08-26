@@ -85,6 +85,49 @@ const runChecked = (command, args) => {
   return result.stdout || "";
 };
 
+const escapeProcessPattern = (value) => value.replace(/[\\^$.*+?()[\]{}|]/gu, "\\$&");
+
+const waitBriefly = () => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+};
+
+export const terminateRunningNativeApp = (
+  installApp = resolveNativeInstallApp(),
+  { run = spawnSync, wait = waitBriefly } = {},
+) => {
+  const executable = join(installApp, "Contents", "MacOS", BINARY_NAME);
+  const pattern = `^${escapeProcessPattern(executable)}([[:space:]]|$)`;
+  const pgrep = () => run("/usr/bin/pgrep", ["-f", pattern], { encoding: "utf8" });
+  const initial = pgrep();
+  if (initial.status === 1) {
+    return false;
+  }
+  if (initial.status !== 0) {
+    throw new Error(`could not inspect the running Native app: ${(initial.stderr || "").trim()}`);
+  }
+
+  const terminated = run("/usr/bin/pkill", ["-TERM", "-f", pattern], { encoding: "utf8" });
+  if (terminated.status !== 0 && terminated.status !== 1) {
+    throw new Error(`could not terminate the running Native app: ${(terminated.stderr || "").trim()}`);
+  }
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    wait();
+    const remaining = pgrep();
+    if (remaining.status === 1) {
+      return true;
+    }
+    if (remaining.status !== 0) {
+      throw new Error(`could not inspect Native app termination: ${(remaining.stderr || "").trim()}`);
+    }
+  }
+
+  const killed = run("/usr/bin/pkill", ["-KILL", "-f", pattern], { encoding: "utf8" });
+  if (killed.status !== 0 && killed.status !== 1) {
+    throw new Error(`could not stop the unresponsive Native app: ${(killed.stderr || "").trim()}`);
+  }
+  return true;
+};
+
 export const nativeInfoPlist = () => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -236,6 +279,7 @@ export const assembleNativeApp = ({
   symlinkSync(ORT_DYNAMIC_LIBRARY_TARGET, join(macos, ORT_DYNAMIC_LIBRARY_NAME));
   rewriteBundleRpath(join(macos, BINARY_NAME));
 
+  terminateRunningNativeApp(installApp);
   rmSync(installApp, { recursive: true, force: true });
   runChecked("/bin/mv", [staging, installApp]);
   adhocSign(installApp);

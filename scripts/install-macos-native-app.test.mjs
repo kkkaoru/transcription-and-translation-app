@@ -14,6 +14,7 @@ import {
   PRODUCT_NAME,
   RETIRED_APP_PATH,
   resolveNativeInstallApp,
+  terminateRunningNativeApp,
 } from "./install-macos-native-app.mjs";
 
 describe("macOS Native app install", () => {
@@ -35,6 +36,49 @@ describe("macOS Native app install", () => {
       () => assertNotRetiredDestination(RETIRED_APP_PATH),
       /refusing to overwrite the retired app/u,
     );
+  });
+
+  it("does not signal the Native app when it is not running", () => {
+    const calls = [];
+    const stopped = terminateRunningNativeApp("/tmp/Kotoba Beacon Native.app", {
+      run: (command, args) => {
+        calls.push([command, args]);
+        return { status: 1, stdout: "", stderr: "" };
+      },
+      wait: () => {},
+    });
+
+    assert.equal(stopped, false);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "/usr/bin/pgrep");
+  });
+
+  it("terminates a running Native app before replacement", () => {
+    const calls = [];
+    let inspections = 0;
+    const stopped = terminateRunningNativeApp("/tmp/Kotoba Beacon Native.app", {
+      run: (command, args) => {
+        calls.push([command, args]);
+        if (command === "/usr/bin/pgrep") {
+          inspections += 1;
+          return inspections === 1
+            ? { status: 0, stdout: "42\n", stderr: "" }
+            : { status: 1, stdout: "", stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      },
+      wait: () => {},
+    });
+
+    assert.equal(stopped, true);
+    assert.deepEqual(calls[1].slice(0, 2), [
+      "/usr/bin/pkill",
+      [
+        "-TERM",
+        "-f",
+        "^/tmp/Kotoba Beacon Native\\.app/Contents/MacOS/kotoba-beacon-native([[:space:]]|$)",
+      ],
+    ]);
   });
 
   it("writes Native identity and permissions into Info.plist", () => {

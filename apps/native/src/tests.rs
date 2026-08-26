@@ -175,9 +175,10 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(makefile.contains("native-replace: native-install"));
     assert!(makefile.contains("cargo build --locked --release --manifest-path $(NATIVE_MANIFEST)"));
     assert!(makefile.contains("assembleNativeApp"));
-    assert!(!makefile.contains("pgrep -x kotoba-beacon-native"));
-    assert!(!makefile.contains("pkill -TERM -x kotoba-beacon-native"));
-    assert!(!makefile.contains("pkill -KILL -x kotoba-beacon-native"));
+    assert!(makefile.contains("Stop the running app"));
+    let installer = include_str!("../../../scripts/install-macos-native-app.mjs");
+    assert!(installer.contains("terminateRunningNativeApp(installApp)"));
+    assert!(installer.contains("[\"-TERM\", \"-f\", pattern]"));
 
     let ci = include_str!("../../../.github/workflows/ci.yml");
     let native_test_step = ci
