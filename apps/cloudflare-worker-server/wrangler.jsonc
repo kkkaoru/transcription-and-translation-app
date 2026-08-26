@@ -30,7 +30,8 @@
     "MODEL_ROUTES": "{\"zenz-v3.2-xsmall-gguf\":{\"baseUrl\":\"https://zenz.internal\"},\"zenz-v3.2-small-gguf\":{\"baseUrl\":\"https://zenz.internal\"}}",
     "AZOOKEY_PROFILE_DO": "on",
     "AZOOKEY_TIMEOUT_MS": "2000",
-    "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz"
+    "AZOOKEY_DICTIONARY_URL": "/azookey/system.azkdict.gz",
+    "VIBRATO_DICTIONARY_URL": "/vibrato/system.dic.zst"
   },
   // Names only: Wrangler can warn when local/prod secrets are missing, but
   // secret values are always entered through `wrangler secret put`.

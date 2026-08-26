@@ -1,3 +1,5 @@
+// This file runs with bun.
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -43,10 +45,22 @@ describe("Cloudflare deployment configuration", () => {
     };
     expect(devConfig.ai).toEqual({ binding: "AI", remote: true });
     expect(devConfig.vars?.["AZOOKEY_DICTIONARY_URL"]).toBe("/azookey/system.azkdict.gz");
-    expect(config.vars).not.toHaveProperty("VIBRATO_DICTIONARY_URL");
+    expect(config.vars?.["VIBRATO_DICTIONARY_URL"]).toBe("/vibrato/system.dic.zst");
     expect(existsSync(new URL("../public/azookey/system.azkdict.gz", import.meta.url))).toBe(true);
-    // Morphology is server-owned; the Worker must not bundle the prohibited dictionary copy.
-    expect(existsSync(new URL("../public/vibrato/system.dic.zst", import.meta.url))).toBe(false);
+    expect(
+      createHash("sha256")
+        .update(readFileSync(new URL("../public/vibrato/system.dic.zst", import.meta.url)))
+        .digest("hex"),
+    ).toBe("82a6da70bb4a17be70f20ff44f650f9ad1d2b0b4fcb2f39c17fc797f92d0ab75");
+    expect(
+      createHash("sha256")
+        .update(
+          readFileSync(
+            new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/system.dic.zst", import.meta.url),
+          ),
+        )
+        .digest("hex"),
+    ).toBe("82a6da70bb4a17be70f20ff44f650f9ad1d2b0b4fcb2f39c17fc797f92d0ab75");
     expect(readFileSync(new URL("../public/vibrato/COPYING", import.meta.url))).toEqual(
       readFileSync(new URL("../../../assets/vibrato/ipadic-mecab-2_7_0/COPYING", import.meta.url)),
     );
