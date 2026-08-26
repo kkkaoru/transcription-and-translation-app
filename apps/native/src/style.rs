@@ -833,6 +833,7 @@ fn range_control<V: 'static>(
     let decrease_update = Rc::clone(&update);
     let decrease = Button::new(format!("{id}-decrease"))
         .label("−")
+        .accessibility_id(format!("{}: {label}", text(language, TextKey::Decrease)))
         .tooltip(format!("{}: {label}", text(language, TextKey::Decrease)))
         .disabled(value <= min)
         .on_click(move |_event, _window, app| {
@@ -844,6 +845,7 @@ fn range_control<V: 'static>(
     let increase_update = Rc::clone(&update);
     let increase = Button::new(format!("{id}-increase"))
         .label("+")
+        .accessibility_id(format!("{}: {label}", text(language, TextKey::Increase)))
         .tooltip(format!("{}: {label}", text(language, TextKey::Increase)))
         .disabled(value >= max)
         .on_click(move |_event, _window, app| {
@@ -1064,6 +1066,7 @@ fn color_channel_stepper<V: 'static>(
     let decrease_update = Rc::clone(&update);
     let decrease = Button::new(format!("{id}-decrease"))
         .label("−")
+        .accessibility_id(format!("{label}: {}", text(language, TextKey::Decrease)))
         .tooltip(format!("{label}: {}", text(language, TextKey::Decrease)))
         .disabled(channels[channel_index] == 0)
         .on_click(move |_event, _window, app| {
@@ -1073,6 +1076,7 @@ fn color_channel_stepper<V: 'static>(
         });
     let increase = Button::new(format!("{id}-increase"))
         .label("+")
+        .accessibility_id(format!("{label}: {}", text(language, TextKey::Increase)))
         .tooltip(format!("{label}: {}", text(language, TextKey::Increase)))
         .disabled(channels[channel_index] == u8::MAX)
         .on_click(move |_event, _window, app| {

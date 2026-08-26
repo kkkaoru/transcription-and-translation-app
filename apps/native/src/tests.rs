@@ -447,6 +447,8 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(style.contains(".accessibility_id(text(language, TextKey::FontFamily))"));
     assert!(dictionary.contains("border_color(cx.theme().foreground)"));
     assert!(style.contains("border_color(cx.theme().foreground)"));
+    assert!(style.contains(".accessibility_id(format!(\"{}: {label}\""));
+    assert!(style.contains(".accessibility_id(format!(\"{label}: {}\""));
 }
 
 #[test]
