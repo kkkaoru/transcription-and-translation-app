@@ -7,7 +7,7 @@ use gpui::{
     canvas, div, px, relative, rems, Bounds, Context, IntoElement, MouseDownEvent, MouseMoveEvent,
     Pixels, Point, RenderImage, SharedString,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::Button;
 use gpui_component::label::Label;
 use gpui_component::switch::Switch;
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, Selectable as _, StyledExt as _};
@@ -593,7 +593,7 @@ pub fn render_style<V: 'static>(
     v_flex()
         .size_full()
         .min_h_0()
-        .gap_4()
+        .gap_3()
         .child(profiles)
         .child(preview)
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
@@ -603,13 +603,13 @@ pub fn render_style<V: 'static>(
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .pr_2()
-                .pb_4()
-                .gap_4()
+                .pr_3()
+                .pb_3()
+                .gap_3()
                 .child(typography)
-                .child(h_flex().items_start().gap_4().child(source).child(translation))
+                .child(h_flex().items_start().gap_3().child(source).child(translation))
                 .child(placement)
-                .child(h_flex().items_start().gap_4().child(background).child(shadow))
+                .child(h_flex().items_start().gap_3().child(background).child(shadow))
                 .child(outline),
         )
 }
@@ -618,7 +618,7 @@ fn setting_section(title: &'static str, content: gpui::Div, cx: &gpui::App) -> g
     card(cx)
         .flex_1()
         .gap_3()
-        .child(Label::new(title).text_lg().font_semibold())
+        .child(Label::new(title).font_semibold())
         .child(content.flex().flex_col().gap_3())
 }
 
@@ -630,7 +630,7 @@ fn preview_input<V: 'static>(
     cx: &mut Context<V>,
     on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
 ) -> impl IntoElement {
-    v_flex().flex_1().gap_1().child(muted(label)).child(
+    v_flex().flex_1().gap_2().child(muted(label)).child(
         h_flex()
             .id(id)
             .min_h_8()
@@ -660,7 +660,7 @@ fn font_picker<V: 'static>(
     } else {
         editable_text(state.query, state.caret, cx)
     };
-    let mut picker = v_flex().gap_1().child(muted(text(language, TextKey::FontFamily))).child(
+    let mut picker = v_flex().gap_2().child(muted(text(language, TextKey::FontFamily))).child(
         h_flex()
             .id("font-search")
             .min_h_8()
@@ -685,8 +685,8 @@ fn font_picker<V: 'static>(
             .map(|family| {
                 let family_value = family.clone();
                 Button::new(format!("font-option-{family}"))
-                    .ghost()
                     .label(family.clone())
+                    // Font samples are editable caption data, not application typography.
                     .font_family(family.clone())
                     .on_click(cx.listener(move |view, _event, _window, _cx| {
                         on_font_select(view, &family_value);
@@ -699,7 +699,7 @@ fn font_picker<V: 'static>(
                 .max_h(rems(15.))
                 .overflow_y_scroll()
                 .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation())
-                .p_1()
+                .p_2()
                 .border_1()
                 .border_color(cx.theme().border)
                 .rounded(cx.theme().radius)
@@ -774,7 +774,7 @@ fn range_control<V: 'static>(
     .size_full();
 
     v_flex()
-        .gap_1()
+        .gap_2()
         .child(
             h_flex().justify_between().child(Label::new(label)).child(
                 Label::new(format_slider_value(value, step))
@@ -807,7 +807,7 @@ fn range_control<V: 'static>(
         .child(
             h_flex()
                 .justify_between()
-                .text_xs()
+                .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(SharedString::from(format_slider_value(min, step)))
                 .child(SharedString::from(format_slider_value(max, step))),
@@ -863,7 +863,6 @@ fn color_picker_control<V: 'static>(
         .gap_2()
         .child(
             Button::new(format!("color-picker-{id}"))
-                .outline()
                 .selected(active)
                 .child(
                     h_flex()

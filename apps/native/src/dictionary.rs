@@ -6,7 +6,7 @@ use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
 use gpui::{Context, ExternalPaths, IntoElement, SharedString};
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
+use gpui_component::{h_flex, v_flex, ActiveTheme as _};
 
 use crate::domain::{NativeDictionaryProfile, UiLanguage};
 use crate::i18n::{text, TextKey};
@@ -94,7 +94,6 @@ pub fn render_dictionary<V: 'static>(
                     .child(
                         Button::new(format!("dict-delete-{}", entry.id))
                             .danger()
-                            .small()
                             .label(text(language, TextKey::Delete))
                             .on_click(cx.listener(move |view, _event, _window, _cx| {
                                 (callbacks.on_delete)(view, &id);

@@ -54,7 +54,6 @@ pub fn render_live<V: 'static>(
     let translation_enabled = capture.translation_enabled();
 
     let trigger = Button::new("live-device-select")
-        .outline()
         .label(selected)
         .dropdown_caret(true)
         .disabled(!has_devices)
@@ -64,8 +63,8 @@ pub fn render_live<V: 'static>(
 
     let dropdown = (select_open && has_devices).then(|| {
         v_flex()
-            .gap_1()
-            .p_1()
+            .gap_2()
+            .p_2()
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().border)
@@ -73,7 +72,6 @@ pub fn render_live<V: 'static>(
             .children(snapshot.devices.iter().map(|device| {
                 let id = device.id.clone();
                 Button::new(format!("live-device-option-{id}"))
-                    .ghost()
                     .selected(Some(device.id.as_str()) == selected_device_id)
                     .label(device_label(device.name.as_str(), device.is_default, language))
                     .on_click(cx.listener(move |view, _event, _window, _cx| {
@@ -160,16 +158,14 @@ pub fn render_live<V: 'static>(
         .when_some(error_panel, |this, panel| this.child(panel))
         .child(
             v_flex()
-                .gap_1()
-                .mt_2()
+                .gap_2()
                 .child(muted(text(language, TextKey::RecognitionResult)))
                 .child(Label::new(source).text_lg()),
         )
         .when(translation_enabled, |this| {
             this.child(
                 v_flex()
-                    .gap_1()
-                    .mt_2()
+                    .gap_2()
                     .child(muted(text(language, TextKey::TranslationResult)))
                     .child(Label::new(translation).text_lg()),
             )

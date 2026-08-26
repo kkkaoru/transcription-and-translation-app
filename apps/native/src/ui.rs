@@ -10,7 +10,7 @@ use gpui_component::alert::Alert;
 use gpui_component::button::Button;
 use gpui_component::label::Label;
 use gpui_component::tab::{Tab, TabBar};
-use gpui_component::{v_flex, ActiveTheme as _, Sizable as _, StyledExt as _};
+use gpui_component::{v_flex, ActiveTheme as _, StyledExt as _};
 use image::{Frame, ImageBuffer, Rgba};
 use smallvec::SmallVec;
 
@@ -35,7 +35,7 @@ pub fn sky_page(cx: &App) -> gpui::Div {
         .size_full()
         .bg(cx.theme().background)
         .text_color(cx.theme().foreground)
-        .text_sm()
+        .text_base()
 }
 
 pub fn card(cx: &App) -> gpui::Div {
@@ -49,7 +49,7 @@ pub fn card(cx: &App) -> gpui::Div {
 }
 
 pub fn heading(value: impl Into<SharedString>) -> impl IntoElement {
-    Label::new(value).text_lg().font_semibold()
+    Label::new(value).font_semibold()
 }
 
 pub fn muted(value: impl Into<SharedString>) -> impl IntoElement {
@@ -68,7 +68,7 @@ pub fn editable_text(value: &str, caret: Option<usize>, cx: &App) -> gpui::Div {
 }
 
 pub fn error_line(value: impl Into<gpui_component::text::Text>) -> impl IntoElement {
-    Alert::error("inline-error", value).small().banner()
+    Alert::error("inline-error", value).banner()
 }
 
 pub fn button(
@@ -90,7 +90,6 @@ pub fn tab_bar<V: 'static>(
 
     TabBar::new("main-tabs")
         .pill()
-        .small()
         .selected_index(selected_index)
         .on_click(cx.listener(move |view, index, _window, _cx| {
             if let Some(tab) = tabs.get(*index).copied() {

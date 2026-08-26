@@ -69,7 +69,7 @@ pub fn render_output<V: 'static>(
         )
         .child(
             v_flex()
-                .gap_1()
+                .gap_2()
                 .child(Label::new(text(language, TextKey::BrowserSource)).font_semibold())
                 .child(Label::new(NATIVE_BROWSER_SOURCE_HINT).text_sm()),
         )

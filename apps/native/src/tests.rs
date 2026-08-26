@@ -409,6 +409,31 @@ fn native_ui_uses_gpui_component_roots_controls_and_theme_tokens() {
 }
 
 #[test]
+fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
+    let ui = include_str!("ui.rs");
+    let live = include_str!("live.rs");
+    let output = include_str!("output.rs");
+    let settings = include_str!("settings.rs");
+    let dictionary = include_str!("dictionary.rs");
+    let style = include_str!("style.rs");
+    let sources = [ui, live, output, settings, dictionary, style];
+
+    for source in sources {
+        assert!(!source.contains(".text_xs()"));
+        assert!(!source.contains(".text_xl()"));
+        assert!(!source.contains(".font_bold()"));
+        assert!(!source.contains(".ghost()"));
+        assert!(!source.contains(".gap_1()"));
+        assert!(!source.contains(".gap_4()"));
+    }
+    assert!(ui.contains(".text_base()"));
+    assert!(ui.contains(".text_sm()"));
+    assert!(live.contains("Label::new(source).text_lg()"));
+    assert!(live.contains(".primary()"));
+    assert!(dictionary.contains(".danger()"));
+}
+
+#[test]
 fn app_content_has_no_identity_header_or_footer() {
     let source = include_str!("app.rs");
     assert!(!source.contains("child(heading(PRODUCT_NAME))"));
