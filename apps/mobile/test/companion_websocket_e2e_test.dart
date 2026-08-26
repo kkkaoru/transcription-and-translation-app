@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -126,15 +125,15 @@ Future<void> _testBonjourDiscovery() async {
 
 Future<void> _testBonjourMethodChannel() async {
   final messenger =
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  messenger.setMockMethodCallHandler(_processingChannel, (call) async {
-    expect(call.method, 'discoverCompanion');
-    expect(call.arguments, {'timeoutMillis': 1000});
-    return {
-      'endpoint': 'ws://192.168.1.227:18183/companion',
-      'token': '0123456789abcdef0123456789abcdef',
-    };
-  });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        ..setMockMethodCallHandler(_processingChannel, (call) async {
+          expect(call.method, 'discoverCompanion');
+          expect(call.arguments, {'timeoutMillis': 1000});
+          return {
+            'endpoint': 'ws://192.168.1.227:18183/companion',
+            'token': '0123456789abcdef0123456789abcdef',
+          };
+        });
   addTearDown(
     () => messenger.setMockMethodCallHandler(_processingChannel, null),
   );
@@ -149,8 +148,8 @@ Future<void> _testBonjourMethodChannel() async {
 
 Future<void> _testEmptyBonjourMethodChannel() async {
   final messenger =
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  messenger.setMockMethodCallHandler(_processingChannel, (_) async => null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        ..setMockMethodCallHandler(_processingChannel, (_) async => null);
   addTearDown(
     () => messenger.setMockMethodCallHandler(_processingChannel, null),
   );
