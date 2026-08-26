@@ -4,50 +4,37 @@ PARAPPER_MANIFEST := packages/parapper-asr/Cargo.toml
 NATIVE_MANIFEST := apps/native/Cargo.toml
 NATIVE_BINARY := apps/native/target/release/kotoba-beacon-native
 
-.PHONY: help build native-release native-replace parapper-fetch parapper-check
+.PHONY: help build native-release native-package native-install native-replace parapper-fetch parapper-check
 
 help:
 	@printf '%s\n' \
 		'Kotoba Beacon development targets:' \
-		'  make build           Build, package, and replace the installed macOS Native app' \
+		'  make build           Build and package the macOS Native app without touching the running app' \
 		'  make native-release  Build the locked optimized Native executable only' \
-		'  make native-replace  Package and replace the installed app without launching it' \
+		'  make native-package  Build and package the app without installing or launching it' \
+		'  make native-install  Explicitly replace the installed app; refuses while it is running' \
+		'  make native-replace  Alias for native-install' \
 		'  make parapper-fetch  Fetch locked Parapper Rust dependencies once' \
 		'  make parapper-check  Check Parapper with locked, offline dependencies'
 
-# The default developer build must leave Finder pointing at the new executable,
-# rather than a previously installed bundle. It never launches the application.
-build: native-replace
+# Normal builds must never stop, launch, activate, or replace the installed app.
+build: native-package
 
 native-release:
 	cargo build --locked --release --manifest-path $(NATIVE_MANIFEST)
 
-native-replace: native-release
-	@if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
-		echo 'Stopping the running Kotoba Beacon Native before replacement'; \
-		pkill -TERM -x kotoba-beacon-native; \
-		attempts=0; \
-		while pgrep -x kotoba-beacon-native >/dev/null 2>&1 && [ $$attempts -lt 50 ]; do \
-			sleep 0.1; \
-			attempts=$$((attempts + 1)); \
-		done; \
-		if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
-			echo 'Kotoba Beacon Native did not stop gracefully; forcing stale process exit'; \
-			pkill -KILL -x kotoba-beacon-native; \
-			attempts=0; \
-			while pgrep -x kotoba-beacon-native >/dev/null 2>&1 && [ $$attempts -lt 20 ]; do \
-				sleep 0.1; \
-				attempts=$$((attempts + 1)); \
-			done; \
-			if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
-				echo 'Kotoba Beacon Native could not be stopped; refusing replacement.' >&2; \
-				exit 1; \
-			fi; \
-		fi; \
-	fi
+native-package: native-release
 	bun run package:native
+
+native-install: native-package
+	@if pgrep -x kotoba-beacon-native >/dev/null 2>&1; then \
+		echo 'Kotoba Beacon Native is running; quit it before make native-install.' >&2; \
+		exit 1; \
+	fi
 	node --input-type=module -e 'import { assembleNativeApp } from "./scripts/install-macos-native-app.mjs"; const result = assembleNativeApp({ sourceBinary: "$(NATIVE_BINARY)" }); console.log("Replaced " + result.installApp + " without launching it");'
 	codesign --verify --deep --strict "$$HOME/Applications/Kotoba Beacon Native.app"
+
+native-replace: native-install
 
 # Run once after Cargo.lock changes or on a machine without the locked dependencies.
 parapper-fetch:

@@ -64,8 +64,11 @@ flutter analyze
 flutter test
 flutter build apk --release
 
-# Native（macOS: release build、package、インストール済み.appの置換）
+# Native（macOS: release buildとpackageのみ。起動中・インストール済み.appには触れない）
 make build
+
+# 明示的にインストール済み.appを置換（アプリ終了時のみ）
+make native-install
 ```
 
 ## Native字幕経路
@@ -83,11 +86,11 @@ Microphone
 
 Nativeアプリは子プロセスを必要としません。LiveまたはSettingsから翻訳をオン／オフでき、
 認識を止めずにQuickMTのロード・解放と翻訳表示を切り替えられます。macOSでは`make build`がlocked
-release executableと配布用bundleを生成し、既定のインストール先
-`~/Applications/Kotoba Beacon Native.app`を毎回置き換えます。古い実行中プロセスで
-確認してしまわないよう、アプリが起動中の場合は安全に終了してから置換します。
-ビルド・置換処理がアプリを再起動またはforegroundへ移動することはありません。置換後は
-手動で起動し、SettingsのBuild IDで対象コミットを確認できます。実行ファイルだけを作る場合は
+release executableと配布用bundleを生成しますが、起動中のNativeアプリを停止せず、
+`~/Applications/Kotoba Beacon Native.app`も置換しません。そのため通常のビルドでアプリが
+foregroundへ移動することはありません。インストール済みbundleを更新する場合だけ、アプリを
+手動で終了してから`make native-install`を実行します。起動中の場合は処理を拒否し、ビルド処理が
+アプリを終了・再起動・activateすることはありません。実行ファイルだけを作る場合は
 `make native-release`を使用します。
 
 OBS Browser Sourceは一つのURLを使用し、横・縦の表示はNativeのStyleプロファイルで
