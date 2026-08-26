@@ -94,7 +94,7 @@ pub fn tab_bar<V: 'static>(
     cx: &mut Context<V>,
     on_select: fn(&mut V, AppTab),
 ) -> impl IntoElement {
-    let tabs = [AppTab::Live, AppTab::Style, AppTab::Dictionary, AppTab::Output, AppTab::Settings];
+    let tabs = [AppTab::Live, AppTab::Style, AppTab::Dictionary, AppTab::Settings];
     let selected_index = tabs.iter().position(|tab| *tab == selected).unwrap_or_default();
 
     TabBar::new("main-tabs")
@@ -108,6 +108,5 @@ pub fn tab_bar<V: 'static>(
         .child(Tab::new().label(text(language, TextKey::Live)))
         .child(Tab::new().label(text(language, TextKey::Style)))
         .child(Tab::new().label(text(language, TextKey::Dictionary)))
-        .child(Tab::new().label(text(language, TextKey::Output)))
         .child(Tab::new().label(text(language, TextKey::Settings)))
 }

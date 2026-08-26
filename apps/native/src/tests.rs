@@ -17,7 +17,7 @@ use crate::debug_surfaces::{
 use crate::domain::{
     add_dictionary_entry, add_dictionary_profile, add_style_profile, clear_selected_dictionary,
     delete_dictionary_entry, delete_selected_dictionary_profile, delete_selected_style_profile,
-    export_dictionary_delimited, geometry_from_style, ingest_fixture_caption, layout_from_style,
+    export_dictionary_csv, geometry_from_style, ingest_fixture_caption, layout_from_style,
     load_app_settings, load_dictionary_catalog, load_style_catalog, load_style_settings,
     native_settings_path, native_style_path, parse_debug_launch, parse_dictionary_delimited,
     rasterize_live_caption_at_scale, rasterize_style_preview, replace_selected_dictionary_entries,
@@ -213,7 +213,7 @@ fn identity_and_build_contracts() {
     assert_eq!(BUNDLE_ID, "com.kotobabeacon.native");
     assert_eq!(BINARY_NAME, "kotoba-beacon-native");
     assert!(!BUILD_ID.is_empty());
-    assert_eq!(TABS, &["Live", "Style", "Dictionary", "Output", "Settings"]);
+    assert_eq!(TABS, &["Live", "Style", "Dictionary", "Settings"]);
 }
 
 #[test]
@@ -404,7 +404,7 @@ fn native_ui_uses_gpui_component_roots_controls_and_theme_tokens() {
     assert!(settings.contains("GroupBox::new"));
     assert!(dictionary.contains("danger_button("));
     assert!(dictionary.contains("TextKey::DownloadCsv"));
-    assert!(dictionary.contains("TextKey::DownloadTsv"));
+    assert!(!dictionary.contains("DownloadTsv"));
     assert!(app.contains("prompt_for_new_path"));
     assert!(style.contains("Switch::new"));
     assert!(style.contains("cx.theme().primary"));
@@ -500,17 +500,15 @@ fn command_line_has_no_overlay_flag() {
 }
 
 #[test]
-fn output_controls_open_capture_copy_the_only_html_url_and_remove_vertical_layout() {
+fn live_tab_contains_capture_output_controls_without_html_display_fields() {
     let output = include_str!("output.rs");
     let app = include_str!("app.rs");
-    let domain = include_str!("domain.rs");
-    let browser = include_str!("../../../crates/caption-bridge-browser-source/src/lib.rs");
     assert!(output.contains("output-window-open"));
     assert!(output.contains("output-browser-copy-url"));
-    assert!(app.contains("ClipboardItem::new_string"));
-    assert!(!domain.contains("NATIVE_VERTICAL_BROWSER_SOURCE_HINT"));
-    assert!(!browser.contains("layout === \"vertical\""));
-    assert!(!browser.contains("data-layout=\"vertical\""));
+    assert!(!output.contains("output-browser-enabled"));
+    assert!(!output.contains("NATIVE_BROWSER_SOURCE_HINT"));
+    assert!(app.contains(".child(render_output("));
+    assert!(app.contains("copy_browser_source_url"));
 }
 
 #[test]
@@ -526,9 +524,9 @@ fn profile_and_dictionary_bulk_controls_remain_wired() {
 }
 
 #[test]
-fn tabs_include_capture_output() {
+fn tabs_exclude_capture_output() {
     assert_eq!(AppTab::from_label("Live"), Some(AppTab::Live));
-    assert_eq!(AppTab::from_label("Output"), Some(AppTab::Output));
+    assert_eq!(AppTab::from_label("Output"), None);
     assert_eq!(AppTab::from_label("Settings"), Some(AppTab::Settings));
     assert_eq!(AppTab::from_label("Nope"), None);
 }
@@ -736,6 +734,33 @@ fn dictionary_catalog_supports_multiple_sets_selection_and_bulk_delete() {
 }
 
 #[test]
+fn dictionary_csv_export_round_trips_and_empty_csv_contains_a_sample() {
+    let entries = vec![
+        CustomDictionaryEntry {
+            id: "one".to_string(),
+            reading: "えーびー".to_string(),
+            word: "A,B".to_string(),
+        },
+        CustomDictionaryEntry {
+            id: "two".to_string(),
+            reading: "引用".to_string(),
+            word: "C \"quoted\"".to_string(),
+        },
+    ];
+    let csv = export_dictionary_csv(&entries);
+    assert!(csv.starts_with("reading,word\n"));
+    let parsed_csv = parse_dictionary_delimited(&csv, false).expect("parse exported CSV");
+    assert_eq!(
+        parsed_csv.iter().map(|entry| entry.word.as_str()).collect::<Vec<_>>(),
+        ["A,B", "C \"quoted\""]
+    );
+
+    let sample = export_dictionary_csv(&[]);
+    assert_eq!(sample, "reading,word\nとうきょう,東京\n");
+    assert_eq!(parse_dictionary_delimited(&sample, false).expect("parse sample CSV").len(), 1);
+}
+
+#[test]
 fn csv_and_tsv_import_multiple_readings_and_quoted_words() {
     let csv = parse_dictionary_delimited(
         "reading,word\nえーびー,\"A,B\"\nしー,\"C \"\"quoted\"\"\"",
@@ -772,41 +797,6 @@ fn window_options_keep_native_identity() {
     };
     assert_eq!(bounds.size.width, px(WINDOW_WIDTH_PX));
     assert_eq!(bounds.size.height, px(WINDOW_HEIGHT_PX));
-}
-
-#[test]
-fn dictionary_export_round_trips_and_empty_csv_contains_a_sample() {
-    let entries = vec![
-        CustomDictionaryEntry {
-            id: "one".to_string(),
-            reading: "えーびー".to_string(),
-            word: "A,B".to_string(),
-        },
-        CustomDictionaryEntry {
-            id: "two".to_string(),
-            reading: "引用".to_string(),
-            word: "C \"quoted\"".to_string(),
-        },
-    ];
-    let csv = export_dictionary_delimited(&entries, false);
-    assert!(csv.starts_with("reading,word\n"));
-    let parsed_csv = parse_dictionary_delimited(&csv, false).expect("parse exported CSV");
-    assert_eq!(
-        parsed_csv.iter().map(|entry| entry.word.as_str()).collect::<Vec<_>>(),
-        ["A,B", "C \"quoted\""]
-    );
-
-    let tsv = export_dictionary_delimited(&entries, true);
-    assert!(tsv.starts_with("reading\tword\n"));
-    let parsed_tsv = parse_dictionary_delimited(&tsv, true).expect("parse exported TSV");
-    assert_eq!(
-        parsed_tsv.iter().map(|entry| entry.reading.as_str()).collect::<Vec<_>>(),
-        ["えーびー", "引用"]
-    );
-
-    let sample = export_dictionary_delimited(&[], false);
-    assert_eq!(sample, "reading,word\nとうきょう,東京\n");
-    assert_eq!(parse_dictionary_delimited(&sample, false).expect("parse sample CSV").len(), 1);
 }
 
 #[test]

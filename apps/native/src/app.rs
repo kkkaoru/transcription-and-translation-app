@@ -29,7 +29,7 @@ use crate::dictionary::{render_dictionary, DictionaryCallbacks, DictionaryViewSt
 use crate::domain::{
     add_dictionary_entry, add_dictionary_profile, add_style_profile, clear_selected_dictionary,
     delete_dictionary_entry, delete_selected_dictionary_profile, delete_selected_style_profile,
-    export_dictionary_delimited, import_dictionary_file, ingest_fixture_caption, load_app_settings,
+    export_dictionary_csv, import_dictionary_file, ingest_fixture_caption, load_app_settings,
     load_dictionary_catalog, load_style_catalog, local_translation_model_installed,
     merge_dictionary_entries, native_config_dir, parse_debug_launch,
     rasterize_live_caption_at_scale, rasterize_style_preview, replace_selected_dictionary_entries,
@@ -133,14 +133,12 @@ fn adjacent_app_tab(tab: AppTab, reverse: bool) -> AppTab {
     match (tab, reverse) {
         (AppTab::Live, false) => AppTab::Style,
         (AppTab::Style, false) => AppTab::Dictionary,
-        (AppTab::Dictionary, false) => AppTab::Output,
-        (AppTab::Output, false) => AppTab::Settings,
+        (AppTab::Dictionary, false) => AppTab::Settings,
         (AppTab::Settings, false) => AppTab::Live,
         (AppTab::Live, true) => AppTab::Settings,
         (AppTab::Style, true) => AppTab::Live,
         (AppTab::Dictionary, true) => AppTab::Style,
-        (AppTab::Output, true) => AppTab::Dictionary,
-        (AppTab::Settings, true) => AppTab::Output,
+        (AppTab::Settings, true) => AppTab::Dictionary,
     }
 }
 
@@ -572,22 +570,22 @@ impl MainView {
         }
     }
 
-    fn toggle_browser_source(&mut self) {
-        if self.browser_source.is_running() {
-            self.browser_source.stop();
-            self.app_settings.browser_source_enabled = false;
-            self.persist_settings();
-            return;
-        }
-        match BrowserSourceServer::start(BrowserSourceConfig::native()) {
-            Ok(server) => {
-                server.set_style(browser_style(&self.style));
-                self.browser_source = server;
-                self.app_settings.browser_source_enabled = true;
-                self.persist_settings();
+    fn copy_browser_source_url(&mut self, cx: &mut Context<Self>) {
+        if !self.browser_source.is_running() {
+            match BrowserSourceServer::start(BrowserSourceConfig::native()) {
+                Ok(server) => {
+                    server.set_style(browser_style(&self.style));
+                    self.browser_source = server;
+                    self.app_settings.browser_source_enabled = true;
+                    self.persist_settings();
+                }
+                Err(error) => {
+                    self.persist_error = Some(error.to_string());
+                    return;
+                }
             }
-            Err(error) => self.persist_error = Some(error.to_string()),
         }
+        cx.write_to_clipboard(ClipboardItem::new_string(NATIVE_BROWSER_SOURCE_HINT.to_string()));
     }
 
     fn persist_dictionary(&mut self, next: Vec<CustomDictionaryEntry>) {
@@ -627,21 +625,15 @@ impl MainView {
         self.persist_dictionary(entries);
     }
 
-    fn download_selected_dictionary(
-        &mut self,
-        tab_separated: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn download_selected_dictionary_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dictionary = self.dictionary_catalog.selected();
-        let extension = if tab_separated { "tsv" } else { "csv" };
         let safe_name = dictionary.name.replace(['/', ':'], "-");
-        let suggested_name = format!("{safe_name}.{extension}");
+        let suggested_name = format!("{safe_name}.csv");
         let home =
             std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         let downloads = home.join("Downloads");
         let directory = if downloads.is_dir() { downloads } else { home };
-        let contents = export_dictionary_delimited(&dictionary.entries, tab_separated);
+        let contents = export_dictionary_csv(&dictionary.entries);
         let export_error = text(self.app_settings.ui_language, TextKey::DictionaryExportError);
         let receiver = cx.prompt_for_new_path(&directory, Some(&suggested_name));
 
@@ -861,29 +853,45 @@ impl Render for MainView {
             companion_snapshot.as_ref().and_then(|snapshot| snapshot.last_error.as_deref())
         });
         let body = match self.tab {
-            AppTab::Live => render_live(
-                &self.capture,
-                self.device_select_open,
-                language,
-                cx,
-                &LiveCallbacks {
-                    on_toggle_select: MainView::toggle_device_select,
-                    on_refresh_devices: |view| {
-                        view.capture.refresh_devices();
+            AppTab::Live => gpui_component::v_flex()
+                .gap_3()
+                .child(render_live(
+                    &self.capture,
+                    self.device_select_open,
+                    language,
+                    cx,
+                    &LiveCallbacks {
+                        on_toggle_select: MainView::toggle_device_select,
+                        on_refresh_devices: |view| {
+                            view.capture.refresh_devices();
+                        },
+                        on_select_device: |view, id| view.select_device(id),
+                        on_start: |view| {
+                            if let Err(error) =
+                                view.capture.start(view.app_settings.translation_enabled)
+                            {
+                                view.persist_error = Some(error);
+                            }
+                        },
+                        on_stop: |view| view.capture.stop(),
+                        on_toggle_translation: |view| view.toggle_translation(),
                     },
-                    on_select_device: |view, id| view.select_device(id),
-                    on_start: |view| {
-                        if let Err(error) =
-                            view.capture.start(view.app_settings.translation_enabled)
-                        {
-                            view.persist_error = Some(error);
-                        }
+                ))
+                .child(render_output(
+                    &self.app_settings,
+                    persist.as_deref(),
+                    cx,
+                    OutputCallbacks {
+                        on_open_window: |view| view.output_window_requested = true,
+                        on_toggle_window_startup: |view| {
+                            view.app_settings.caption_output_open_on_start =
+                                !view.app_settings.caption_output_open_on_start;
+                            view.persist_settings();
+                        },
+                        on_copy_url: |view, cx| view.copy_browser_source_url(cx),
                     },
-                    on_stop: |view| view.capture.stop(),
-                    on_toggle_translation: |view| view.toggle_translation(),
-                },
-            )
-            .into_any_element(),
+                ))
+                .into_any_element(),
             AppTab::Style => render_style(
                 &self.style,
                 StyleViewState {
@@ -1006,8 +1014,8 @@ impl Render for MainView {
                         view.set_dictionary_catalog(catalog);
                     },
                     on_import_paths: |view, paths| view.import_dictionary_paths(paths),
-                    on_download: |view, tab_separated, window, cx| {
-                        view.download_selected_dictionary(tab_separated, window, cx);
+                    on_download_csv: |view, window, cx| {
+                        view.download_selected_dictionary_csv(window, cx);
                     },
                     on_focus_query: |view, window, cx| {
                         view.focused_field = Some(FocusField::Query);
@@ -1052,27 +1060,6 @@ impl Render for MainView {
                             id,
                         );
                         view.persist_dictionary(next);
-                    },
-                },
-            )
-            .into_any_element(),
-            AppTab::Output => render_output(
-                &self.app_settings,
-                self.browser_source.is_running(),
-                persist.as_deref(),
-                cx,
-                OutputCallbacks {
-                    on_open_window: |view| view.output_window_requested = true,
-                    on_toggle_window_startup: |view| {
-                        view.app_settings.caption_output_open_on_start =
-                            !view.app_settings.caption_output_open_on_start;
-                        view.persist_settings();
-                    },
-                    on_toggle_browser: |view| view.toggle_browser_source(),
-                    on_copy_url: |_view, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(
-                            NATIVE_BROWSER_SOURCE_HINT.to_string(),
-                        ));
                     },
                 },
             )
@@ -1552,7 +1539,7 @@ mod focus_tests {
         assert_eq!(adjacent_app_tab(AppTab::Live, false), AppTab::Style);
         assert_eq!(adjacent_app_tab(AppTab::Settings, false), AppTab::Live);
         assert_eq!(adjacent_app_tab(AppTab::Live, true), AppTab::Settings);
-        assert_eq!(adjacent_app_tab(AppTab::Settings, true), AppTab::Output);
+        assert_eq!(adjacent_app_tab(AppTab::Settings, true), AppTab::Dictionary);
     }
 
     #[test]

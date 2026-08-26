@@ -36,9 +36,8 @@ pub const MIN_WINDOW_HEIGHT_PX: f32 = 680.0;
 pub const TAB_LIVE: &str = "Live";
 pub const TAB_STYLE: &str = "Style";
 pub const TAB_DICTIONARY: &str = "Dictionary";
-pub const TAB_OUTPUT: &str = "Output";
 pub const TAB_SETTINGS: &str = "Settings";
-pub const TABS: &[&str] = &[TAB_LIVE, TAB_STYLE, TAB_DICTIONARY, TAB_OUTPUT, TAB_SETTINGS];
+pub const TABS: &[&str] = &[TAB_LIVE, TAB_STYLE, TAB_DICTIONARY, TAB_SETTINGS];
 
 pub const NATIVE_BROWSER_SOURCE_HINT: &str = "http://127.0.0.1:1521/";
 #[cfg(feature = "gpui")]
@@ -76,7 +75,6 @@ pub enum AppTab {
     Live,
     Style,
     Dictionary,
-    Output,
     Settings,
 }
 
@@ -87,7 +85,6 @@ impl AppTab {
             TAB_LIVE => Some(Self::Live),
             TAB_STYLE => Some(Self::Style),
             TAB_DICTIONARY => Some(Self::Dictionary),
-            TAB_OUTPUT => Some(Self::Output),
             TAB_SETTINGS => Some(Self::Settings),
             _ => None,
         }
@@ -721,6 +718,31 @@ pub fn import_dictionary_file(path: &Path) -> Result<Vec<CustomDictionaryEntry>,
 }
 
 #[cfg(any(feature = "gpui", test))]
+pub fn export_dictionary_csv(entries: &[CustomDictionaryEntry]) -> String {
+    let mut output = "reading,word\n".to_string();
+    if entries.is_empty() {
+        output.push_str("とうきょう,東京\n");
+        return output;
+    }
+    for entry in entries {
+        output.push_str(&escape_dictionary_csv_column(&entry.reading));
+        output.push(',');
+        output.push_str(&escape_dictionary_csv_column(&entry.word));
+        output.push('\n');
+    }
+    output
+}
+
+#[cfg(any(feature = "gpui", test))]
+fn escape_dictionary_csv_column(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\r') || value.contains('\n') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+#[cfg(any(feature = "gpui", test))]
 pub fn parse_dictionary_delimited(
     body: &str,
     tab_separated: bool,
@@ -756,39 +778,6 @@ pub fn parse_dictionary_delimited(
         return Err("dictionary import contains no entries".to_string());
     }
     Ok(entries)
-}
-
-#[cfg(any(feature = "gpui", test))]
-pub fn export_dictionary_delimited(
-    entries: &[CustomDictionaryEntry],
-    tab_separated: bool,
-) -> String {
-    let delimiter = if tab_separated { '\t' } else { ',' };
-    let mut output = format!("reading{delimiter}word\n");
-    if entries.is_empty() {
-        output.push_str(&format!("とうきょう{delimiter}東京\n"));
-        return output;
-    }
-    for entry in entries {
-        output.push_str(&escape_dictionary_column(&entry.reading, delimiter));
-        output.push(delimiter);
-        output.push_str(&escape_dictionary_column(&entry.word, delimiter));
-        output.push('\n');
-    }
-    output
-}
-
-#[cfg(any(feature = "gpui", test))]
-fn escape_dictionary_column(value: &str, delimiter: char) -> String {
-    if value.contains(delimiter)
-        || value.contains('"')
-        || value.contains('\r')
-        || value.contains('\n')
-    {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
 }
 
 #[cfg(any(feature = "gpui", test))]
@@ -1036,7 +1025,6 @@ pub fn run_stub_lines() -> Vec<String> {
     lines.push(format!("  - {TAB_LIVE}"));
     lines.push(format!("  - {TAB_STYLE}"));
     lines.push(format!("  - {TAB_DICTIONARY}"));
-    lines.push(format!("  - {TAB_OUTPUT}"));
     lines.push(format!("  - {TAB_SETTINGS}"));
     match ingest_fixture_caption() {
         Ok(caption) => {
