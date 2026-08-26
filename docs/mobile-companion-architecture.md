@@ -26,7 +26,7 @@ A stage is run exactly once by its selected owner. The output of one stage is fo
 ## LAN protocol
 
 - Desktop listens on an explicitly enabled LAN WebSocket endpoint.
-- Desktop also answers nonce-scoped UDP discovery requests on port `18184`; replies are unicast and contain the current endpoint and high-entropy token.
+- Desktop advertises `_kotobabeacon._tcp` through Bonjour and also answers nonce-scoped UDP discovery requests on port `18184`; both mechanisms provide the current endpoint and high-entropy token.
 - Binding beyond loopback requires a generated, high-entropy pairing token.
 - A phone authenticates in its first JSON control frame. The token is never logged.
 - One authenticated phone owns one capture session. Additional peers are rejected while capture is active.
@@ -34,7 +34,7 @@ A stage is run exactly once by its selected owner. The output of one stage is fo
 - Audio frames are bounded to 32 ms (1,024 bytes). A bounded queue drops the session with an explicit overrun error rather than growing memory.
 - LAN disconnect cancels pending stage work and desktop falls back to local processing only after starting a new revision/session; outputs from the disconnected session are stale.
 
-The production phone app first discovers Native on the trusted LAN, opens the returned WebSocket endpoint, then probes its platform APIs. Manual endpoint and token entry remains available when broadcast discovery is unavailable. Authentication carries a stable platform device ID and a typed capability report. A requested route is constrained to Desktop for every unavailable Mobile stage before the session is configured. Route toggles remain disabled until this post-connect capability probe finishes. During an idle session either UI can request a new route. `route.configure` from Native is the authoritative acknowledgement: Mobile keeps its prior route and disables further changes until that acknowledgement arrives. Desktop-originated changes use the same message, so both UIs converge on one accepted route before capture can use it.
+The production phone app first discovers Native on the trusted LAN, opens the returned WebSocket endpoint, then probes its platform APIs. iOS/iPadOS use `NetServiceBrowser` with the declared `_kotobabeacon._tcp` service, so they do not depend on the restricted multicast/broadcast entitlement. Manual endpoint and token entry remains available when automatic discovery is unavailable. Authentication carries a stable platform device ID and a typed capability report. A requested route is constrained to Desktop for every unavailable Mobile stage before the session is configured. Route toggles remain disabled until this post-connect capability probe finishes. During an idle session either UI can request a new route. `route.configure` from Native is the authoritative acknowledgement: Mobile keeps its prior route and disables further changes until that acknowledgement arrives. Desktop-originated changes use the same message, so both UIs converge on one accepted route before capture can use it.
 
 Core control/result messages:
 
