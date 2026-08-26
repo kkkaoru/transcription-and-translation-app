@@ -223,18 +223,19 @@ fn style_defaults_disable_background_plate() {
     assert!(!style.background_enabled);
     assert!(style.shadow_enabled);
     assert!(style.outline_enabled);
-    assert_eq!(style.font_weight, 750);
+    assert_eq!(style.source_font_weight, 750);
+    assert_eq!(style.translation_font_weight, 650);
     assert_eq!(style.shadow_antialias, 3);
-    assert_eq!(style.font_family, "\"Noto Sans JP Variable\", \"Noto Sans JP\", sans-serif");
+    assert_eq!(style.source_font_family, "\"Noto Sans JP Variable\", \"Noto Sans JP\", sans-serif");
 }
 
 #[test]
 fn full_style_maps_to_shared_renderer() {
     let style = NativeStyleSettings {
-        font_family: "Hiragino Sans".to_string(),
-        font_weight: 800,
-        letter_spacing_px: 2.0,
-        line_height: 1.5,
+        source_font_family: "Hiragino Sans".to_string(),
+        translation_font_weight: 800,
+        source_letter_spacing_px: 2.0,
+        source_line_height: 1.5,
         background_enabled: true,
         shadow_blur_px: 12.0,
         shadow_antialias: 4,
@@ -284,16 +285,25 @@ fn style_editor_has_continuous_controls_and_nested_scrolling() {
     let style = include_str!("style.rs");
     assert!(style.contains("range_value(bounds, event.position"));
     assert!(style.contains("style-settings-scroll"));
-    assert!(style.contains("font-options-scroll"));
+    assert!(style.contains("source-font-family"));
+    assert!(style.contains("translation-font-family"));
+    assert!(style.contains("copy-recognition-to-translation"));
+    assert!(style.contains("copy-translation-to-recognition"));
+    assert!(style.contains("style-reset-all"));
+    assert!(style.contains("if event.dragging()"));
+    assert!(!style.contains("TextKey::Typography"));
     assert!(style.contains("overflow_y_scroll()"));
     assert!(style.contains("color_square_image"));
     assert!(style.contains("hue_bar_image"));
     assert!(style.contains("preview-source-input"));
     assert!(style.contains("preview-translation-input"));
-    let preview_background = style.find("\"preview-background\"").expect("preview background");
+    let preview_surface = style.find("style-preview-surface").expect("preview surface");
     let settings_scroll = style.find("style-settings-scroll").expect("settings scroll");
-    assert!(preview_background < settings_scroll);
-    assert!(style.contains("cx.stop_propagation()"));
+    assert!(preview_surface < settings_scroll);
+    assert!(style.contains("PreviewImageHint"));
+    assert!(style.contains("preview-image-position-reset"));
+    assert!(style.contains("preview-image-delete"));
+    assert!(!style.contains("TextKey::PreviewBackground"));
     assert!(style.contains(
         ".child(h_flex().items_start().gap_3().child(outline).child(shadow))\n                .child(background)"
     ));
@@ -405,6 +415,7 @@ fn native_ui_uses_gpui_component_roots_controls_and_theme_tokens() {
     assert!(settings.contains("GroupBox::new"));
     assert!(dictionary.contains("danger_button("));
     assert!(dictionary.contains("TextKey::DownloadCsv"));
+    assert!(dictionary.contains("TextKey::DefaultDictionary"));
     assert!(!dictionary.contains("DownloadTsv"));
     assert!(app.contains("prompt_for_new_path"));
     assert!(style.contains("Switch::new"));
@@ -437,8 +448,13 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(ui.contains(".text_base()"));
     assert!(ui.contains(".text_sm()"));
     assert!(ui.contains("theme().muted_foreground"));
+    assert!(ui.contains("TextView::markdown"));
+    assert!(ui.contains(".selectable(true)"));
+    assert!(live.contains("selectable_text(source)"));
+    assert!(settings.contains("selectable_text(format!("));
+    assert!(dictionary.contains("selectable_text(format!("));
     assert!(!ui.contains(".opacity("));
-    assert!(live.contains("Label::new(source).text_lg()"));
+    assert!(live.contains("selectable_text(source).text_lg()"));
     assert!(live.contains(".primary()"));
     assert!(settings.contains("Label::new(stage).w_24()"));
     assert!(dictionary.contains("danger_button("));
@@ -453,14 +469,12 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(dictionary.contains(".aria_label(label)"));
     assert!(dictionary.contains(".aria_value(value)"));
     assert!(style.contains(".track_focus(&focus_handle)"));
-    assert!(style.contains(".track_focus(&font_focus)"));
     assert!(style.contains(".tab_index(0)"));
     assert!(style.contains(".accessibility_id(label)"));
-    assert!(style.contains(".accessibility_id(text(language, TextKey::FontFamily))"));
     assert!(style.contains(".role(Role::TextInput)"));
     assert!(style.contains(".aria_label(label)"));
     assert!(style.contains(".aria_value(value)"));
-    assert!(style.contains(".aria_value(accessibility_value)"));
+    assert!(style.contains(".dropdown_caret(true)"));
     assert!(dictionary.contains("border_color(cx.theme().foreground)"));
     assert!(style.contains("border_color(cx.theme().foreground)"));
     assert!(style.contains(".accessibility_id(format!(\"{}: {label}\""));
@@ -506,6 +520,8 @@ fn live_tab_contains_capture_output_controls_without_html_display_fields() {
     let app = include_str!("app.rs");
     assert!(output.contains("output-window-open"));
     assert!(output.contains("output-browser-copy-url"));
+    assert!(output.contains("CHROMA_KEY_COLORS"));
+    assert!(output.contains("capture_background_color"));
     assert!(!output.contains("output-browser-enabled"));
     assert!(!output.contains("NATIVE_BROWSER_SOURCE_HINT"));
     assert!(app.contains(".child(render_output("));
@@ -585,15 +601,25 @@ fn settings_support_one_ui_language_at_a_time() {
 fn style_round_trip_preserves_new_native_fields() {
     let dir = unique_temp_dir("style");
     let style = NativeStyleSettings {
-        font_family: "Hiragino Sans".to_string(),
+        source_font_family: "Hiragino Sans".to_string(),
+        translation_font_family: "Avenir Next".to_string(),
         background_enabled: true,
+        capture_background_color: "#0000ff".to_string(),
+        preview_background_image_path: Some("/tmp/preview.png".to_string()),
+        preview_background_image_x_percent: 12.0,
+        preview_background_image_y_percent: -8.0,
         preview_background_color: "#ffffff".to_string(),
         ..NativeStyleSettings::default()
     };
     save_style_settings(&dir, &style).expect("save style");
     let loaded = load_style_settings(&dir).expect("load style");
-    assert_eq!(loaded.font_family, "Hiragino Sans");
+    assert_eq!(loaded.source_font_family, "Hiragino Sans");
+    assert_eq!(loaded.translation_font_family, "Avenir Next");
     assert!(loaded.background_enabled);
+    assert_eq!(loaded.capture_background_color, "#0000ff");
+    assert_eq!(loaded.preview_background_image_path.as_deref(), Some("/tmp/preview.png"));
+    assert_eq!(loaded.preview_background_image_x_percent, 12.0);
+    assert_eq!(loaded.preview_background_image_y_percent, -8.0);
     assert_eq!(loaded.preview_background_color, "#ffffff");
     assert!(native_style_path(&dir).ends_with("caption-style.json"));
     fs::remove_dir_all(&dir).expect("cleanup");
@@ -610,7 +636,9 @@ fn old_style_json_migrates_with_defaults() {
     let loaded = load_style_settings(&dir).expect("migrate old style");
     assert_eq!(loaded.source_font_size_px, 42.0);
     assert!(!loaded.background_enabled);
-    assert_eq!(loaded.font_weight, 750);
+    assert_eq!(loaded.version, crate::domain::STYLE_VERSION);
+    assert_eq!(loaded.source_font_weight, 750);
+    assert_eq!(loaded.translation_font_weight, 750);
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 

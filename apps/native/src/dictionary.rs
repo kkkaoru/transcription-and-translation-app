@@ -4,12 +4,14 @@ use std::path::PathBuf;
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
-use gpui::{Context, ExternalPaths, FocusHandle, IntoElement, Role, SharedString};
+use gpui::{Context, ExternalPaths, FocusHandle, IntoElement, Role};
 use gpui_component::{h_flex, v_flex, ActiveTheme as _};
 
 use crate::domain::{NativeDictionaryProfile, UiLanguage};
 use crate::i18n::{text, TextKey};
-use crate::ui::{button, card, danger_button, editable_text, error_line, heading, muted};
+use crate::ui::{
+    button, card, danger_button, editable_text, error_line, heading, muted, selectable_text,
+};
 
 pub struct DictionaryViewState<'a> {
     pub dictionaries: &'a [NativeDictionaryProfile],
@@ -66,11 +68,13 @@ pub fn render_dictionary<V: 'static>(
     let mut dictionary_buttons = h_flex().flex_wrap().gap_2();
     for dictionary in dictionaries {
         let id = dictionary.id.clone();
-        let label = if dictionary.id == selected_dictionary_id {
-            format!("✓ {}", dictionary.name)
+        let name = if dictionary.id == "dictionary-1" && dictionary.name == "Dictionary 1" {
+            text(language, TextKey::DefaultDictionary).to_string()
         } else {
             dictionary.name.clone()
         };
+        let label =
+            if dictionary.id == selected_dictionary_id { format!("✓ {name}") } else { name };
         dictionary_buttons = dictionary_buttons.child(button(
             format!("dictionary-profile-{}", dictionary.id),
             label,
@@ -96,7 +100,7 @@ pub fn render_dictionary<V: 'static>(
                     .py_2()
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().muted)
-                    .child(SharedString::from(format!("{} → {}", entry.reading, entry.word)))
+                    .child(selectable_text(format!("{} → {}", entry.reading, entry.word)))
                     .child(danger_button(
                         format!("dict-delete-{}", entry.id),
                         text(language, TextKey::Delete),

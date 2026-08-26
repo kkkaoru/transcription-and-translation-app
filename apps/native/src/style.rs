@@ -4,8 +4,8 @@ use std::{rc::Rc, sync::Arc};
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, relative, rems, Bounds, Context, FocusHandle, IntoElement, MouseDownEvent,
-    MouseMoveEvent, Pixels, Point, RenderImage, Role, SharedString,
+    canvas, div, img, px, relative, Bounds, Context, ExternalPaths, FocusHandle, IntoElement,
+    MouseDownEvent, MouseMoveEvent, ObjectFit, Pixels, Point, RenderImage, Role, SharedString,
 };
 use gpui_component::button::Button;
 use gpui_component::label::Label;
@@ -19,7 +19,7 @@ use crate::domain::{NativeStyleProfile, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
 use crate::ui::{
     button, card, danger_button, editable_text, error_line, heading, image_view, muted,
-    render_image,
+    render_image, selectable_text,
 };
 
 const PREVIEW_WIDTH_PX: f32 = 560.0;
@@ -75,15 +75,26 @@ macro_rules! toggle {
     };
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StyleTextTarget {
+    Recognition,
+    Translation,
+}
+
 pub struct StyleCallbacks<V> {
     pub on_add_profile: fn(&mut V),
     pub on_select_profile: fn(&mut V, &str),
     pub on_delete_profile: fn(&mut V),
+    pub on_reset: fn(&mut V),
+    pub on_copy_text_style: fn(&mut V, StyleTextTarget),
     pub on_change: fn(&mut V, NativeStyleSettings),
-    pub on_font_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
-    pub on_font_select: fn(&mut V, &str),
+    pub on_font_select: fn(&mut V, StyleTextTarget, &str),
     pub on_preview_source_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
     pub on_preview_translation_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
+    pub on_preview_image_paths: fn(&mut V, &[std::path::PathBuf]),
+    pub on_preview_image_position: fn(&mut V, f32, f32),
+    pub on_reset_preview_image_position: fn(&mut V),
+    pub on_delete_preview_image: fn(&mut V),
     pub on_color_toggle: fn(&mut V, &str),
 }
 
@@ -93,7 +104,7 @@ pub struct StyleViewState<'a> {
     pub preview_source: &'a str,
     pub preview_translation: &'a str,
     pub preview_image: Arc<RenderImage>,
-    pub fonts: FontPickerState<'a>,
+    pub fonts: &'a [String],
     pub language: UiLanguage,
     pub active_color_picker: Option<&'a str>,
     pub preview_source_caret: Option<usize>,
@@ -101,14 +112,6 @@ pub struct StyleViewState<'a> {
     pub preview_source_focus: &'a FocusHandle,
     pub preview_translation_focus: &'a FocusHandle,
     pub persist_error: Option<&'a str>,
-}
-
-pub struct FontPickerState<'a> {
-    pub query: &'a str,
-    pub families: &'a [String],
-    pub focus_handle: &'a FocusHandle,
-    pub open: bool,
-    pub caret: Option<usize>,
 }
 
 struct ColorPickerSpec<'a> {
@@ -247,17 +250,70 @@ pub fn render_style<V: 'static>(
                 cx.listener(move |view, _event, _window, _cx| {
                     (callbacks.on_delete_profile)(view);
                 }),
+            ))
+            .child(button(
+                "style-reset-all",
+                text(language, TextKey::ResetStyle),
+                cx.listener(move |view, _event, _window, _cx| {
+                    (callbacks.on_reset)(view);
+                }),
             )),
     );
 
-    let preview_image = div()
+    let preview_has_background_image = style.preview_background_image_path.is_some();
+    let preview_drag = preview_has_background_image.then(|| {
+        let entity = cx.entity();
+        let on_position = callbacks.on_preview_image_position;
+        canvas(
+            |bounds, _, _| bounds,
+            move |bounds, _, window, _| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, _, _, app| {
+                    if event.dragging() {
+                        let center_x = bounds.origin.x + bounds.size.width / 2.0;
+                        let center_y = bounds.origin.y + bounds.size.height / 2.0;
+                        let x = ((event.position.x - center_x) / bounds.size.width * 200.0)
+                            .clamp(-100.0, 100.0);
+                        let y = ((event.position.y - center_y) / bounds.size.height * 200.0)
+                            .clamp(-100.0, 100.0);
+                        entity.update(app, |view, cx| {
+                            on_position(view, x, y);
+                            cx.notify();
+                        });
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0()
+    });
+    let mut preview_surface = div()
+        .id("style-preview-surface")
+        .relative()
         .w(px(PREVIEW_WIDTH_PX))
         .h(px(PREVIEW_HEIGHT_PX))
         .flex_shrink_0()
         .rounded_md()
         .overflow_hidden()
-        .bg(parse_rgb(&style.preview_background_color))
-        .child(image_view(preview_image));
+        .when(preview_has_background_image, |this| this.cursor_move())
+        .when(!preview_has_background_image, |this| {
+            this.bg(parse_rgb(&style.capture_background_color))
+        })
+        .on_drop(cx.listener(move |view, paths: &ExternalPaths, _window, _cx| {
+            (callbacks.on_preview_image_paths)(view, paths.paths());
+        }));
+    if let Some(path) = style.preview_background_image_path.as_ref() {
+        preview_surface = preview_surface.child(
+            img(std::path::PathBuf::from(path))
+                .absolute()
+                .left(px(style.preview_background_image_x_percent * PREVIEW_WIDTH_PX / 100.0))
+                .top(px(style.preview_background_image_y_percent * PREVIEW_HEIGHT_PX / 100.0))
+                .size_full()
+                .object_fit(ObjectFit::Cover),
+        );
+    }
+    let preview_surface = preview_surface
+        .child(image_view(preview_image))
+        .when_some(preview_drag, |this, drag| this.child(drag));
     let preview_controls = v_flex()
         .flex_1()
         .min_w_0()
@@ -280,72 +336,91 @@ pub fn render_style<V: 'static>(
             cx,
             callbacks.on_preview_translation_focus,
         ))
-        .child(color_picker!(
-            "preview-background",
-            text(language, TextKey::PreviewBackground),
-            &style.preview_background_color,
-            active_color_picker == Some("preview-background"),
-            language,
-            callbacks.on_color_toggle,
-            style,
-            cx,
-            callbacks.on_change,
-            |next, color| next.preview_background_color = color.to_string(),
-        ));
+        .child(muted(text(language, TextKey::PreviewImageHint), cx))
+        .when(preview_has_background_image, |this| {
+            this.child(
+                h_flex()
+                    .gap_2()
+                    .child(button(
+                        "preview-image-position-reset",
+                        text(language, TextKey::ResetPreviewImagePosition),
+                        cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_reset_preview_image_position)(view);
+                        }),
+                    ))
+                    .child(danger_button(
+                        "preview-image-delete",
+                        text(language, TextKey::DeletePreviewImage),
+                        cx,
+                        cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_delete_preview_image)(view);
+                        }),
+                    )),
+            )
+        });
     let preview = card(cx)
         .flex_shrink_0()
         .child(heading(text(language, TextKey::Preview)))
-        .child(h_flex().items_start().gap_3().child(preview_image).child(preview_controls));
+        .child(h_flex().items_start().gap_3().child(preview_surface).child(preview_controls));
 
-    let typography = setting_section(
-        text(language, TextKey::Typography),
+    let source = setting_section(
+        text(language, TextKey::RecognitionText),
         div()
-            .child(font_picker(style, fonts, language, cx, &callbacks))
+            .child(button(
+                "copy-recognition-to-translation",
+                text(language, TextKey::CopyToTranslation),
+                cx.listener(move |view, _event, _window, _cx| {
+                    (callbacks.on_copy_text_style)(view, StyleTextTarget::Translation);
+                }),
+            ))
+            .child(font_family_picker(
+                "source-font-family",
+                &style.source_font_family,
+                fonts,
+                language,
+                StyleTextTarget::Recognition,
+                cx,
+                callbacks.on_font_select,
+            ))
             .child(slider!(
-                "font-weight",
+                "source-font-weight",
                 text(language, TextKey::FontWeight),
                 language,
-                f32::from(style.font_weight),
+                f32::from(style.source_font_weight),
                 100.0,
                 900.0,
                 10.0,
                 style,
                 cx,
                 callbacks.on_change,
-                |next, value| next.font_weight = value.round() as u16,
+                |next, value| next.source_font_weight = value.round() as u16,
             ))
             .child(slider!(
-                "letter-spacing",
+                "source-letter-spacing",
                 text(language, TextKey::LetterSpacing),
                 language,
-                style.letter_spacing_px,
+                style.source_letter_spacing_px,
                 0.0,
                 8.0,
                 0.1,
                 style,
                 cx,
                 callbacks.on_change,
-                |next, value| next.letter_spacing_px = value,
+                |next, value| next.source_letter_spacing_px = value,
             ))
             .child(slider!(
-                "line-height",
+                "source-line-height",
                 text(language, TextKey::LineHeight),
                 language,
-                style.line_height,
+                style.source_line_height,
                 0.8,
                 2.0,
                 0.05,
                 style,
                 cx,
                 callbacks.on_change,
-                |next, value| next.line_height = value,
-            )),
-        cx,
-    );
-
-    let source = setting_section(
-        text(language, TextKey::RecognitionText),
-        div()
+                |next, value| next.source_line_height = value,
+            ))
             .child(slider!(
                 "source-size",
                 text(language, TextKey::SourceSize),
@@ -403,6 +478,61 @@ pub fn render_style<V: 'static>(
     let translation = setting_section(
         text(language, TextKey::TranslationText),
         div()
+            .child(button(
+                "copy-translation-to-recognition",
+                text(language, TextKey::CopyToRecognition),
+                cx.listener(move |view, _event, _window, _cx| {
+                    (callbacks.on_copy_text_style)(view, StyleTextTarget::Recognition);
+                }),
+            ))
+            .child(font_family_picker(
+                "translation-font-family",
+                &style.translation_font_family,
+                fonts,
+                language,
+                StyleTextTarget::Translation,
+                cx,
+                callbacks.on_font_select,
+            ))
+            .child(slider!(
+                "translation-font-weight",
+                text(language, TextKey::FontWeight),
+                language,
+                f32::from(style.translation_font_weight),
+                100.0,
+                900.0,
+                10.0,
+                style,
+                cx,
+                callbacks.on_change,
+                |next, value| next.translation_font_weight = value.round() as u16,
+            ))
+            .child(slider!(
+                "translation-letter-spacing",
+                text(language, TextKey::LetterSpacing),
+                language,
+                style.translation_letter_spacing_px,
+                0.0,
+                8.0,
+                0.1,
+                style,
+                cx,
+                callbacks.on_change,
+                |next, value| next.translation_letter_spacing_px = value,
+            ))
+            .child(slider!(
+                "translation-line-height",
+                text(language, TextKey::LineHeight),
+                language,
+                style.translation_line_height,
+                0.8,
+                2.0,
+                0.05,
+                style,
+                cx,
+                callbacks.on_change,
+                |next, value| next.translation_line_height = value,
+            ))
             .child(slider!(
                 "translation-size",
                 text(language, TextKey::TranslationSize),
@@ -667,7 +797,6 @@ pub fn render_style<V: 'static>(
                 .pr_3()
                 .pb_3()
                 .gap_3()
-                .child(typography)
                 .child(h_flex().items_start().gap_3().child(source).child(translation))
                 .child(placement)
                 .child(h_flex().items_start().gap_3().child(outline).child(shadow))
@@ -679,7 +808,7 @@ fn setting_section(title: &'static str, content: gpui::Div, cx: &gpui::App) -> g
     card(cx)
         .flex_1()
         .gap_3()
-        .child(Label::new(title).font_semibold())
+        .child(selectable_text(title).font_semibold())
         .child(content.flex().flex_col().gap_3())
 }
 
@@ -720,87 +849,37 @@ fn preview_input<V: 'static>(
     )
 }
 
-fn font_picker<V: 'static>(
-    style: &NativeStyleSettings,
-    state: FontPickerState<'_>,
+fn font_family_picker<V: 'static>(
+    id: &'static str,
+    selected_family: &str,
+    families: &[String],
     language: UiLanguage,
+    target: StyleTextTarget,
     cx: &mut Context<V>,
-    callbacks: &StyleCallbacks<V>,
+    on_select: fn(&mut V, StyleTextTarget, &str),
 ) -> impl IntoElement {
-    let on_font_focus = callbacks.on_font_focus;
-    let on_font_select = callbacks.on_font_select;
-    let font_focus = state.focus_handle.clone();
-    let accessibility_value = if state.query.is_empty() && state.caret.is_none() {
-        style.font_family.as_str()
-    } else {
-        state.query
-    };
-    let displayed_font = if state.query.is_empty() && state.caret.is_none() {
-        editable_text(&style.font_family, None, cx)
-    } else {
-        editable_text(state.query, state.caret, cx)
-    };
-    let mut picker = v_flex().gap_2().child(muted(text(language, TextKey::FontFamily), cx)).child(
-        h_flex()
-            .id("font-search")
-            .track_focus(&font_focus)
-            .tab_index(0)
-            .accessibility_id(text(language, TextKey::FontFamily))
-            .role(Role::TextInput)
-            .aria_label(text(language, TextKey::FontFamily))
-            .aria_value(accessibility_value)
-            .min_h_8()
-            .px_3()
-            .py_2()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .when(state.caret.is_some(), |this| this.border_2())
-            .border_color(if state.caret.is_some() {
-                cx.theme().foreground
-            } else {
-                cx.theme().input
-            })
-            .focus(|style| style.border_2().border_color(cx.theme().foreground))
-            .bg(cx.theme().background)
-            .cursor_text()
-            .on_click(cx.listener(move |view, _event, window, cx| {
-                on_font_focus(view, window, cx);
-                window.focus(&font_focus, cx);
-            }))
-            .child(displayed_font),
-    );
-    if state.open {
-        let query = state.query.to_lowercase();
-        let options = state
-            .families
-            .iter()
-            .filter(|family| query.is_empty() || family.to_lowercase().contains(&query))
-            .map(|family| {
-                let family_value = family.clone();
-                Button::new(format!("font-option-{family}"))
-                    .label(family.clone())
-                    // Font samples are editable caption data, not application typography.
-                    .font_family(family.clone())
-                    .on_click(cx.listener(move |view, _event, _window, _cx| {
-                        on_font_select(view, &family_value);
-                    }))
-            })
-            .collect::<Vec<_>>();
-        picker = picker.child(
-            v_flex()
-                .id("font-options-scroll")
-                .max_h(rems(15.))
-                .overflow_y_scroll()
-                .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation())
-                .p_2()
-                .border_1()
-                .border_color(cx.theme().border)
-                .rounded(cx.theme().radius)
-                .bg(cx.theme().popover)
-                .children(options),
-        );
-    }
-    picker
+    let options = families.to_vec();
+    let view = cx.entity();
+    v_flex().gap_2().child(muted(text(language, TextKey::FontFamily), cx)).child(
+        Button::new(id)
+            .w_full()
+            .label(selected_family.to_string())
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _window, _cx| {
+                options.iter().fold(menu, |menu, family| {
+                    let family_value = family.clone();
+                    let view = view.clone();
+                    menu.item(PopupMenuItem::new(family.clone()).on_click(
+                        move |_event, _window, cx| {
+                            view.update(cx, |view, cx| {
+                                on_select(view, target, &family_value);
+                                cx.notify();
+                            });
+                        },
+                    ))
+                })
+            }),
+    )
 }
 
 fn slider_control<V: 'static>(
@@ -874,14 +953,20 @@ fn range_control<V: 'static>(
                 move |event: &MouseDownEvent, _, _, app| {
                     if bounds.contains(&event.position) {
                         let next = range_value(bounds, event.position, min, max, step);
-                        entity.update(app, |view, _| down_update(view, next));
+                        entity.update(app, |view, cx| {
+                            down_update(view, next);
+                            cx.notify();
+                        });
                     }
                 }
             });
             window.on_mouse_event(move |event: &MouseMoveEvent, _, _, app| {
-                if event.dragging() && bounds.contains(&event.position) {
+                if event.dragging() {
                     let next = range_value(bounds, event.position, min, max, step);
-                    entity.update(app, |view, _| move_update(view, next));
+                    entity.update(app, |view, cx| {
+                        move_update(view, next);
+                        cx.notify();
+                    });
                 }
             });
         },
@@ -1135,14 +1220,20 @@ fn color_square_control<V: 'static>(
                 move |event: &MouseDownEvent, _, _, app| {
                     if bounds.contains(&event.position) {
                         let channels = square_rgb(bounds, event.position, hue);
-                        entity.update(app, |view, _| down_update(view, channels));
+                        entity.update(app, |view, cx| {
+                            down_update(view, channels);
+                            cx.notify();
+                        });
                     }
                 }
             });
             window.on_mouse_event(move |event: &MouseMoveEvent, _, _, app| {
-                if event.dragging() && bounds.contains(&event.position) {
+                if event.dragging() {
                     let channels = square_rgb(bounds, event.position, hue);
-                    entity.update(app, |view, _| move_update(view, channels));
+                    entity.update(app, |view, cx| {
+                        move_update(view, channels);
+                        cx.notify();
+                    });
                 }
             });
         },
@@ -1188,14 +1279,20 @@ fn hue_bar_control<V: 'static>(
                 move |event: &MouseDownEvent, _, _, app| {
                     if bounds.contains(&event.position) {
                         let next_hue = hue_from_position(bounds, event.position);
-                        entity.update(app, |view, _| down_update(view, next_hue));
+                        entity.update(app, |view, cx| {
+                            down_update(view, next_hue);
+                            cx.notify();
+                        });
                     }
                 }
             });
             window.on_mouse_event(move |event: &MouseMoveEvent, _, _, app| {
-                if event.dragging() && bounds.contains(&event.position) {
+                if event.dragging() {
                     let next_hue = hue_from_position(bounds, event.position);
-                    entity.update(app, |view, _| move_update(view, next_hue));
+                    entity.update(app, |view, cx| {
+                        move_update(view, next_hue);
+                        cx.notify();
+                    });
                 }
             });
         },

@@ -12,9 +12,9 @@ use caption_bridge_browser_source::{BrowserSourceConfig, BrowserSourceServer, Br
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, rgb, size, App, Bounds, ClipboardItem, Context, Entity, FocusHandle,
-    IntoElement, KeyDownEvent, Pixels, Render, RenderImage, Size, Subscription, Task,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, point, px, size, App, Bounds, ClipboardItem, Context, Entity, FocusHandle, IntoElement,
+    KeyDownEvent, Pixels, Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window,
+    WindowBounds, WindowOptions,
 };
 use gpui_component::Root;
 use rust_lib_kotoba_beacon_companion::api::simple::{
@@ -45,7 +45,7 @@ use crate::i18n::{text, TextKey};
 use crate::live::{render_live, LiveCallbacks};
 use crate::output::{render_output, OutputCallbacks};
 use crate::settings::{render_settings, SettingsCallbacks, SettingsRuntimeInfo};
-use crate::style::{render_style, FontPickerState, StyleCallbacks, StyleViewState};
+use crate::style::{parse_rgb, render_style, StyleCallbacks, StyleTextTarget, StyleViewState};
 use crate::ui::{image_view, render_image, sky_page, tab_bar};
 
 const OUTPUT_WINDOW_TITLE: &str = "Kotoba Beacon Caption Output";
@@ -77,10 +77,7 @@ pub struct MainView {
     reading_caret: usize,
     draft_word: String,
     word_caret: usize,
-    font_query: String,
-    font_caret: usize,
     fonts: Vec<String>,
-    font_select_open: bool,
     show_settings_details: bool,
     active_color_picker: Option<String>,
     persist_error: Option<String>,
@@ -90,7 +87,6 @@ pub struct MainView {
     query_focus_handle: FocusHandle,
     reading_focus_handle: FocusHandle,
     word_focus_handle: FocusHandle,
-    font_focus_handle: FocusHandle,
     preview_source_focus_handle: FocusHandle,
     preview_translation_focus_handle: FocusHandle,
     surfaces: Rc<RefCell<DebugSurfaces>>,
@@ -116,7 +112,6 @@ enum FocusField {
     Query,
     Reading,
     Word,
-    Font,
     PreviewSource,
     PreviewTranslation,
 }
@@ -124,9 +119,8 @@ enum FocusField {
 fn dismissible_keyboard_context(
     focused_field: Option<FocusField>,
     device_select_open: bool,
-    font_select_open: bool,
 ) -> bool {
-    focused_field.is_some() || device_select_open || font_select_open
+    focused_field.is_some() || device_select_open
 }
 
 fn adjacent_app_tab(tab: AppTab, reverse: bool) -> AppTab {
@@ -144,15 +138,13 @@ fn adjacent_app_tab(tab: AppTab, reverse: bool) -> AppTab {
 
 fn adjacent_text_field(field: FocusField, reverse: bool) -> Option<FocusField> {
     match (field, reverse) {
-        (FocusField::Query | FocusField::Font, true)
+        (FocusField::Query | FocusField::PreviewSource, true)
         | (FocusField::Word | FocusField::PreviewTranslation, false) => None,
         (FocusField::Query, false) => Some(FocusField::Reading),
         (FocusField::Reading, false) => Some(FocusField::Word),
         (FocusField::Reading, true) => Some(FocusField::Query),
         (FocusField::Word, true) => Some(FocusField::Reading),
-        (FocusField::Font, false) => Some(FocusField::PreviewSource),
         (FocusField::PreviewSource, false) => Some(FocusField::PreviewTranslation),
-        (FocusField::PreviewSource, true) => Some(FocusField::Font),
         (FocusField::PreviewTranslation, true) => Some(FocusField::PreviewSource),
     }
 }
@@ -207,7 +199,10 @@ impl CaptionOutputView {
 
 impl Render for CaptionOutputView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().bg(rgb(0x00ff00)).child(image_view(Arc::clone(&self.image)))
+        div()
+            .size_full()
+            .bg(parse_rgb(&self.style.capture_background_color))
+            .child(image_view(Arc::clone(&self.image)))
     }
 }
 
@@ -262,10 +257,7 @@ impl MainView {
             reading_caret: 0,
             draft_word: String::new(),
             word_caret: 0,
-            font_query: String::new(),
-            font_caret: 0,
             fonts,
-            font_select_open: false,
             show_settings_details: false,
             active_color_picker: None,
             persist_error,
@@ -275,7 +267,6 @@ impl MainView {
             query_focus_handle: cx.focus_handle(),
             reading_focus_handle: cx.focus_handle(),
             word_focus_handle: cx.focus_handle(),
-            font_focus_handle: cx.focus_handle(),
             preview_source_focus_handle: cx.focus_handle(),
             preview_translation_focus_handle: cx.focus_handle(),
             surfaces,
@@ -353,7 +344,6 @@ impl MainView {
         self.capture_view_compact = capture_active;
         if capture_active {
             self.select_tab(AppTab::Live);
-            self.font_select_open = false;
             self.active_color_picker = None;
             self.fonts.clear();
             self.fonts.shrink_to_fit();
@@ -397,6 +387,70 @@ impl MainView {
         } else {
             self.persist_error = None;
         }
+    }
+
+    fn set_preview_background_image(&mut self, paths: &[PathBuf]) {
+        let Some(source) = paths.iter().find(|path| {
+            path.extension().and_then(|value| value.to_str()).is_some_and(|extension| {
+                matches!(extension.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp")
+            })
+        }) else {
+            return;
+        };
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("png")
+            .to_ascii_lowercase();
+        let directory = self.config_dir.join("preview-backgrounds");
+        let target = directory.join(format!("{}.{}", self.style_catalog.selected_id, extension));
+        let result =
+            std::fs::create_dir_all(&directory).and_then(|_| std::fs::copy(source, &target));
+        match result {
+            Ok(_) => {
+                let mut next = self.style.clone();
+                next.preview_background_image_path = Some(target.to_string_lossy().into_owned());
+                next.preview_background_image_x_percent = 0.0;
+                next.preview_background_image_y_percent = 0.0;
+                self.set_style(next);
+            }
+            Err(error) => {
+                self.persist_error = Some(format!(
+                    "{}: {error}",
+                    text(self.app_settings.ui_language, TextKey::PreviewImageError)
+                ));
+            }
+        }
+    }
+
+    fn set_preview_background_image_position(&mut self, x: f32, y: f32) {
+        self.style.preview_background_image_x_percent = x;
+        self.style.preview_background_image_y_percent = y;
+        if let Some(profile) = self
+            .style_catalog
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == self.style_catalog.selected_id)
+        {
+            profile.style.preview_background_image_x_percent = x;
+            profile.style.preview_background_image_y_percent = y;
+        }
+        if let Err(error) = save_style_catalog(&self.config_dir, &self.style_catalog) {
+            self.persist_error = Some(error);
+        } else {
+            self.persist_error = None;
+        }
+    }
+
+    fn remove_preview_background_image(&mut self) {
+        if let Some(path) = self.style.preview_background_image_path.as_deref() {
+            _ = std::fs::remove_file(path);
+        }
+        let mut next = self.style.clone();
+        next.preview_background_image_path = None;
+        next.preview_background_image_x_percent = 0.0;
+        next.preview_background_image_y_percent = 0.0;
+        self.set_style(next);
     }
 
     fn set_style_catalog(&mut self, catalog: NativeStyleCatalog) {
@@ -661,7 +715,6 @@ impl MainView {
             (FocusField::Query, &self.query_focus_handle),
             (FocusField::Reading, &self.reading_focus_handle),
             (FocusField::Word, &self.word_focus_handle),
-            (FocusField::Font, &self.font_focus_handle),
             (FocusField::PreviewSource, &self.preview_source_focus_handle),
             (FocusField::PreviewTranslation, &self.preview_translation_focus_handle),
         ]
@@ -674,7 +727,6 @@ impl MainView {
             FocusField::Query => &self.query_focus_handle,
             FocusField::Reading => &self.reading_focus_handle,
             FocusField::Word => &self.word_focus_handle,
-            FocusField::Font => &self.font_focus_handle,
             FocusField::PreviewSource => &self.preview_source_focus_handle,
             FocusField::PreviewTranslation => &self.preview_translation_focus_handle,
         }
@@ -686,10 +738,6 @@ impl MainView {
             FocusField::Query => self.query_caret = self.query.len(),
             FocusField::Reading => self.reading_caret = self.draft_reading.len(),
             FocusField::Word => self.word_caret = self.draft_word.len(),
-            FocusField::Font => {
-                self.font_caret = self.font_query.len();
-                self.font_select_open = true;
-            }
             FocusField::PreviewSource => self.preview_source_caret = self.preview_source.len(),
             FocusField::PreviewTranslation => {
                 self.preview_translation_caret = self.preview_translation.len();
@@ -705,15 +753,10 @@ impl MainView {
         }
 
         if event.keystroke.key == "escape"
-            && dismissible_keyboard_context(
-                self.focused_field,
-                self.device_select_open,
-                self.font_select_open,
-            )
+            && dismissible_keyboard_context(self.focused_field, self.device_select_open)
         {
             self.focused_field = None;
             self.device_select_open = false;
-            self.font_select_open = false;
             window.focus(&self.focus_handle, cx);
             cx.notify();
             cx.stop_propagation();
@@ -734,7 +777,7 @@ impl MainView {
             ),
             AppTab::Style => matches!(
                 self.focused_field,
-                Some(FocusField::Font | FocusField::PreviewSource | FocusField::PreviewTranslation)
+                Some(FocusField::PreviewSource | FocusField::PreviewTranslation)
             ),
             _ => false,
         };
@@ -770,7 +813,6 @@ impl MainView {
             FocusField::Query => (&mut self.query, &mut self.query_caret),
             FocusField::Reading => (&mut self.draft_reading, &mut self.reading_caret),
             FocusField::Word => (&mut self.draft_word, &mut self.word_caret),
-            FocusField::Font => (&mut self.font_query, &mut self.font_caret),
             FocusField::PreviewSource => (&mut self.preview_source, &mut self.preview_source_caret),
             FocusField::PreviewTranslation => {
                 (&mut self.preview_translation, &mut self.preview_translation_caret)
@@ -879,6 +921,7 @@ impl Render for MainView {
                 ))
                 .child(render_output(
                     &self.app_settings,
+                    &self.style,
                     persist.as_deref(),
                     cx,
                     OutputCallbacks {
@@ -889,6 +932,11 @@ impl Render for MainView {
                             view.persist_settings();
                         },
                         on_copy_url: |view, cx| view.copy_browser_source_url(cx),
+                        on_background_color: |view, color| {
+                            let mut next = view.style.clone();
+                            next.capture_background_color = color.to_string();
+                            view.set_style(next);
+                        },
                     },
                 ))
                 .into_any_element(),
@@ -904,14 +952,7 @@ impl Render for MainView {
                             .as_ref()
                             .expect("Style tab must initialize its preview image"),
                     ),
-                    fonts: FontPickerState {
-                        query: &self.font_query,
-                        families: &self.fonts,
-                        focus_handle: &self.font_focus_handle,
-                        open: self.font_select_open,
-                        caret: (self.focused_field == Some(FocusField::Font))
-                            .then_some(self.font_caret),
-                    },
+                    fonts: &self.fonts,
                     language,
                     active_color_picker: self.active_color_picker.as_deref(),
                     preview_source_caret: (self.focused_field == Some(FocusField::PreviewSource))
@@ -937,20 +978,28 @@ impl Render for MainView {
                         let catalog = delete_selected_style_profile(&view.style_catalog);
                         view.set_style_catalog(catalog);
                     },
-                    on_change: |view, next| view.set_style(next),
-                    on_font_focus: |view, window, cx| {
-                        view.focused_field = Some(FocusField::Font);
-                        view.font_caret = view.font_query.len();
-                        view.font_select_open = true;
-                        window.focus(&view.focus_handle, cx);
-                        cx.notify();
+                    on_reset: |view| {
+                        if let Some(path) = view.style.preview_background_image_path.as_deref() {
+                            _ = std::fs::remove_file(path);
+                        }
+                        view.set_style(NativeStyleSettings::default());
                     },
-                    on_font_select: |view, family| {
+                    on_copy_text_style: |view, target| {
                         let mut next = view.style.clone();
-                        next.font_family = family.to_string();
-                        view.font_query.clear();
-                        view.font_caret = 0;
-                        view.font_select_open = false;
+                        copy_text_style(&mut next, target);
+                        view.set_style(next);
+                    },
+                    on_change: |view, next| view.set_style(next),
+                    on_font_select: |view, target, family| {
+                        let mut next = view.style.clone();
+                        match target {
+                            StyleTextTarget::Recognition => {
+                                next.source_font_family = family.to_string();
+                            }
+                            StyleTextTarget::Translation => {
+                                next.translation_font_family = family.to_string();
+                            }
+                        }
                         view.set_style(next);
                     },
                     on_preview_source_focus: |view, window, cx| {
@@ -965,6 +1014,19 @@ impl Render for MainView {
                         window.focus(&view.focus_handle, cx);
                         cx.notify();
                     },
+                    on_preview_image_paths: |view, paths| {
+                        view.set_preview_background_image(paths);
+                    },
+                    on_preview_image_position: |view, x, y| {
+                        view.set_preview_background_image_position(x, y);
+                    },
+                    on_reset_preview_image_position: |view| {
+                        let mut next = view.style.clone();
+                        next.preview_background_image_x_percent = 0.0;
+                        next.preview_background_image_y_percent = 0.0;
+                        view.set_style(next);
+                    },
+                    on_delete_preview_image: |view| view.remove_preview_background_image(),
                     on_color_toggle: |view, id| {
                         if view.active_color_picker.as_deref() == Some(id) {
                             view.active_color_picker = None;
@@ -1210,12 +1272,37 @@ fn apply_companion_route_settings(settings: &mut NativeAppSettings, route: Pipel
     settings.companion_translation_on_mobile = route.translation == ExecutionDevice::Mobile;
 }
 
+fn copy_text_style(style: &mut NativeStyleSettings, target: StyleTextTarget) {
+    match target {
+        StyleTextTarget::Translation => {
+            style.translation_font_family = style.source_font_family.clone();
+            style.translation_font_weight = style.source_font_weight;
+            style.translation_letter_spacing_px = style.source_letter_spacing_px;
+            style.translation_line_height = style.source_line_height;
+            style.translation_font_size_px = style.source_font_size_px;
+            style.translation_color = style.source_color.clone();
+            style.translation_opacity = style.source_opacity;
+            style.translation_max_chars = style.source_max_chars;
+        }
+        StyleTextTarget::Recognition => {
+            style.source_font_family = style.translation_font_family.clone();
+            style.source_font_weight = style.translation_font_weight;
+            style.source_letter_spacing_px = style.translation_letter_spacing_px;
+            style.source_line_height = style.translation_line_height;
+            style.source_font_size_px = style.translation_font_size_px;
+            style.source_color = style.translation_color.clone();
+            style.source_opacity = style.translation_opacity;
+            style.source_max_chars = style.translation_max_chars;
+        }
+    }
+}
+
 fn browser_style(style: &NativeStyleSettings) -> BrowserSourceStyle {
     BrowserSourceStyle {
-        font_family: style.font_family.clone(),
-        font_weight: style.font_weight,
-        letter_spacing_px: style.letter_spacing_px,
-        line_height: style.line_height,
+        font_family: style.source_font_family.clone(),
+        font_weight: style.source_font_weight,
+        letter_spacing_px: style.source_letter_spacing_px,
+        line_height: style.source_line_height,
         source_size_px: style.source_font_size_px,
         source_color: style.source_color.clone(),
         source_opacity: style.source_opacity,
@@ -1523,15 +1610,15 @@ pub fn run() {
 #[cfg(test)]
 mod focus_tests {
     use super::{
-        adjacent_app_tab, adjacent_text_field, dismissible_keyboard_context, AppTab, FocusField,
+        adjacent_app_tab, adjacent_text_field, copy_text_style, dismissible_keyboard_context,
+        AppTab, FocusField, NativeStyleSettings, StyleTextTarget,
     };
 
     #[test]
     fn escape_context_covers_text_fields_and_open_selection_menus() {
-        assert!(dismissible_keyboard_context(Some(FocusField::Query), false, false));
-        assert!(dismissible_keyboard_context(None, true, false));
-        assert!(dismissible_keyboard_context(None, false, true));
-        assert!(!dismissible_keyboard_context(None, false, false));
+        assert!(dismissible_keyboard_context(Some(FocusField::Query), false));
+        assert!(dismissible_keyboard_context(None, true));
+        assert!(!dismissible_keyboard_context(None, false));
     }
 
     #[test]
@@ -1543,10 +1630,32 @@ mod focus_tests {
     }
 
     #[test]
+    fn text_styles_copy_in_both_directions() {
+        let mut style = NativeStyleSettings {
+            source_font_family: "Source Font".to_string(),
+            source_font_weight: 810,
+            source_color: "#123456".to_string(),
+            ..NativeStyleSettings::default()
+        };
+        copy_text_style(&mut style, StyleTextTarget::Translation);
+        assert_eq!(style.translation_font_family, "Source Font");
+        assert_eq!(style.translation_font_weight, 810);
+        assert_eq!(style.translation_color, "#123456");
+
+        style.translation_font_family = "Translation Font".to_string();
+        style.translation_line_height = 1.8;
+        style.translation_max_chars = 47;
+        copy_text_style(&mut style, StyleTextTarget::Recognition);
+        assert_eq!(style.source_font_family, "Translation Font");
+        assert_eq!(style.source_line_height, 1.8);
+        assert_eq!(style.source_max_chars, 47);
+    }
+
+    #[test]
     fn tab_navigation_leaves_custom_text_groups_at_each_edge() {
         assert_eq!(adjacent_text_field(FocusField::Query, true), None);
         assert_eq!(adjacent_text_field(FocusField::Word, false), None);
-        assert_eq!(adjacent_text_field(FocusField::Font, true), None);
+        assert_eq!(adjacent_text_field(FocusField::PreviewSource, true), None);
         assert_eq!(adjacent_text_field(FocusField::PreviewTranslation, false), None);
     }
 

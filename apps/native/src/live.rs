@@ -3,7 +3,6 @@
 use gpui::prelude::*;
 use gpui::{relative, rgb, ClipboardItem, Context, IntoElement, SharedString};
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::label::Label;
 use gpui_component::switch::Switch;
 use gpui_component::{
     h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, StyledExt as _,
@@ -12,7 +11,7 @@ use gpui_component::{
 use crate::capture::CaptureController;
 use crate::domain::{format_rms, rms_level_color, rms_to_fraction, CaptureStatus, UiLanguage};
 use crate::i18n::{text, TextKey};
-use crate::ui::{button, card, error_line, heading, muted};
+use crate::ui::{button, card, error_line, heading, muted, selectable_text};
 
 pub struct LiveCallbacks<V> {
     pub on_toggle_select: fn(&mut V),
@@ -136,7 +135,7 @@ pub fn render_live<V: 'static>(
             h_flex()
                 .flex_wrap()
                 .gap_2()
-                .child(Label::new(status_label).font_semibold())
+                .child(selectable_text(status_label).font_semibold())
                 .child(
                     Button::new("live-start")
                         .primary()
@@ -169,14 +168,14 @@ pub fn render_live<V: 'static>(
             v_flex()
                 .gap_2()
                 .child(muted(text(language, TextKey::RecognitionResult), cx))
-                .child(Label::new(source).text_lg()),
+                .child(selectable_text(source).text_lg()),
         )
         .when(translation_enabled, |this| {
             this.child(
                 v_flex()
                     .gap_2()
                     .child(muted(text(language, TextKey::TranslationResult), cx))
-                    .child(Label::new(translation).text_lg()),
+                    .child(selectable_text(translation).text_lg()),
             )
         })
 }

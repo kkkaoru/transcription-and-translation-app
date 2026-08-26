@@ -58,7 +58,7 @@ pub const PREVIEW_PLATE_WIDTH: u32 = 640;
 pub const PREVIEW_PLATE_HEIGHT: u32 = 180;
 #[cfg(any(feature = "gpui", test))]
 pub const DICTIONARY_SEARCH_LIMIT: usize = 50;
-pub const STYLE_VERSION: u32 = 1;
+pub const STYLE_VERSION: u32 = 2;
 #[cfg(any(feature = "gpui", test))]
 pub const SETTINGS_VERSION: u32 = 3;
 
@@ -126,10 +126,18 @@ pub struct NativeStyleSettings {
     pub font_weight: u16,
     pub letter_spacing_px: f32,
     pub line_height: f32,
+    pub source_font_family: String,
+    pub source_font_weight: u16,
+    pub source_letter_spacing_px: f32,
+    pub source_line_height: f32,
     pub source_font_size_px: f32,
     pub source_color: String,
     pub source_opacity: f32,
     pub source_max_chars: usize,
+    pub translation_font_family: String,
+    pub translation_font_weight: u16,
+    pub translation_letter_spacing_px: f32,
+    pub translation_line_height: f32,
     pub translation_font_size_px: f32,
     pub translation_color: String,
     pub translation_opacity: f32,
@@ -139,7 +147,11 @@ pub struct NativeStyleSettings {
     pub background_enabled: bool,
     pub background_color: String,
     pub background_opacity: f32,
+    pub capture_background_color: String,
     pub preview_background_color: String,
+    pub preview_background_image_path: Option<String>,
+    pub preview_background_image_x_percent: f32,
+    pub preview_background_image_y_percent: f32,
     pub shadow_enabled: bool,
     pub shadow_color: String,
     pub shadow_blur_px: f32,
@@ -256,10 +268,18 @@ impl Default for NativeStyleSettings {
             font_weight: source.font_weight,
             letter_spacing_px: source.letter_spacing_px,
             line_height: source.line_height,
+            source_font_family: source.font_family.clone(),
+            source_font_weight: source.font_weight,
+            source_letter_spacing_px: source.letter_spacing_px,
+            source_line_height: source.line_height,
             source_font_size_px: source.font_size_px,
             source_color: source.color,
             source_opacity: source.opacity,
             source_max_chars: SOURCE_CAPTION_MAX_CHARS,
+            translation_font_family: translation.font_family.clone(),
+            translation_font_weight: translation.font_weight,
+            translation_letter_spacing_px: translation.letter_spacing_px,
+            translation_line_height: translation.line_height,
             translation_font_size_px: translation.font_size_px,
             translation_color: translation.color,
             translation_opacity: translation.opacity,
@@ -269,7 +289,11 @@ impl Default for NativeStyleSettings {
             background_enabled: false,
             background_color: source.background_color,
             background_opacity: source.background_opacity,
+            capture_background_color: "#00ff00".to_string(),
             preview_background_color: "#061018".to_string(),
+            preview_background_image_path: None,
+            preview_background_image_x_percent: 0.0,
+            preview_background_image_y_percent: 0.0,
             shadow_enabled: source.shadow_enabled,
             shadow_color: source.shadow_color,
             shadow_blur_px: source.shadow_blur_px,
@@ -437,7 +461,9 @@ pub fn load_style_settings(config_dir: &Path) -> Result<NativeStyleSettings, Str
     if body.trim().is_empty() {
         return Ok(NativeStyleSettings::default());
     }
-    serde_json::from_str(&body).map_err(|error| format!("Native style JSON is invalid: {error}"))
+    let style = serde_json::from_str(&body)
+        .map_err(|error| format!("Native style JSON is invalid: {error}"))?;
+    Ok(migrate_native_style(style))
 }
 
 #[cfg(any(feature = "gpui", test))]
@@ -464,8 +490,11 @@ pub fn load_style_catalog(config_dir: &Path) -> Result<NativeStyleCatalog, Strin
     }
     let body = std::fs::read_to_string(&path)
         .map_err(|error| format!("could not read Native style catalog: {error}"))?;
-    let catalog: NativeStyleCatalog = serde_json::from_str(&body)
+    let mut catalog: NativeStyleCatalog = serde_json::from_str(&body)
         .map_err(|error| format!("Native style catalog JSON is invalid: {error}"))?;
+    for profile in &mut catalog.profiles {
+        profile.style = migrate_native_style(profile.style.clone());
+    }
     validate_style_catalog(catalog)
 }
 
@@ -514,6 +543,22 @@ pub fn delete_selected_style_profile(catalog: &NativeStyleCatalog) -> NativeStyl
     next.profiles.retain(|profile| profile.id != catalog.selected_id);
     next.selected_id = next.profiles[0].id.clone();
     next
+}
+
+#[cfg(any(feature = "gpui", test))]
+fn migrate_native_style(mut style: NativeStyleSettings) -> NativeStyleSettings {
+    if style.version < 2 {
+        style.source_font_family = style.font_family.clone();
+        style.source_font_weight = style.font_weight;
+        style.source_letter_spacing_px = style.letter_spacing_px;
+        style.source_line_height = style.line_height;
+        style.translation_font_family = style.font_family.clone();
+        style.translation_font_weight = style.font_weight;
+        style.translation_letter_spacing_px = style.letter_spacing_px;
+        style.translation_line_height = style.line_height;
+        style.version = STYLE_VERSION;
+    }
+    style
 }
 
 #[cfg(any(feature = "gpui", test))]
@@ -857,18 +902,18 @@ pub fn geometry_from_style(style: &NativeStyleSettings) -> OverlayGeometry {
     geometry.caption_x_percent = style.caption_x_percent;
     geometry.caption_y_percent = style.caption_y_percent;
     geometry.order = RenderOrder::SourceFirst;
-    geometry.source.font_family = style.font_family.clone();
-    geometry.source.font_weight = style.font_weight;
-    geometry.source.letter_spacing_px = style.letter_spacing_px;
-    geometry.source.line_height = style.line_height;
+    geometry.source.font_family = style.source_font_family.clone();
+    geometry.source.font_weight = style.source_font_weight;
+    geometry.source.letter_spacing_px = style.source_letter_spacing_px;
+    geometry.source.line_height = style.source_line_height;
     geometry.source.font_size_px = style.source_font_size_px;
     geometry.source.color = style.source_color.clone();
     geometry.source.opacity = style.source_opacity;
     apply_effects(&mut geometry.source, style);
-    geometry.translation.font_family = style.font_family.clone();
-    geometry.translation.font_weight = style.font_weight;
-    geometry.translation.letter_spacing_px = style.letter_spacing_px;
-    geometry.translation.line_height = style.line_height;
+    geometry.translation.font_family = style.translation_font_family.clone();
+    geometry.translation.font_weight = style.translation_font_weight;
+    geometry.translation.letter_spacing_px = style.translation_letter_spacing_px;
+    geometry.translation.line_height = style.translation_line_height;
     geometry.translation.font_size_px = style.translation_font_size_px;
     geometry.translation.color = style.translation_color.clone();
     geometry.translation.opacity = style.translation_opacity;

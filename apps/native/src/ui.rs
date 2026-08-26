@@ -8,8 +8,8 @@ use gpui::{
 };
 use gpui_component::alert::Alert;
 use gpui_component::button::Button;
-use gpui_component::label::Label;
 use gpui_component::tab::{Tab, TabBar};
+use gpui_component::text::TextView;
 use gpui_component::{v_flex, ActiveTheme as _, StyledExt as _};
 use image::{Frame, ImageBuffer, Rgba};
 use smallvec::SmallVec;
@@ -48,12 +48,50 @@ pub fn card(cx: &App) -> gpui::Div {
         .border_color(cx.theme().border)
 }
 
+#[track_caller]
+pub fn selectable_text(value: impl Into<SharedString>) -> TextView {
+    let value = value.into();
+    let location = std::panic::Location::caller();
+    let id = format!("selectable-text-{}:{}", location.file(), location.line());
+    TextView::markdown(id, escape_markdown(&value)).selectable(true)
+}
+
+fn escape_markdown(value: &str) -> String {
+    value.chars().fold(String::new(), |mut escaped, character| {
+        if matches!(
+            character,
+            '\\' | '`'
+                | '*'
+                | '_'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | '<'
+                | '>'
+                | '('
+                | ')'
+                | '#'
+                | '+'
+                | '-'
+                | '.'
+                | '!'
+                | '|'
+                | '~'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+        escaped
+    })
+}
+
 pub fn heading(value: impl Into<SharedString>) -> impl IntoElement {
-    Label::new(value).font_semibold()
+    selectable_text(value).font_semibold()
 }
 
 pub fn muted(value: impl Into<SharedString>, cx: &App) -> impl IntoElement {
-    Label::new(value).text_sm().text_color(cx.theme().muted_foreground)
+    selectable_text(value).text_sm().text_color(cx.theme().muted_foreground)
 }
 
 pub fn editable_text(value: &str, caret: Option<usize>, cx: &App) -> gpui::Div {
@@ -67,8 +105,8 @@ pub fn editable_text(value: &str, caret: Option<usize>, cx: &App) -> gpui::Div {
         .child(SharedString::from(after.to_string()))
 }
 
-pub fn error_line(value: impl Into<gpui_component::text::Text>) -> impl IntoElement {
-    Alert::error("inline-error", value).banner()
+pub fn error_line(value: impl Into<SharedString>) -> impl IntoElement {
+    Alert::error("inline-error", selectable_text(value)).banner()
 }
 
 pub fn button(

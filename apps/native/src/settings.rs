@@ -13,7 +13,7 @@ use rust_lib_kotoba_beacon_companion::api::simple::{
 
 use crate::domain::{NativeAppSettings, UiLanguage, BUILD_ID, RECOGNITION_MODE_LABEL};
 use crate::i18n::{text, TextKey};
-use crate::ui::{button, card, error_line, heading, muted};
+use crate::ui::{button, card, error_line, heading, muted, selectable_text};
 
 pub struct SettingsRuntimeInfo<'a> {
     pub translation_model_installed: bool,
@@ -162,7 +162,7 @@ pub fn render_settings<V: 'static>(
                                 ))
                                 .when(show_details, |this| {
                                     this.child(
-                                        Label::new(format!(
+                                        selectable_text(format!(
                                             "{}: {endpoint}",
                                             text(language, TextKey::LanEndpoint)
                                         ))
@@ -186,7 +186,7 @@ pub fn render_settings<V: 'static>(
                                     ))
                                     .when(show_details, |this| {
                                         this.child(
-                                            Label::new(format!(
+                                            selectable_text(format!(
                                                 "{}: {token}",
                                                 text(language, TextKey::PairingToken)
                                             ))
@@ -224,7 +224,7 @@ pub fn render_settings<V: 'static>(
                             })),
                     )
                     .when(show_details, |this| {
-                        this.child(Label::new(RECOGNITION_MODE_LABEL).text_sm()).child(muted(
+                        this.child(selectable_text(RECOGNITION_MODE_LABEL).text_sm()).child(muted(
                             format!("{}: {BUILD_ID}", text(language, TextKey::BuildId),),
                             cx,
                         ))
@@ -284,40 +284,46 @@ fn companion_status(runtime: &SettingsRuntimeInfo<'_>, language: UiLanguage) -> 
     v_flex()
         .gap_2()
         .child(
-            Label::new(format!("{}: {connection_status}", text(language, TextKey::Connection)))
-                .font_semibold(),
+            selectable_text(format!(
+                "{}: {connection_status}",
+                text(language, TextKey::Connection)
+            ))
+            .font_semibold(),
         )
-        .child(Label::new(format!(
+        .child(selectable_text(format!(
             "{}: Bonjour / UDP 18184",
             text(language, TextKey::AutomaticDiscovery)
         )))
-        .child(Label::new(format!(
+        .child(selectable_text(format!(
             "{}: {}",
             text(language, TextKey::Companion),
             runtime.companion_device.unwrap_or(text(language, TextKey::NotConnected)),
         )))
         .when_some(runtime.companion_session_id.map(str::to_string), |this, session_id| {
-            this.child(Label::new(format!("{}: {session_id}", text(language, TextKey::Session))))
+            this.child(selectable_text(format!(
+                "{}: {session_id}",
+                text(language, TextKey::Session)
+            )))
         })
         .when_some(runtime.companion_route, |this, route| {
-            this.child(Label::new(format!(
+            this.child(selectable_text(format!(
                 "{}: {}",
                 text(language, TextKey::SynchronizedRoute),
                 localized_pipeline_route(route, language)
             )))
         })
-        .child(Label::new(format!(
+        .child(selectable_text(format!(
             "{}: {}",
             text(language, TextKey::SavedDeviceRoutes),
             runtime.companion_saved_devices,
         )))
         .when_some(runtime.companion_capabilities.cloned(), |this, capabilities| {
-            this.child(Label::new(format!(
+            this.child(selectable_text(format!(
                 "{}: {}",
                 text(language, TextKey::MobilePlatform),
                 capabilities.platform
             )))
-            .child(Label::new(format!(
+            .child(selectable_text(format!(
                 "{} — ASR: {}, AzooKey: {}, {}: {}",
                 text(language, TextKey::MobileApis),
                 availability_label(capabilities.asr_available, language),
