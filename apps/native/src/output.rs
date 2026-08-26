@@ -8,6 +8,7 @@ use gpui_component::{h_flex, v_flex, Selectable as _};
 
 use crate::domain::{NativeAppSettings, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
+use crate::style::parse_rgb;
 use crate::ui::{card, error_line, heading, selectable_text};
 
 const CHROMA_KEY_COLORS: &[&str] = &["#00ff00", "#0000ff", "#ff00ff", "#000000", "#ffffff"];
@@ -63,7 +64,10 @@ pub fn render_output<V: 'static>(
                 .gap_2()
                 .child(heading(text(language, TextKey::CaptureBackground)))
                 .child(h_flex().flex_wrap().gap_2().children(background_colors))
-                .child(selectable_text(style.capture_background_color.to_uppercase()))
+                .child(
+                    selectable_text(style.capture_background_color.to_uppercase())
+                        .text_color(parse_rgb(&style.capture_background_color)),
+                )
                 .child(
                     Switch::new("output-window-startup")
                         .label(text(language, TextKey::OutputWindowAtStartup))

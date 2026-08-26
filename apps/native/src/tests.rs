@@ -522,6 +522,7 @@ fn live_tab_contains_capture_output_controls_without_html_display_fields() {
     assert!(output.contains("output-browser-copy-url"));
     assert!(output.contains("CHROMA_KEY_COLORS"));
     assert!(output.contains("capture_background_color"));
+    assert!(output.contains(".text_color(parse_rgb(&style.capture_background_color))"));
     assert!(!output.contains("output-browser-enabled"));
     assert!(!output.contains("NATIVE_BROWSER_SOURCE_HINT"));
     assert!(app.contains(".child(render_output("));
