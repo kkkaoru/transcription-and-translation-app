@@ -523,8 +523,18 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(settings.contains("label(text(language, TextKey::Mobile))"));
     assert!(settings.contains(".selected(!mobile)"));
     assert!(settings.contains(".selected(mobile)"));
-    assert!(settings.contains("copy-companion-endpoint"));
-    assert!(settings.contains("copy-companion-token"));
+    let endpoint_button = settings.find("copy-companion-endpoint").expect("endpoint copy button");
+    let endpoint_value = settings[endpoint_button..]
+        .find("TextKey::LanEndpoint")
+        .map(|offset| endpoint_button + offset)
+        .expect("detailed endpoint value");
+    assert!(settings[endpoint_button..endpoint_value].contains(".when(show_details"));
+    let token_button = settings.find("copy-companion-token").expect("token copy button");
+    let token_value = settings[token_button..]
+        .find("TextKey::PairingToken")
+        .map(|offset| token_button + offset)
+        .expect("detailed token value");
+    assert!(settings[token_button..token_value].contains(".when(show_details"));
     assert!(settings.contains("TextKey::ConnectedAuthenticated"));
     assert!(settings.contains("TextKey::WaitingMobileCompanion"));
     assert!(settings.contains("TextKey::AutomaticDiscovery"));

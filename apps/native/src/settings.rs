@@ -150,22 +150,23 @@ pub fn render_settings<V: 'static>(
                     .when_some(runtime.companion_endpoint.map(str::to_string), |this, endpoint| {
                         this.child(
                             h_flex()
-                                .justify_between()
                                 .gap_3()
-                                .child(
-                                    Label::new(format!(
-                                        "{}: {endpoint}",
-                                        text(language, TextKey::LanEndpoint)
-                                    ))
-                                    .text_sm(),
-                                )
                                 .child(button(
                                     "copy-companion-endpoint",
                                     text(language, TextKey::CopyLanEndpoint),
                                     cx.listener(move |view, _event, _window, cx| {
                                         (callbacks.on_copy_companion_endpoint)(view, cx);
                                     }),
-                                )),
+                                ))
+                                .when(show_details, |this| {
+                                    this.child(
+                                        Label::new(format!(
+                                            "{}: {endpoint}",
+                                            text(language, TextKey::LanEndpoint)
+                                        ))
+                                        .text_sm(),
+                                    )
+                                }),
                         )
                     })
                     .when_some(
@@ -173,22 +174,23 @@ pub fn render_settings<V: 'static>(
                         |this, token| {
                             this.child(
                                 h_flex()
-                                    .justify_between()
                                     .gap_3()
-                                    .child(
-                                        Label::new(format!(
-                                            "{}: {token}",
-                                            text(language, TextKey::PairingToken)
-                                        ))
-                                        .text_sm(),
-                                    )
                                     .child(button(
                                         "copy-companion-token",
                                         text(language, TextKey::CopyPairingToken),
                                         cx.listener(move |view, _event, _window, cx| {
                                             (callbacks.on_copy_companion_token)(view, cx);
                                         }),
-                                    )),
+                                    ))
+                                    .when(show_details, |this| {
+                                        this.child(
+                                            Label::new(format!(
+                                                "{}: {token}",
+                                                text(language, TextKey::PairingToken)
+                                            ))
+                                            .text_sm(),
+                                        )
+                                    }),
                             )
                         },
                     )
