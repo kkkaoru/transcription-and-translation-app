@@ -9,7 +9,12 @@ import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assembleNativeApp, BINARY_NAME, PRODUCT_NAME } from "./install-macos-native-app.mjs";
+import {
+  AZOOKEY_DICTIONARY_SOURCE,
+  assembleNativeApp,
+  BINARY_NAME,
+  PRODUCT_NAME,
+} from "./install-macos-native-app.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -49,6 +54,12 @@ export const assemblePortableNativeRelease = ({ sourceBinary, outputDir, targetP
   rmSync(outputDir, { recursive: true, force: true });
   mkdirSync(outputDir, { recursive: true });
   cpSync(sourceBinary, join(outputDir, basename(sourceBinary)));
+  if (!existsSync(AZOOKEY_DICTIONARY_SOURCE)) {
+    throw new Error(`missing bundled AzooKey dictionary ${AZOOKEY_DICTIONARY_SOURCE}`);
+  }
+  const azookeyDir = join(outputDir, "azookey");
+  mkdirSync(azookeyDir, { recursive: true });
+  cpSync(AZOOKEY_DICTIONARY_SOURCE, join(azookeyDir, "system.azkdict.gz"));
 
   const sourceDir = dirname(sourceBinary);
   const libraries = runtimeLibraryNames(targetPlatform, readdirSync(sourceDir));

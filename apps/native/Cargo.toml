@@ -27,7 +27,10 @@ caption-bridge-render = { path = "../../crates/caption-bridge-render" }
 caption-bridge-spout = { path = "../../crates/caption-bridge-spout" }
 caption-bridge-syphon = { path = "../../crates/caption-bridge-syphon" }
 parapper-engine = { path = "../../crates/parapper-engine" }
+rust_lib_kotoba_beacon_companion = { path = "../mobile/rust", default-features = false }
 fs2 = "0.4"
+getrandom = "0.3"
+tungstenite = "0.28"
 image = { version = "0.25", default-features = false }
 smallvec = "1"
 serde = { version = "1", features = ["derive"] }

@@ -66,11 +66,13 @@ describe("Native release packaging", () => {
     });
 
     assert.deepEqual(readdirSync(output).sort(), [
+      "azookey",
       "kotoba-beacon-native",
       "libonnxruntime.so.1",
       "libsherpa-onnx-c-api.so",
     ]);
     assert.deepEqual(result.libraries, ["libonnxruntime.so.1", "libsherpa-onnx-c-api.so"]);
+    assert.deepEqual(readdirSync(join(output, "azookey")), ["system.azkdict.gz"]);
   });
 
   it("rejects incomplete runtime output", () => {

@@ -14,7 +14,15 @@ use caption_bridge_audio::{
 use parapper_engine::{
     CaptionUpdateMode, EngineConfig, EngineEvent, LocalTranslator, ParapperEngine,
 };
+use rust_lib_kotoba_beacon_companion::api::simple::{
+    convert_azookey, default_pipeline_route, encode_audio_boundary, encode_stage_request,
+    encode_translation_enabled, initialize_azookey_dictionary, release_azookey_dictionary,
+    should_continue_on_mobile, ExecutionDevice, MobileStageResult, PipelineRoute, ProcessingStage,
+};
 
+use crate::companion::{
+    CompanionConnectionSnapshot, CompanionHandle, CompanionInbound, CompanionServer,
+};
 use crate::domain::{parapper_runtime_dir, CaptureStatus};
 use crate::hot_path::{normalize_pcm16_into, NATIVE_PCM_FRAME_SAMPLES};
 use crate::memory::release_unused_process_memory;
@@ -27,9 +35,12 @@ const COMMAND_QUEUE_CAPACITY: usize = 4;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const TRANSLATOR_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MINIMUM_PAIRED_CAPTION_HOLD: Duration = Duration::from_secs(3);
+const MOBILE_FINAL_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MICROPHONE_PERMISSION_MESSAGE: &str = "Microphone access is not permitted";
 const DEVICE_NOT_FOUND_MESSAGE: &str = "The selected microphone was not found";
 const MAX_CAPTION_CHARACTERS: usize = 2_048;
+
+static DESKTOP_AZOOKEY_READY: Mutex<bool> = Mutex::new(false);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CaptureSnapshot {
@@ -131,6 +142,36 @@ struct TranslationWorker {
     stop_requested: Arc<AtomicBool>,
 }
 
+struct CaptureWorkerOptions {
+    models_root: std::path::PathBuf,
+    device_id: Option<String>,
+    translation_enabled: bool,
+    companion_route: PipelineRoute,
+    companion_session: Option<(CompanionHandle, String)>,
+}
+
+struct RoutedStageOutput {
+    turn_id: u64,
+    revision: u64,
+    text: String,
+    is_final: bool,
+}
+
+struct RoutingContext<'a> {
+    route: PipelineRoute,
+    companion: Option<&'a CompanionHandle>,
+    session_id: Option<&'a str>,
+    event_tx: &'a SyncSender<WorkerEvent>,
+    translation_tx: Option<&'a TranslationMailboxSender>,
+    translation_enabled: bool,
+}
+
+struct EnginePublishState<'a> {
+    recognition_text: &'a mut String,
+    recognition_turn_id: &'a mut Option<String>,
+    caption_revision: &'a mut u64,
+}
+
 pub struct CaptureController {
     snapshot: CaptureSnapshot,
     caption_expires_at: Option<Instant>,
@@ -142,6 +183,8 @@ pub struct CaptureController {
     current_caption_revision: u64,
     awaiting_translation_revision: Option<u64>,
     recognition_in_progress: bool,
+    companion_route: PipelineRoute,
+    companion_server: Option<CompanionServer>,
 }
 
 impl CaptureController {
@@ -158,6 +201,8 @@ impl CaptureController {
             current_caption_revision: 0,
             awaiting_translation_revision: None,
             recognition_in_progress: false,
+            companion_route: default_pipeline_route(),
+            companion_server: None,
         };
         controller.refresh_devices();
         controller
@@ -169,6 +214,34 @@ impl CaptureController {
 
     pub fn translation_enabled(&self) -> bool {
         self.translation_enabled
+    }
+
+    pub fn companion_snapshot(&self) -> Option<CompanionConnectionSnapshot> {
+        self.companion_server.as_ref().map(CompanionServer::snapshot)
+    }
+
+    pub fn configure_companion(&mut self, route: PipelineRoute) -> Result<(), String> {
+        if self.worker.is_some() {
+            return Err("Stop capture before changing companion processing locations".to_string());
+        }
+        if self.companion_route == route && self.companion_server.is_some() {
+            return Ok(());
+        }
+        if let Some(server) = &self.companion_server {
+            server.set_route(route)?;
+            if route.azookey == ExecutionDevice::Mobile {
+                release_desktop_azookey();
+            }
+            self.companion_route = route;
+            return Ok(());
+        }
+        let server = CompanionServer::start(route)?;
+        if route.azookey == ExecutionDevice::Mobile {
+            release_desktop_azookey();
+        }
+        self.companion_route = route;
+        self.companion_server = Some(server);
+        Ok(())
     }
 
     pub fn refresh_devices(&mut self) -> bool {
@@ -199,7 +272,8 @@ impl CaptureController {
 
     pub fn poll(&mut self, caption_timeout_ms: u64) -> bool {
         let now = Instant::now();
-        let mut changed = input_devices_changed() && self.refresh_devices();
+        let route_changed = self.sync_companion_route();
+        let mut changed = route_changed || (input_devices_changed() && self.refresh_devices());
         let Some(receiver) = self.event_rx.as_ref() else {
             return self.expire_caption_at(now) || changed;
         };
@@ -230,6 +304,24 @@ impl CaptureController {
         changed
     }
 
+    fn sync_companion_route(&mut self) -> bool {
+        if self.snapshot.status != CaptureStatus::Idle {
+            return false;
+        }
+        let Some(server) = &self.companion_server else {
+            return false;
+        };
+        let route = server.snapshot().route;
+        if route == self.companion_route {
+            return false;
+        }
+        self.companion_route = route;
+        if route.azookey == ExecutionDevice::Mobile {
+            release_desktop_azookey();
+        }
+        true
+    }
+
     pub fn start(&mut self, translation_enabled: bool) -> Result<(), String> {
         self.reap_finished_worker();
         if self.worker.is_some() {
@@ -240,23 +332,36 @@ impl CaptureController {
             };
         }
         self.refresh_devices();
+        let companion_session = if route_uses_mobile(self.companion_route) {
+            let server = self.companion_server.as_ref().ok_or_else(|| {
+                "Enable the companion LAN server before starting capture".to_string()
+            })?;
+            let snapshot = server.snapshot();
+            let session_id = snapshot.session_id.ok_or_else(|| {
+                "Connect and pair the mobile companion before starting capture".to_string()
+            })?;
+            Some((server.handle(), session_id))
+        } else {
+            None
+        };
         let models_root = parapper_runtime_dir()?.join("models");
         let device_id = self.snapshot.selected_device_id.clone();
+        let companion_route = self.companion_route;
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         let stop_requested = Arc::new(AtomicBool::new(false));
         let worker_stop_requested = stop_requested.clone();
+        let worker_options = CaptureWorkerOptions {
+            models_root,
+            device_id,
+            translation_enabled,
+            companion_route,
+            companion_session,
+        };
         let handle = thread::Builder::new()
             .name("native-recognition".to_string())
             .spawn(move || {
-                run_capture_worker(
-                    models_root,
-                    device_id,
-                    translation_enabled,
-                    command_rx,
-                    event_tx,
-                    worker_stop_requested,
-                )
+                run_capture_worker(worker_options, command_rx, event_tx, worker_stop_requested)
             })
             .map_err(|error| format!("could not start recognition thread: {error}"))?;
         self.command_tx = Some(command_tx);
@@ -319,6 +424,9 @@ impl CaptureController {
         let configured_hold = Duration::from_millis(caption_timeout_ms);
         match event {
             WorkerEvent::Caption { revision, source, update_mode, is_final } => {
+                if revision < self.current_caption_revision {
+                    return;
+                }
                 // Live recognition always takes priority over holding an older translated pair.
                 // Translation must never delay the first visible source-text update.
                 self.current_caption_revision = revision;
@@ -431,21 +539,12 @@ impl Drop for CaptureController {
 }
 
 fn run_capture_worker(
-    models_root: std::path::PathBuf,
-    device_id: Option<String>,
-    translation_enabled: bool,
+    options: CaptureWorkerOptions,
     command_rx: Receiver<WorkerCommand>,
     event_tx: SyncSender<WorkerEvent>,
     stop_requested: Arc<AtomicBool>,
 ) {
-    let result = run_capture_inner(
-        models_root,
-        device_id,
-        translation_enabled,
-        &command_rx,
-        &event_tx,
-        &stop_requested,
-    );
+    let result = run_capture_inner(options, &command_rx, &event_tx, &stop_requested);
     // At this boundary every ASR, VAD, turn-detector, translation, and audio
     // owner created by run_capture_inner has been dropped. Trim only now so
     // allocator pages cannot outlive a completed capture session.
@@ -458,13 +557,18 @@ fn run_capture_worker(
 }
 
 fn run_capture_inner(
-    models_root: std::path::PathBuf,
-    device_id: Option<String>,
-    translation_enabled: bool,
+    options: CaptureWorkerOptions,
     command_rx: &Receiver<WorkerCommand>,
     event_tx: &SyncSender<WorkerEvent>,
     stop_requested: &AtomicBool,
 ) -> Result<(), String> {
+    let CaptureWorkerOptions {
+        models_root,
+        device_id,
+        translation_enabled,
+        companion_route,
+        companion_session,
+    } = options;
     if stop_requested.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -474,14 +578,25 @@ fn run_capture_inner(
     if stop_requested.load(Ordering::Acquire) {
         return Ok(());
     }
-    let config = EngineConfig::new(models_root.clone());
-    let mut engine = ParapperEngine::load(&config)
-        .map_err(|error| format!("Could not initialize speech recognition: {error:#}"))?;
-    // Start QuickMT only after ASR, VAD, and turn-detector initialization has completed.
-    // Translation still warms before microphone audio is consumed, but its large model loader
-    // no longer overlaps the recognition model loaders' transient allocations.
-    let mut translation_worker =
-        start_translation_worker(translation_enabled, models_root.clone(), event_tx.clone())?;
+    let mut engine = if companion_route.asr == ExecutionDevice::Desktop {
+        let config = EngineConfig::new(models_root.clone());
+        Some(
+            ParapperEngine::load(&config)
+                .map_err(|error| format!("Could not initialize speech recognition: {error:#}"))?,
+        )
+    } else {
+        None
+    };
+    // Start QuickMT only after any selected desktop ASR, VAD, and turn-detector initialization.
+    // A mobile-owned stage must not retain its desktop model counterpart.
+    let mut translation_requested = translation_enabled;
+    let desktop_translation_enabled =
+        translation_requested && companion_route.translation == ExecutionDevice::Desktop;
+    let mut translation_worker = start_translation_worker(
+        desktop_translation_enabled,
+        models_root.clone(),
+        event_tx.clone(),
+    )?;
     if stop_requested.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -500,6 +615,27 @@ fn run_capture_inner(
     let mut caption_revision = 0_u64;
     let mut normalized_samples = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
     let mut last_rms_publish = Instant::now() - RMS_PUBLISH_INTERVAL;
+    let (companion_handle, companion_session_id) = match companion_session {
+        Some((handle, session_id)) => (Some(handle), Some(session_id)),
+        None => (None, None),
+    };
+    if let (Some(companion), Some(session_id)) =
+        (companion_handle.as_ref(), companion_session_id.as_deref())
+    {
+        companion.send_text(encode_translation_enabled(
+            session_id.to_string(),
+            translation_requested,
+        )?)?;
+    }
+    if companion_route.asr == ExecutionDevice::Mobile {
+        send_companion_audio_boundary(
+            companion_handle.as_ref(),
+            companion_session_id.as_deref(),
+            "audio.start",
+            1,
+            1,
+        )?;
+    }
 
     loop {
         if stop_requested.load(Ordering::Acquire) {
@@ -512,6 +648,17 @@ fn run_capture_inner(
                 recognition_turn_id = None;
             }
             Ok(WorkerCommand::SetTranslationEnabled(enabled)) => {
+                translation_requested = enabled;
+                if let (Some(companion), Some(session_id)) =
+                    (companion_handle.as_ref(), companion_session_id.as_deref())
+                {
+                    companion.send_text(encode_translation_enabled(
+                        session_id.to_string(),
+                        translation_requested,
+                    )?)?;
+                }
+                let enabled = translation_requested
+                    && companion_route.translation == ExecutionDevice::Desktop;
                 if enabled && translation_worker.is_none() {
                     translation_worker =
                         start_translation_worker(true, models_root.clone(), event_tx.clone())?;
@@ -526,32 +673,82 @@ fn run_capture_inner(
         loop {
             match capture.try_next_frame() {
                 Ok(Some(frame)) => {
-                    normalize_pcm16_into(&frame, &mut normalized_samples);
-                    let events = engine
-                        .push_audio(&normalized_samples)
-                        .map_err(|error| format!("Speech recognition failed: {error:#}"))?;
-                    publish_engine_events(
-                        events,
+                    if companion_route.asr == ExecutionDevice::Mobile {
+                        companion_handle
+                            .as_ref()
+                            .ok_or_else(|| "mobile ASR companion is unavailable".to_string())?
+                            .send_pcm16(&frame)?;
+                    }
+                    let events = if let Some(engine) = engine.as_mut() {
+                        normalize_pcm16_into(&frame, &mut normalized_samples);
+                        engine
+                            .push_audio(&normalized_samples)
+                            .map_err(|error| format!("Speech recognition failed: {error:#}"))?
+                    } else {
+                        Vec::new()
+                    };
+                    let routing = RoutingContext {
+                        route: companion_route,
+                        companion: companion_handle.as_ref(),
+                        session_id: companion_session_id.as_deref(),
                         event_tx,
-                        translation_worker.as_ref().map(|worker| &worker.sender),
-                        &mut recognition_text,
-                        &mut recognition_turn_id,
-                        &mut caption_revision,
-                    );
+                        translation_tx: translation_worker.as_ref().map(|worker| &worker.sender),
+                        translation_enabled: translation_requested,
+                    };
+                    let mut state = EnginePublishState {
+                        recognition_text: &mut recognition_text,
+                        recognition_turn_id: &mut recognition_turn_id,
+                        caption_revision: &mut caption_revision,
+                    };
+                    publish_engine_events(events, &routing, &mut state)?;
                 }
                 Ok(None) => break,
                 Err(error) if is_recoverable_stream_error(&error) => continue,
                 Err(error) => return Err(format_audio_read_error(error)),
             }
         }
-        publish_engine_events(
-            engine.tick(),
+        if let (Some(companion), Some(session_id)) =
+            (companion_handle.as_ref(), companion_session_id.as_deref())
+        {
+            let routing = RoutingContext {
+                route: companion_route,
+                companion: Some(companion),
+                session_id: Some(session_id),
+                event_tx,
+                translation_tx: translation_worker.as_ref().map(|worker| &worker.sender),
+                translation_enabled: translation_requested,
+            };
+            while let Some(inbound) = companion.try_recv() {
+                match inbound {
+                    CompanionInbound::StageResult(result) => {
+                        handle_mobile_result(
+                            result,
+                            &routing,
+                            &mut caption_revision,
+                            &mut recognition_text,
+                        )?;
+                    }
+                    CompanionInbound::Disconnected => {
+                        return Err("mobile companion disconnected during capture".to_string());
+                    }
+                }
+            }
+        }
+        let routing = RoutingContext {
+            route: companion_route,
+            companion: companion_handle.as_ref(),
+            session_id: companion_session_id.as_deref(),
             event_tx,
-            translation_worker.as_ref().map(|worker| &worker.sender),
-            &mut recognition_text,
-            &mut recognition_turn_id,
-            &mut caption_revision,
-        );
+            translation_tx: translation_worker.as_ref().map(|worker| &worker.sender),
+            translation_enabled: translation_requested,
+        };
+        let mut state = EnginePublishState {
+            recognition_text: &mut recognition_text,
+            recognition_turn_id: &mut recognition_turn_id,
+            caption_revision: &mut caption_revision,
+        };
+        let tick_events = engine.as_mut().map_or_else(Vec::new, ParapperEngine::tick);
+        publish_engine_events(tick_events, &routing, &mut state)?;
         if last_rms_publish.elapsed() >= RMS_PUBLISH_INTERVAL {
             let _ = event_tx.try_send(WorkerEvent::Rms(capture.stats().last_input_rms_dbfs));
             last_rms_publish = Instant::now();
@@ -559,15 +756,41 @@ fn run_capture_inner(
     }
 
     let _ = capture.stop();
-    let (_, events) = engine.shutdown();
-    publish_engine_events(
-        events,
+    let events = engine.map_or_else(Vec::new, |engine| engine.shutdown().1);
+    let routing = RoutingContext {
+        route: companion_route,
+        companion: companion_handle.as_ref(),
+        session_id: companion_session_id.as_deref(),
         event_tx,
-        translation_worker.as_ref().map(|worker| &worker.sender),
-        &mut recognition_text,
-        &mut recognition_turn_id,
-        &mut caption_revision,
-    );
+        translation_tx: translation_worker.as_ref().map(|worker| &worker.sender),
+        translation_enabled: translation_requested,
+    };
+    let mut state = EnginePublishState {
+        recognition_text: &mut recognition_text,
+        recognition_turn_id: &mut recognition_turn_id,
+        caption_revision: &mut caption_revision,
+    };
+    publish_engine_events(events, &routing, &mut state)?;
+    if companion_route.asr == ExecutionDevice::Mobile {
+        send_companion_audio_boundary(
+            companion_handle.as_ref(),
+            companion_session_id.as_deref(),
+            "audio.end",
+            1,
+            1,
+        )?;
+    }
+    if route_uses_mobile(companion_route) && caption_revision > 0 {
+        let companion = companion_handle
+            .as_ref()
+            .ok_or_else(|| "mobile companion is unavailable during final drain".to_string())?;
+        drain_mobile_final_results(
+            &routing,
+            companion,
+            &mut caption_revision,
+            &mut recognition_text,
+        )?;
+    }
     if let Some(worker) = translation_worker.take() {
         stop_translation_worker(worker, true);
     }
@@ -734,6 +957,251 @@ fn run_translation_worker(
     release_unused_process_memory();
 }
 
+fn send_companion_audio_boundary(
+    companion: Option<&CompanionHandle>,
+    session_id: Option<&str>,
+    message_type: &str,
+    turn_id: u64,
+    revision: u64,
+) -> Result<(), String> {
+    let companion = companion.ok_or_else(|| "mobile companion is unavailable".to_string())?;
+    let session_id =
+        session_id.ok_or_else(|| "mobile companion session is unavailable".to_string())?;
+    companion.send_text(encode_audio_boundary(
+        message_type.to_string(),
+        session_id.to_string(),
+        turn_id,
+        revision,
+    )?)
+}
+
+fn initialize_desktop_azookey() -> Result<(), String> {
+    let mut ready = DESKTOP_AZOOKEY_READY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *ready {
+        return Ok(());
+    }
+    let path = desktop_azookey_dictionary_path().ok_or_else(|| {
+        "bundled AzooKey dictionary is unavailable; package Native again".to_string()
+    })?;
+    let bytes = std::fs::read(&path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    initialize_azookey_dictionary(bytes)?;
+    *ready = true;
+    Ok(())
+}
+
+fn release_desktop_azookey() {
+    release_azookey_dictionary();
+    let mut ready = DESKTOP_AZOOKEY_READY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *ready = false;
+    release_unused_process_memory();
+}
+
+fn desktop_azookey_dictionary_path() -> Option<std::path::PathBuf> {
+    let configured = std::env::var_os("KOTOBA_AZOOKEY_DICTIONARY")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from);
+    let executable = std::env::current_exe().ok();
+    let macos_resource = executable.as_ref().and_then(|path| {
+        path.parent()?
+            .parent()
+            .map(|contents| contents.join("Resources").join("azookey").join("system.azkdict.gz"))
+    });
+    let portable_resource = executable.as_ref().and_then(|path| {
+        path.parent().map(|directory| directory.join("azookey").join("system.azkdict.gz"))
+    });
+    let repository_resource = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../cloudflare-worker-server/public/azookey/system.azkdict.gz");
+    configured
+        .into_iter()
+        .chain(macos_resource)
+        .chain(portable_resource)
+        .chain([repository_resource])
+        .find(|path| path.is_file())
+}
+
+fn route_asr_output(context: &RoutingContext<'_>, output: RoutedStageOutput) -> Result<(), String> {
+    let _ = context.event_tx.send(WorkerEvent::Caption {
+        revision: output.revision,
+        source: output.text.clone(),
+        update_mode: CaptionUpdateMode::Replace,
+        is_final: output.is_final,
+    });
+    if context.route.azookey == ExecutionDevice::Mobile {
+        if should_continue_on_mobile(context.route, ProcessingStage::Asr) {
+            return Ok(());
+        }
+        let companion = context
+            .companion
+            .ok_or_else(|| "mobile AzooKey companion is unavailable".to_string())?;
+        let session_id = context
+            .session_id
+            .ok_or_else(|| "mobile companion session is unavailable".to_string())?;
+        return companion.send_text(encode_stage_request(
+            "azookey.request".to_string(),
+            session_id.to_string(),
+            output.turn_id,
+            output.revision,
+            output.text,
+            output.is_final,
+        )?);
+    }
+    initialize_desktop_azookey()?;
+    let converted_source = convert_azookey(output.text.clone())?.text;
+    route_azookey_output(context, RoutedStageOutput { text: converted_source, ..output })
+}
+
+fn route_azookey_output(
+    context: &RoutingContext<'_>,
+    output: RoutedStageOutput,
+) -> Result<(), String> {
+    let _ = context.event_tx.send(WorkerEvent::Caption {
+        revision: output.revision,
+        source: output.text.clone(),
+        update_mode: CaptionUpdateMode::Replace,
+        is_final: output.is_final,
+    });
+    if !context.translation_enabled {
+        return Ok(());
+    }
+    if context.route.translation == ExecutionDevice::Mobile {
+        if should_continue_on_mobile(context.route, ProcessingStage::Azookey) {
+            return Ok(());
+        }
+        let companion = context
+            .companion
+            .ok_or_else(|| "mobile translation companion is unavailable".to_string())?;
+        let session_id = context
+            .session_id
+            .ok_or_else(|| "mobile companion session is unavailable".to_string())?;
+        return companion.send_text(encode_stage_request(
+            "translation.request".to_string(),
+            session_id.to_string(),
+            output.turn_id,
+            output.revision,
+            output.text,
+            output.is_final,
+        )?);
+    }
+    if let Some(sender) = context.translation_tx {
+        queue_translation(
+            sender,
+            TranslationRequest { revision: output.revision, source: output.text },
+            context.event_tx,
+        );
+    }
+    Ok(())
+}
+
+fn handle_mobile_result(
+    result: MobileStageResult,
+    context: &RoutingContext<'_>,
+    caption_revision: &mut u64,
+    latest_source: &mut String,
+) -> Result<bool, String> {
+    if context.session_id != Some(result.session_id.as_str()) || result.revision < *caption_revision
+    {
+        return Ok(false);
+    }
+    match result.message_type.as_str() {
+        "asr.update" if context.route.asr == ExecutionDevice::Mobile => {
+            *caption_revision = (*caption_revision).max(result.revision);
+            *latest_source = result.text.clone();
+            route_asr_output(
+                context,
+                RoutedStageOutput {
+                    turn_id: result.turn_id,
+                    revision: result.revision,
+                    text: result.text,
+                    is_final: result.is_final,
+                },
+            )?;
+            Ok(true)
+        }
+        "azookey.result" if context.route.azookey == ExecutionDevice::Mobile => {
+            *latest_source = result.text.clone();
+            route_azookey_output(
+                context,
+                RoutedStageOutput {
+                    turn_id: result.turn_id,
+                    revision: result.revision,
+                    text: result.text,
+                    is_final: result.is_final,
+                },
+            )?;
+            Ok(true)
+        }
+        "translation.result" if context.route.translation == ExecutionDevice::Mobile => {
+            let _ = context.event_tx.send(WorkerEvent::Translation {
+                revision: result.revision,
+                source: latest_source.clone(),
+                translation: result.text,
+            });
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn drain_mobile_final_results(
+    context: &RoutingContext<'_>,
+    companion: &CompanionHandle,
+    caption_revision: &mut u64,
+    latest_source: &mut String,
+) -> Result<(), String> {
+    drain_mobile_final_results_with_timeout(
+        context,
+        companion,
+        caption_revision,
+        latest_source,
+        MOBILE_FINAL_DRAIN_TIMEOUT,
+    )
+}
+
+fn drain_mobile_final_results_with_timeout(
+    context: &RoutingContext<'_>,
+    companion: &CompanionHandle,
+    caption_revision: &mut u64,
+    latest_source: &mut String,
+    timeout: Duration,
+) -> Result<(), String> {
+    let terminal_stage =
+        if context.translation_enabled && context.route.translation == ExecutionDevice::Mobile {
+            "translation.result"
+        } else if context.route.azookey == ExecutionDevice::Mobile {
+            "azookey.result"
+        } else {
+            "asr.update"
+        };
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match companion.try_recv() {
+            Some(CompanionInbound::StageResult(result)) => {
+                let is_terminal = result.message_type == terminal_stage && result.is_final;
+                let accepted =
+                    handle_mobile_result(result, context, caption_revision, latest_source)?;
+                if accepted && is_terminal {
+                    return Ok(());
+                }
+            }
+            Some(CompanionInbound::Disconnected) => {
+                return Err("mobile companion disconnected before final output".to_string());
+            }
+            None => thread::sleep(POLL_TIMEOUT),
+        }
+    }
+    Err(format!(
+        "mobile companion did not return {terminal_stage} within {} ms",
+        timeout.as_millis()
+    ))
+}
+
+fn route_uses_mobile(route: PipelineRoute) -> bool {
+    route.asr == ExecutionDevice::Mobile
+        || route.azookey == ExecutionDevice::Mobile
+        || route.translation == ExecutionDevice::Mobile
+}
+
 fn native_audio_config() -> AudioCaptureConfig {
     AudioCaptureConfig {
         chunk_ms: PARAPPER_VAD_INTERVAL_MS,
@@ -744,35 +1212,35 @@ fn native_audio_config() -> AudioCaptureConfig {
 
 fn publish_engine_events(
     events: Vec<EngineEvent>,
-    event_tx: &SyncSender<WorkerEvent>,
-    translation_tx: Option<&TranslationMailboxSender>,
-    recognition_text: &mut String,
-    recognition_turn_id: &mut Option<String>,
-    caption_revision: &mut u64,
-) {
+    routing: &RoutingContext<'_>,
+    state: &mut EnginePublishState<'_>,
+) -> Result<(), String> {
     for event in events {
         if let EngineEvent::Caption { turn_id, text, is_final, update_mode, .. } = event {
+            if routing.route.asr != ExecutionDevice::Desktop {
+                continue;
+            }
             apply_turn_caption_update(
-                recognition_text,
-                recognition_turn_id,
+                state.recognition_text,
+                state.recognition_turn_id,
                 &turn_id,
                 &text,
                 update_mode,
             );
-            *caption_revision = caption_revision.wrapping_add(1).max(1);
-            let revision = *caption_revision;
-            let source = recognition_text.clone();
-            let _ = event_tx.send(WorkerEvent::Caption {
-                revision,
-                source: source.clone(),
-                update_mode: CaptionUpdateMode::Replace,
-                is_final,
-            });
-            if let Some(sender) = translation_tx {
-                queue_translation(sender, TranslationRequest { revision, source }, event_tx);
-            }
+            *state.caption_revision = state.caption_revision.wrapping_add(1).max(1);
+            let revision = *state.caption_revision;
+            route_asr_output(
+                routing,
+                RoutedStageOutput {
+                    turn_id: revision,
+                    revision,
+                    text: state.recognition_text.clone(),
+                    is_final,
+                },
+            )?;
         }
     }
+    Ok(())
 }
 
 fn queue_translation(
@@ -843,12 +1311,18 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use caption_bridge_audio::{should_emit_pcm_frame, AdaptiveNoiseFloor};
+    use rust_lib_kotoba_beacon_companion::api::simple::{
+        ExecutionDevice, MobileStageResult, PipelineRoute,
+    };
+
+    use crate::companion::{CompanionHandle, CompanionInbound};
 
     use super::{
-        apply_caption_update, apply_turn_caption_update, native_audio_config,
-        publish_engine_events, queue_translation, translation_mailbox, CaptionUpdateMode,
-        CaptureController, CaptureSnapshot, CaptureStatus, EngineEvent, TranslationCommand,
-        TranslationRequest, WorkerCommand, WorkerEvent, MAX_CAPTION_CHARACTERS,
+        apply_caption_update, apply_turn_caption_update, drain_mobile_final_results_with_timeout,
+        native_audio_config, publish_engine_events, queue_translation, translation_mailbox,
+        CaptionUpdateMode, CaptureController, CaptureSnapshot, CaptureStatus, EngineEvent,
+        RoutingContext, TranslationCommand, TranslationRequest, WorkerCommand, WorkerEvent,
+        MAX_CAPTION_CHARACTERS,
     };
 
     #[test]
@@ -912,6 +1386,17 @@ mod tests {
     }
 
     #[test]
+    fn desktop_azookey_uses_the_full_portable_dictionary() {
+        super::initialize_desktop_azookey().expect("initialize desktop AzooKey");
+        assert_eq!(
+            super::convert_azookey("きょう".to_string())
+                .expect("convert with desktop AzooKey")
+                .text,
+            "今日"
+        );
+    }
+
+    #[test]
     fn partial_recognition_is_queued_for_translation_before_finalization() {
         let (translation_tx, translation_rx) = translation_mailbox();
         let (event_tx, event_rx) = mpsc::sync_channel(4);
@@ -919,6 +1404,23 @@ mod tests {
         let mut recognition_turn_id = None;
         let mut caption_revision = 0;
 
+        let routing = super::RoutingContext {
+            route: super::PipelineRoute {
+                asr: super::ExecutionDevice::Desktop,
+                azookey: super::ExecutionDevice::Desktop,
+                translation: super::ExecutionDevice::Desktop,
+            },
+            companion: None,
+            session_id: None,
+            event_tx: &event_tx,
+            translation_tx: Some(&translation_tx),
+            translation_enabled: true,
+        };
+        let mut state = super::EnginePublishState {
+            recognition_text: &mut recognition_text,
+            recognition_turn_id: &mut recognition_turn_id,
+            caption_revision: &mut caption_revision,
+        };
         publish_engine_events(
             vec![EngineEvent::Caption {
                 turn_id: "turn-1".to_string(),
@@ -927,12 +1429,10 @@ mod tests {
                 update_mode: CaptionUpdateMode::Replace,
                 elapsed_millis: 10,
             }],
-            &event_tx,
-            Some(&translation_tx),
-            &mut recognition_text,
-            &mut recognition_turn_id,
-            &mut caption_revision,
-        );
+            &routing,
+            &mut state,
+        )
+        .expect("desktop routing");
 
         assert!(matches!(
             translation_rx.recv_timeout(Duration::from_millis(10)),
@@ -1021,6 +1521,8 @@ mod tests {
             current_caption_revision: 0,
             awaiting_translation_revision: None,
             recognition_in_progress: false,
+            companion_route: super::default_pipeline_route(),
+            companion_server: None,
         };
         let (stopped_tx, stopped_rx) = mpsc::sync_channel(1);
         let stopper = thread::spawn(move || {
@@ -1311,6 +1813,35 @@ mod tests {
     }
 
     #[test]
+    fn stale_mobile_stage_caption_never_regresses_a_newer_revision() {
+        let mut controller = CaptureController::new();
+        let now = Instant::now();
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                revision: 12,
+                source: "新しいASR".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: false,
+            },
+            now,
+            1_000,
+        );
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                revision: 11,
+                source: "古いAzooKey".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: true,
+            },
+            now + Duration::from_millis(1),
+            1_000,
+        );
+
+        assert_eq!(controller.current_caption_revision, 12);
+        assert_eq!(controller.snapshot.source_text, "新しいASR");
+    }
+
+    #[test]
     fn stale_translation_for_identical_text_from_an_older_turn_is_ignored() {
         let mut controller = CaptureController::new();
         controller.translation_enabled = true;
@@ -1347,6 +1878,244 @@ mod tests {
 
         assert!(controller.snapshot.translation_text.is_empty());
         assert_eq!(controller.awaiting_translation_revision, Some(12));
+    }
+
+    #[test]
+    fn final_mobile_translation_is_drained_before_capture_stops() {
+        let (companion, inbound_tx, outbound_rx) = CompanionHandle::test_channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(8);
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Mobile,
+                azookey: ExecutionDevice::Mobile,
+                translation: ExecutionDevice::Mobile,
+            },
+            companion: Some(&companion),
+            session_id: Some("session-1"),
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: true,
+        };
+        inbound_tx
+            .send(CompanionInbound::StageResult(MobileStageResult {
+                message_type: "translation.result".to_string(),
+                session_id: "session-1".to_string(),
+                turn_id: 4,
+                revision: 9,
+                text: "Hello.".to_string(),
+                is_final: true,
+            }))
+            .expect("queue final translation");
+        let mut caption_revision = 9;
+        let mut source = "こんにちは。".to_string();
+
+        drain_mobile_final_results_with_timeout(
+            &routing,
+            &companion,
+            &mut caption_revision,
+            &mut source,
+            Duration::from_millis(20),
+        )
+        .expect("drain final translation");
+
+        assert!(matches!(
+            event_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(WorkerEvent::Translation {
+                revision: 9,
+                source,
+                translation,
+            }) if source == "こんにちは。" && translation == "Hello."
+        ));
+        drop(outbound_rx);
+    }
+
+    #[test]
+    fn stale_or_wrong_session_final_result_does_not_end_mobile_drain() {
+        let (companion, inbound_tx, outbound_rx) = CompanionHandle::test_channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(8);
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Mobile,
+                azookey: ExecutionDevice::Mobile,
+                translation: ExecutionDevice::Mobile,
+            },
+            companion: Some(&companion),
+            session_id: Some("current-session"),
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: true,
+        };
+        inbound_tx
+            .send(CompanionInbound::StageResult(MobileStageResult {
+                message_type: "translation.result".to_string(),
+                session_id: "old-session".to_string(),
+                turn_id: 3,
+                revision: 12,
+                text: "Wrong session".to_string(),
+                is_final: true,
+            }))
+            .expect("queue wrong session result");
+        inbound_tx
+            .send(CompanionInbound::StageResult(MobileStageResult {
+                message_type: "translation.result".to_string(),
+                session_id: "current-session".to_string(),
+                turn_id: 3,
+                revision: 10,
+                text: "Stale".to_string(),
+                is_final: true,
+            }))
+            .expect("queue stale result");
+        inbound_tx
+            .send(CompanionInbound::StageResult(MobileStageResult {
+                message_type: "translation.result".to_string(),
+                session_id: "current-session".to_string(),
+                turn_id: 3,
+                revision: 11,
+                text: "Current".to_string(),
+                is_final: true,
+            }))
+            .expect("queue current result");
+        let mut caption_revision = 11;
+        let mut source = "最新".to_string();
+
+        drain_mobile_final_results_with_timeout(
+            &routing,
+            &companion,
+            &mut caption_revision,
+            &mut source,
+            Duration::from_millis(20),
+        )
+        .expect("ignore stale final results");
+
+        assert!(matches!(
+            event_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(WorkerEvent::Translation { revision: 11, translation, .. })
+                if translation == "Current"
+        ));
+        assert!(event_rx.try_recv().is_err());
+        drop(outbound_rx);
+    }
+
+    #[test]
+    fn disabled_translation_drains_final_mobile_azookey_result() {
+        let (companion, inbound_tx, outbound_rx) = CompanionHandle::test_channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(8);
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Mobile,
+                azookey: ExecutionDevice::Mobile,
+                translation: ExecutionDevice::Mobile,
+            },
+            companion: Some(&companion),
+            session_id: Some("session-1"),
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: false,
+        };
+        inbound_tx
+            .send(CompanionInbound::StageResult(MobileStageResult {
+                message_type: "azookey.result".to_string(),
+                session_id: "session-1".to_string(),
+                turn_id: 5,
+                revision: 13,
+                text: "今日は晴れ".to_string(),
+                is_final: true,
+            }))
+            .expect("queue final AzooKey result");
+        let mut caption_revision = 13;
+        let mut source = "きょうははれ".to_string();
+
+        drain_mobile_final_results_with_timeout(
+            &routing,
+            &companion,
+            &mut caption_revision,
+            &mut source,
+            Duration::from_millis(20),
+        )
+        .expect("drain final AzooKey result");
+
+        assert_eq!(source, "今日は晴れ");
+        assert!(matches!(
+            event_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(WorkerEvent::Caption {
+                revision: 13,
+                source,
+                is_final: true,
+                ..
+            }) if source == "今日は晴れ"
+        ));
+        assert!(event_rx.try_recv().is_err());
+        drop(outbound_rx);
+    }
+
+    #[test]
+    fn mobile_final_drain_reports_disconnect() {
+        let (companion, inbound_tx, outbound_rx) = CompanionHandle::test_channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(8);
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Mobile,
+                azookey: ExecutionDevice::Mobile,
+                translation: ExecutionDevice::Mobile,
+            },
+            companion: Some(&companion),
+            session_id: Some("session-1"),
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: true,
+        };
+        inbound_tx.send(CompanionInbound::Disconnected).expect("queue disconnect");
+        let mut caption_revision = 1;
+        let mut source = "途中".to_string();
+
+        assert_eq!(
+            drain_mobile_final_results_with_timeout(
+                &routing,
+                &companion,
+                &mut caption_revision,
+                &mut source,
+                Duration::from_millis(20),
+            )
+            .expect_err("disconnect must fail final drain"),
+            "mobile companion disconnected before final output"
+        );
+        drop(event_rx);
+        drop(outbound_rx);
+    }
+
+    #[test]
+    fn mobile_final_drain_has_a_bounded_timeout() {
+        let (companion, inbound_tx, outbound_rx) = CompanionHandle::test_channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(8);
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Mobile,
+                azookey: ExecutionDevice::Mobile,
+                translation: ExecutionDevice::Mobile,
+            },
+            companion: Some(&companion),
+            session_id: Some("session-1"),
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: true,
+        };
+        let mut caption_revision = 1;
+        let mut source = "途中".to_string();
+
+        assert_eq!(
+            drain_mobile_final_results_with_timeout(
+                &routing,
+                &companion,
+                &mut caption_revision,
+                &mut source,
+                Duration::from_millis(1),
+            )
+            .expect_err("missing final result must time out"),
+            "mobile companion did not return translation.result within 1 ms"
+        );
+        drop(inbound_tx);
+        drop(event_rx);
+        drop(outbound_rx);
     }
 
     #[test]

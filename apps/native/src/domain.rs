@@ -61,7 +61,7 @@ pub const PREVIEW_PLATE_HEIGHT: u32 = 180;
 pub const DICTIONARY_SEARCH_LIMIT: usize = 50;
 pub const STYLE_VERSION: u32 = 1;
 #[cfg(any(feature = "gpui", test))]
-pub const SETTINGS_VERSION: u32 = 2;
+pub const SETTINGS_VERSION: u32 = 3;
 
 const FIXTURE_JSON: &str = r#"{"version":1,"type":"turn.final","session_id":"fixture-session","turn_session_id":7,"turn_id":3,"revision":2,"output_sequence":2,"segment_id":8,"previous_segment_id":7,"text":"こんにちは。","source_asr_model":"reazonspeech_k2_v2","source_language":"ja","detected_language":null,"audio_duration_ms":1280,"elapsed_ms":96}"#;
 const FLAG_SYPHON: &str = "--syphon";
@@ -311,6 +311,17 @@ pub enum UiLanguage {
 
 #[cfg(any(feature = "gpui", test))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionDeviceSettings {
+    pub device_id: String,
+    pub device_name: String,
+    pub asr_on_mobile: bool,
+    pub azookey_on_mobile: bool,
+    pub translation_on_mobile: bool,
+}
+
+#[cfg(any(feature = "gpui", test))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct NativeAppSettings {
     pub version: u32,
@@ -320,6 +331,10 @@ pub struct NativeAppSettings {
     pub caption_output_open_on_start: bool,
     pub browser_source_enabled: bool,
     pub syphon_enabled: bool,
+    pub companion_asr_on_mobile: bool,
+    pub companion_azookey_on_mobile: bool,
+    pub companion_translation_on_mobile: bool,
+    pub companion_devices: Vec<CompanionDeviceSettings>,
 }
 
 #[cfg(any(feature = "gpui", test))]
@@ -333,6 +348,10 @@ impl Default for NativeAppSettings {
             caption_output_open_on_start: true,
             browser_source_enabled: true,
             syphon_enabled: false,
+            companion_asr_on_mobile: true,
+            companion_azookey_on_mobile: true,
+            companion_translation_on_mobile: true,
+            companion_devices: Vec::new(),
         }
     }
 }

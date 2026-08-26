@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
+use rust_lib_kotoba_beacon_companion::api::simple::ExecutionDevice;
 
 use crate::app::{
-    capture_display_active, delete_editable_text, erase_editable_text, insert_editable_text,
-    main_window_options, next_caret, output_window_options, previous_caret,
+    capture_display_active, companion_route, delete_editable_text, erase_editable_text,
+    insert_editable_text, main_window_options, next_caret, output_window_options, previous_caret,
 };
 use crate::debug_surfaces::{
     caption_publication, prepare_caption_publication_with, CaptionPublication,
@@ -22,8 +23,8 @@ use crate::domain::{
     rasterize_live_caption_at_scale, rasterize_style_preview, replace_selected_dictionary_entries,
     save_app_settings, save_dictionary_catalog, save_style_catalog, save_style_settings,
     search_dictionary_entries, select_dictionary_profile, select_style_profile, AppTab,
-    NativeAppSettings, NativeDictionaryCatalog, NativeStyleCatalog, NativeStyleSettings,
-    UiLanguage, BINARY_NAME, BUILD_ID, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE,
+    CompanionDeviceSettings, NativeAppSettings, NativeDictionaryCatalog, NativeStyleCatalog,
+    NativeStyleSettings, UiLanguage, BINARY_NAME, BUILD_ID, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE,
     DEFAULT_PREVIEW_TRANSLATION, PRODUCT_NAME, TABS,
 };
 
@@ -131,12 +132,14 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
     assert!(translation.contains("max_queued_batches: 1"));
     assert!(translation.contains("max_batch_size: 1"));
     let engine_load = capture
-        .find("let mut engine = ParapperEngine::load(&config)")
-        .expect("Native must initialize recognition before loading QuickMT");
+        .find("ParapperEngine::load(&config)")
+        .expect("Native must initialize selected desktop recognition before loading QuickMT");
     let translation_start = capture
         .find("let mut translation_worker =")
         .expect("Native must create one translation worker");
     assert!(engine_load < translation_start);
+    assert!(capture.contains("companion_route.asr == ExecutionDevice::Desktop"));
+    assert!(capture.contains("companion_route.translation == ExecutionDevice::Desktop"));
     let audio_start = capture
         .find("capture.start(device_id.as_deref())")
         .expect("Native must start its selected microphone");
@@ -355,15 +358,17 @@ fn unchanged_caption_does_not_rasterize() {
 }
 
 #[test]
-fn recognition_has_no_process_or_socket_ipc_dependency() {
+fn local_recognition_has_no_process_or_socket_transport_dependency() {
     let manifest = include_str!("../Cargo.toml");
     let capture = include_str!("capture.rs");
+    let companion = include_str!("companion.rs");
     assert!(manifest.contains("parapper-engine ="));
     assert!(!manifest.contains("caption-bridge-overlay"));
     assert!(!manifest.contains("caption-bridge-sidecar"));
-    assert!(!manifest.contains("tungstenite"));
+    assert!(manifest.contains("tungstenite ="));
     assert!(!capture.contains("std::process::Command"));
     assert!(!capture.contains("WebSocket"));
+    assert!(companion.contains("WebSocket"));
 }
 
 #[test]
@@ -447,6 +452,9 @@ fn settings_support_one_ui_language_at_a_time() {
     let source = include_str!("ui.rs");
     assert!(!source.contains("Live ライブ"));
     assert!(!source.contains("ライブ Live"));
+    let settings = include_str!("settings.rs");
+    assert!(settings.contains("copy-companion-endpoint"));
+    assert!(settings.contains("copy-companion-token"));
 }
 
 #[test]
@@ -483,6 +491,19 @@ fn old_style_json_migrates_with_defaults() {
 }
 
 #[test]
+fn companion_settings_map_each_stage_independently() {
+    let route = companion_route(&NativeAppSettings {
+        companion_asr_on_mobile: false,
+        companion_azookey_on_mobile: true,
+        companion_translation_on_mobile: false,
+        ..NativeAppSettings::default()
+    });
+    assert_eq!(route.asr, ExecutionDevice::Desktop);
+    assert_eq!(route.azookey, ExecutionDevice::Mobile);
+    assert_eq!(route.translation, ExecutionDevice::Desktop);
+}
+
+#[test]
 fn app_settings_round_trip_language_translation_timeout_and_output() {
     let dir = unique_temp_dir("settings");
     let settings = NativeAppSettings {
@@ -491,6 +512,16 @@ fn app_settings_round_trip_language_translation_timeout_and_output() {
         caption_timeout_ms: 7_000,
         caption_output_open_on_start: false,
         browser_source_enabled: false,
+        companion_asr_on_mobile: false,
+        companion_azookey_on_mobile: true,
+        companion_translation_on_mobile: false,
+        companion_devices: vec![CompanionDeviceSettings {
+            device_id: "android-pixel-1".to_string(),
+            device_name: "Pixel".to_string(),
+            asr_on_mobile: true,
+            azookey_on_mobile: false,
+            translation_on_mobile: true,
+        }],
         ..NativeAppSettings::default()
     };
     save_app_settings(&dir, &settings).expect("save settings");
@@ -500,6 +531,19 @@ fn app_settings_round_trip_language_translation_timeout_and_output() {
     assert_eq!(loaded.caption_timeout_ms, 7_000);
     assert!(!loaded.caption_output_open_on_start);
     assert!(!loaded.browser_source_enabled);
+    assert!(!loaded.companion_asr_on_mobile);
+    assert!(loaded.companion_azookey_on_mobile);
+    assert!(!loaded.companion_translation_on_mobile);
+    assert_eq!(
+        loaded.companion_devices,
+        vec![CompanionDeviceSettings {
+            device_id: "android-pixel-1".to_string(),
+            device_name: "Pixel".to_string(),
+            asr_on_mobile: true,
+            azookey_on_mobile: false,
+            translation_on_mobile: true,
+        }]
+    );
     assert!(native_settings_path(&dir).ends_with("settings.json"));
     fs::remove_dir_all(&dir).expect("cleanup");
 }

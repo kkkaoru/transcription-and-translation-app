@@ -16,6 +16,9 @@ use gpui::{
     KeyDownEvent, Pixels, Render, RenderImage, Size, Subscription, Task, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
 };
+use rust_lib_kotoba_beacon_companion::api::simple::{
+    ExecutionDevice, PipelineRoute, ProcessingStage,
+};
 
 use crate::capture::CaptureController;
 use crate::debug_surfaces::{
@@ -30,17 +33,17 @@ use crate::domain::{
     native_config_dir, parse_debug_launch, rasterize_live_caption_at_scale,
     rasterize_style_preview, replace_selected_dictionary_entries, save_app_settings,
     save_dictionary_catalog, save_style_catalog, search_dictionary_entries,
-    select_dictionary_profile, select_style_profile, AppTab, CaptureStatus, NativeAppSettings,
-    NativeDictionaryCatalog, NativeStyleCatalog, NativeStyleSettings, BUNDLE_ID,
-    DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FLAG_HELP, MIN_WINDOW_HEIGHT_PX,
-    MIN_WINDOW_WIDTH_PX, NATIVE_BROWSER_SOURCE_HINT, WINDOW_HEIGHT_PX, WINDOW_TITLE,
-    WINDOW_WIDTH_PX,
+    select_dictionary_profile, select_style_profile, AppTab, CaptureStatus,
+    CompanionDeviceSettings, NativeAppSettings, NativeDictionaryCatalog, NativeStyleCatalog,
+    NativeStyleSettings, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FLAG_HELP,
+    MIN_WINDOW_HEIGHT_PX, MIN_WINDOW_WIDTH_PX, NATIVE_BROWSER_SOURCE_HINT, WINDOW_HEIGHT_PX,
+    WINDOW_TITLE, WINDOW_WIDTH_PX,
 };
 use crate::hot_path::{caption_changed, should_check_output_window, OUTPUT_WINDOW_HEALTH_INTERVAL};
 use crate::i18n::{text, TextKey};
 use crate::live::{render_live, LiveCallbacks};
 use crate::output::{render_output, OutputCallbacks};
-use crate::settings::{render_settings, SettingsCallbacks};
+use crate::settings::{render_settings, SettingsCallbacks, SettingsRuntimeInfo};
 use crate::style::{render_style, FontPickerState, StyleCallbacks, StyleViewState};
 use crate::ui::{image_view, render_image, sky_page, tab_bar};
 
@@ -79,6 +82,7 @@ pub struct MainView {
     font_select_open: bool,
     active_color_picker: Option<String>,
     persist_error: Option<String>,
+    active_companion_device_id: Option<String>,
     focused_field: FocusField,
     focus_handle: FocusHandle,
     surfaces: Rc<RefCell<DebugSurfaces>>,
@@ -198,6 +202,8 @@ impl MainView {
         capture
             .set_translation_enabled(app_settings.translation_enabled)
             .expect("idle translation setting must not require a worker command");
+        let companion_error = capture.configure_companion(companion_route(&app_settings)).err();
+        let persist_error = companion_error.or(browser_error);
         Self {
             tab: AppTab::Live,
             config_dir,
@@ -217,7 +223,8 @@ impl MainView {
             fonts,
             font_select_open: false,
             active_color_picker: None,
-            persist_error: browser_error,
+            persist_error,
+            active_companion_device_id: None,
             focused_field: FocusField::Reading,
             focus_handle: cx.focus_handle(),
             surfaces,
@@ -360,6 +367,122 @@ impl MainView {
         } else {
             self.persist_error = None;
         }
+    }
+
+    fn sync_companion_device_settings(&mut self) -> bool {
+        let Some(snapshot) = self.capture.companion_snapshot() else {
+            self.active_companion_device_id = None;
+            return false;
+        };
+        let (Some(device_id), Some(device_name), Some(capabilities)) =
+            (snapshot.device_id, snapshot.device_name, snapshot.capabilities)
+        else {
+            self.active_companion_device_id = None;
+            return false;
+        };
+        let is_new_connection = self.active_companion_device_id.as_deref() != Some(&device_id);
+        self.active_companion_device_id = Some(device_id.clone());
+        let saved = self
+            .app_settings
+            .companion_devices
+            .iter()
+            .find(|device| device.device_id == device_id)
+            .cloned();
+        if is_new_connection {
+            if let Some(saved) = saved {
+                let route = capabilities.constrain(companion_device_route(&saved));
+                apply_companion_route_settings(&mut self.app_settings, route);
+                if let Err(error) = self.capture.configure_companion(route) {
+                    self.persist_error = Some(error);
+                }
+                return true;
+            }
+        }
+        let route = snapshot.route;
+        apply_companion_route_settings(&mut self.app_settings, route);
+        let profile = CompanionDeviceSettings {
+            device_id: device_id.clone(),
+            device_name,
+            asr_on_mobile: route.asr == ExecutionDevice::Mobile,
+            azookey_on_mobile: route.azookey == ExecutionDevice::Mobile,
+            translation_on_mobile: route.translation == ExecutionDevice::Mobile,
+        };
+        if let Some(saved) = self
+            .app_settings
+            .companion_devices
+            .iter_mut()
+            .find(|device| device.device_id == device_id)
+        {
+            if *saved == profile {
+                return false;
+            }
+            *saved = profile;
+        } else {
+            self.app_settings.companion_devices.push(profile);
+        }
+        self.persist_settings();
+        true
+    }
+
+    fn toggle_companion_stage(&mut self, stage: ProcessingStage) {
+        if self.capture.snapshot().status != CaptureStatus::Idle {
+            self.persist_error =
+                Some("Stop capture before changing companion processing locations".to_string());
+            return;
+        }
+        let Some(snapshot) = self.capture.companion_snapshot() else {
+            self.persist_error =
+                Some("Connect a mobile companion before changing routes".to_string());
+            return;
+        };
+        let Some(capabilities) = snapshot.capabilities else {
+            self.persist_error = Some("Wait for mobile capability detection to finish".to_string());
+            return;
+        };
+        if !stage_runs_on_mobile(&self.app_settings, stage) && !capabilities.supports(stage) {
+            self.persist_error =
+                Some("The connected device does not support this mobile stage".to_string());
+            return;
+        }
+        match stage {
+            ProcessingStage::Asr => {
+                self.app_settings.companion_asr_on_mobile =
+                    !self.app_settings.companion_asr_on_mobile;
+            }
+            ProcessingStage::Azookey => {
+                self.app_settings.companion_azookey_on_mobile =
+                    !self.app_settings.companion_azookey_on_mobile;
+            }
+            ProcessingStage::Translation => {
+                self.app_settings.companion_translation_on_mobile =
+                    !self.app_settings.companion_translation_on_mobile;
+            }
+        }
+        let route = companion_route(&self.app_settings);
+        match self.capture.configure_companion(route) {
+            Ok(()) => {
+                self.update_active_companion_profile(route);
+                self.persist_settings();
+            }
+            Err(error) => self.persist_error = Some(error),
+        }
+    }
+
+    fn update_active_companion_profile(&mut self, route: PipelineRoute) {
+        let Some(device_id) = self.active_companion_device_id.as_deref() else {
+            return;
+        };
+        let Some(profile) = self
+            .app_settings
+            .companion_devices
+            .iter_mut()
+            .find(|device| device.device_id == device_id)
+        else {
+            return;
+        };
+        profile.asr_on_mobile = route.asr == ExecutionDevice::Mobile;
+        profile.azookey_on_mobile = route.azookey == ExecutionDevice::Mobile;
+        profile.translation_on_mobile = route.translation == ExecutionDevice::Mobile;
     }
 
     fn toggle_translation(&mut self) {
@@ -569,6 +692,10 @@ impl Render for MainView {
         window.focus(&self.focus_handle, cx);
         let language = self.app_settings.ui_language;
         let persist = self.persist_error.clone();
+        let companion_snapshot = self.capture.companion_snapshot();
+        let settings_error = persist.as_deref().or_else(|| {
+            companion_snapshot.as_ref().and_then(|snapshot| snapshot.last_error.as_deref())
+        });
         let body = match self.tab {
             AppTab::Live => render_live(
                 &self.capture,
@@ -777,9 +904,24 @@ impl Render for MainView {
             .into_any_element(),
             AppTab::Settings => render_settings(
                 &self.app_settings,
-                local_translation_model_installed(),
-                self.surfaces.borrow().syphon.is_some(),
-                persist.as_deref(),
+                &SettingsRuntimeInfo {
+                    translation_model_installed: local_translation_model_installed(),
+                    syphon_on: self.surfaces.borrow().syphon.is_some(),
+                    companion_endpoint: companion_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.endpoint.as_str()),
+                    companion_pairing_token: companion_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.pairing_token.as_str()),
+                    companion_device: companion_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.device_name.as_deref()),
+                    companion_capabilities: companion_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.capabilities.as_ref()),
+                    companion_saved_devices: self.app_settings.companion_devices.len(),
+                    persist_error: settings_error,
+                },
                 cx,
                 SettingsCallbacks {
                     on_language: |view, language| {
@@ -792,6 +934,27 @@ impl Render for MainView {
                         view.persist_settings();
                     },
                     on_toggle_syphon: |view| view.toggle_syphon(),
+                    on_toggle_companion_asr: |view| {
+                        view.toggle_companion_stage(ProcessingStage::Asr)
+                    },
+                    on_toggle_companion_azookey: |view| {
+                        view.toggle_companion_stage(ProcessingStage::Azookey)
+                    },
+                    on_toggle_companion_translation: |view| {
+                        view.toggle_companion_stage(ProcessingStage::Translation)
+                    },
+                    on_copy_companion_endpoint: |view, cx| {
+                        if let Some(snapshot) = view.capture.companion_snapshot() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(snapshot.endpoint));
+                        }
+                    },
+                    on_copy_companion_token: |view, cx| {
+                        if let Some(snapshot) = view.capture.companion_snapshot() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                snapshot.pairing_token,
+                            ));
+                        }
+                    },
                 },
             )
             .into_any_element(),
@@ -821,6 +984,60 @@ fn start_browser_source(enabled: bool) -> (BrowserSourceServer, Option<String>) 
         Ok(server) => (server, None),
         Err(error) => (BrowserSourceServer::default(), Some(error.to_string())),
     }
+}
+
+pub(crate) fn companion_route(settings: &NativeAppSettings) -> PipelineRoute {
+    PipelineRoute {
+        asr: if settings.companion_asr_on_mobile {
+            ExecutionDevice::Mobile
+        } else {
+            ExecutionDevice::Desktop
+        },
+        azookey: if settings.companion_azookey_on_mobile {
+            ExecutionDevice::Mobile
+        } else {
+            ExecutionDevice::Desktop
+        },
+        translation: if settings.companion_translation_on_mobile {
+            ExecutionDevice::Mobile
+        } else {
+            ExecutionDevice::Desktop
+        },
+    }
+}
+
+fn stage_runs_on_mobile(settings: &NativeAppSettings, stage: ProcessingStage) -> bool {
+    match stage {
+        ProcessingStage::Asr => settings.companion_asr_on_mobile,
+        ProcessingStage::Azookey => settings.companion_azookey_on_mobile,
+        ProcessingStage::Translation => settings.companion_translation_on_mobile,
+    }
+}
+
+fn companion_device_route(settings: &CompanionDeviceSettings) -> PipelineRoute {
+    PipelineRoute {
+        asr: if settings.asr_on_mobile {
+            ExecutionDevice::Mobile
+        } else {
+            ExecutionDevice::Desktop
+        },
+        azookey: if settings.azookey_on_mobile {
+            ExecutionDevice::Mobile
+        } else {
+            ExecutionDevice::Desktop
+        },
+        translation: if settings.translation_on_mobile {
+            ExecutionDevice::Mobile
+        } else {
+            ExecutionDevice::Desktop
+        },
+    }
+}
+
+fn apply_companion_route_settings(settings: &mut NativeAppSettings, route: PipelineRoute) {
+    settings.companion_asr_on_mobile = route.asr == ExecutionDevice::Mobile;
+    settings.companion_azookey_on_mobile = route.azookey == ExecutionDevice::Mobile;
+    settings.companion_translation_on_mobile = route.translation == ExecutionDevice::Mobile;
 }
 
 fn browser_style(style: &NativeStyleSettings) -> BrowserSourceStyle {
@@ -1000,6 +1217,7 @@ pub fn run() {
             }
             let update = window_handle.update(cx, |view, window, cx| {
                 let capture_changed = view.capture.poll(view.app_settings.caption_timeout_ms);
+                let companion_changed = view.sync_companion_device_settings();
                 let output_changed = view.publish_live_caption();
                 let check_output_window = should_check_output_window(
                     output_changed,
@@ -1018,7 +1236,7 @@ pub fn run() {
                         view.style.clone(),
                     )
                 });
-                if capture_changed && view.tab == AppTab::Live {
+                if (capture_changed && view.tab == AppTab::Live) || companion_changed {
                     cx.notify();
                 }
                 let poll_interval = if matches!(

@@ -1,5 +1,7 @@
 #[cfg(any(feature = "gpui", test))]
 mod capture;
+#[cfg(any(feature = "gpui", test))]
+mod companion;
 mod debug_surfaces;
 mod domain;
 pub mod hot_path;

@@ -25,6 +25,14 @@ export const NATIVE_RUNTIME_LIBRARY_NAMES = [
   "libonnxruntime.1.24.4.dylib",
 ];
 export const ORT_DYNAMIC_LIBRARY_NAME = "libonnxruntime.dylib";
+export const AZOOKEY_DICTIONARY_SOURCE = join(
+  repoRoot,
+  "apps",
+  "cloudflare-worker-server",
+  "public",
+  "azookey",
+  "system.azkdict.gz",
+);
 export const ORT_DYNAMIC_LIBRARY_TARGET = join("..", "Frameworks", NATIVE_RUNTIME_LIBRARY_NAMES[1]);
 
 const NATIVE_MANIFEST = join(repoRoot, "apps", "native", "Cargo.toml");
@@ -182,12 +190,18 @@ export const assembleNativeApp = ({
   const contents = join(staging, "Contents");
   const macos = join(contents, "MacOS");
   const frameworks = join(contents, "Frameworks");
+  const azookeyResources = join(contents, "Resources", "azookey");
   mkdirSync(macos, { recursive: true });
   mkdirSync(frameworks, { recursive: true });
+  mkdirSync(azookeyResources, { recursive: true });
   writeFileSync(join(contents, "Info.plist"), nativeInfoPlist());
   runChecked("/bin/cp", [sourceBinary, join(macos, BINARY_NAME)]);
   runChecked("/bin/chmod", ["755", join(macos, BINARY_NAME)]);
   runChecked("/usr/bin/ditto", [syphonFramework, join(frameworks, "Syphon.framework")]);
+  if (!existsSync(AZOOKEY_DICTIONARY_SOURCE)) {
+    throw new Error(`missing bundled AzooKey dictionary ${AZOOKEY_DICTIONARY_SOURCE}`);
+  }
+  runChecked("/bin/cp", [AZOOKEY_DICTIONARY_SOURCE, join(azookeyResources, "system.azkdict.gz")]);
   for (const library of NATIVE_RUNTIME_LIBRARY_NAMES) {
     const source = join(dirname(sourceBinary), library);
     if (!existsSync(source)) {
