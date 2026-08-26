@@ -22,8 +22,9 @@ Future<DiscoveryResponse> discoverCompanion({
   int port = _discoveryPort,
   Duration timeout = _discoveryTimeout,
   NativeCompanionDiscovery? nativeDiscovery,
+  bool? useNativeDiscovery,
 }) async {
-  if (Platform.isIOS || nativeDiscovery != null) {
+  if ((useNativeDiscovery ?? Platform.isIOS) || nativeDiscovery != null) {
     return _discoverWithBonjour(
       timeout,
       nativeDiscovery ?? _invokeNativeDiscovery,
