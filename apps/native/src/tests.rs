@@ -511,7 +511,7 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(settings.contains("copy-companion-token"));
     assert!(settings.contains("Connected and authenticated"));
     assert!(settings.contains("Waiting for mobile companion"));
-    assert!(settings.contains("Automatic discovery: UDP 18184"));
+    assert!(settings.contains("Automatic discovery: Bonjour / UDP 18184"));
     assert!(settings.contains("Synchronized route"));
     assert!(settings.contains("Mobile platform"));
 }

@@ -222,7 +222,7 @@ fn companion_status(runtime: &SettingsRuntimeInfo<'_>) -> impl IntoElement {
     v_flex()
         .gap_2()
         .child(Label::new(format!("Connection: {connection_status}")).font_semibold())
-        .child(Label::new("Automatic discovery: UDP 18184"))
+        .child(Label::new("Automatic discovery: Bonjour / UDP 18184"))
         .child(Label::new(format!(
             "Companion: {}",
             runtime.companion_device.unwrap_or("not connected"),
