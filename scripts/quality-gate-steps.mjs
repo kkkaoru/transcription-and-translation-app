@@ -1,4 +1,8 @@
 export const QUALITY_GATE_STEPS = [
+  "rust:mobile:fmt",
+  "rust:mobile:lint",
+  "rust:mobile:test",
+  "rust:mobile:build",
   "rust:native:fmt",
   "rust:native:lint",
   "rust:native:test",

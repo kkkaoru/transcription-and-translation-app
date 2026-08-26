@@ -30,6 +30,13 @@ export const ciGateMappings = new Map([
     "cargo test --locked --manifest-path packages/parapper-asr/Cargo.toml -p parapper",
     "parapper:rust:test",
   ],
+  ["cargo fmt --manifest-path apps/mobile/rust/Cargo.toml --all -- --check", "rust:mobile:fmt"],
+  [
+    "cargo clippy --locked --manifest-path apps/mobile/rust/Cargo.toml --all-targets -- -D warnings",
+    "rust:mobile:lint",
+  ],
+  ["cargo test --locked --manifest-path apps/mobile/rust/Cargo.toml", "rust:mobile:test"],
+  ["cargo build --locked --manifest-path apps/mobile/rust/Cargo.toml", "rust:mobile:build"],
   ["cargo fmt --manifest-path apps/native/Cargo.toml --all -- --check", "rust:native:fmt"],
   [
     "cargo clippy --locked --manifest-path apps/native/Cargo.toml --all-targets -- -D warnings",
@@ -75,6 +82,7 @@ export const ciTypecheckExclusions = new Map();
  * joined CI; that leftover was drift, not a local-only crate.
  */
 export const ciLintExclusions = new Map([
+  ["rust:mobile:lint", "Mobile job invokes the equivalent Cargo command without Bun"],
   ["rust:native:lint", "Native matrix invokes the equivalent Cargo command without Bun"],
 ]);
 
@@ -83,6 +91,7 @@ export const ciLintExclusions = new Map([
  * joined CI. `format` and `format:check` are a different suffix on purpose.
  */
 export const ciFmtExclusions = new Map([
+  ["rust:mobile:fmt", "Mobile job invokes the equivalent Cargo command without Bun"],
   ["rust:native:fmt", "Native matrix invokes the equivalent Cargo command without Bun"],
 ]);
 

@@ -104,6 +104,94 @@ jobs:
       - run: bun run rust:vibrato:lint
       - run: bun run rust:vibrato:test
 
+  mobile:
+    name: Flutter Companion (Android)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.1
+          channel: stable
+          cache: true
+      - name: Check companion Rust formatting
+        run: cargo fmt --manifest-path apps/mobile/rust/Cargo.toml --all -- --check
+      - name: Lint companion Rust
+        run: cargo clippy --locked --manifest-path apps/mobile/rust/Cargo.toml --all-targets -- -D warnings
+      - name: Test companion Rust
+        run: cargo test --locked --manifest-path apps/mobile/rust/Cargo.toml
+      - name: Build host Rust library for Flutter tests
+        run: cargo build --locked --manifest-path apps/mobile/rust/Cargo.toml
+      - name: Analyze Flutter companion
+        working-directory: apps/mobile
+        run: |
+          flutter pub get
+          dart format --output=none --set-exit-if-changed lib test integration_test
+          flutter analyze --fatal-infos --fatal-warnings
+          dart run dart_code_linter:metrics analyze lib test integration_test \
+            --exclude='lib/src/rust/**' \
+            --maximum-nesting-level=3 \
+            --reporter=console \
+            --set-exit-on-violation-level=warning \
+            --fatal-style \
+            --fatal-performance
+      - name: Test Flutter companion unit and loopback E2E paths
+        working-directory: apps/mobile
+        run: |
+          flutter test --coverage
+          node ../../scripts/verify-mobile-coverage.mjs
+      - name: Build Android companion release without launching it
+        working-directory: apps/mobile
+        run: flutter build apk --release
+      - name: Upload Android companion release
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotoba-beacon-companion-android
+          path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  mobile-ios:
+    name: Flutter Companion (iOS Simulator)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.1
+          channel: stable
+          cache: true
+      - name: Select the pinned iOS 26 toolchain
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+      - name: Build iOS simulator companion without launching it
+        working-directory: apps/mobile
+        run: |
+          flutter pub get
+          flutter build ios --simulator --debug --no-codesign
+      - name: Upload iOS simulator companion
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotoba-beacon-companion-ios-simulator
+          path: apps/mobile/build/ios/iphonesimulator/Runner.app
+          if-no-files-found: error
+
   native:
     name: Native (${{ matrix.platform }})
     strategy:

@@ -45,6 +45,10 @@ describe("CI and local quality-gate parity", () => {
     );
     assert.equal(localScripts.includes("rust:vibrato:wasm:build"), true);
     assert.equal(localScripts.includes("parapper:rust:test"), true);
+    assert.equal(localScripts.includes("rust:mobile:fmt"), true);
+    assert.equal(localScripts.includes("rust:mobile:lint"), true);
+    assert.equal(localScripts.includes("rust:mobile:test"), true);
+    assert.equal(localScripts.includes("rust:mobile:build"), true);
   });
 
   it("installs Parapper Linux libraries before running its Rust lint gate", () => {
