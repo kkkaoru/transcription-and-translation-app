@@ -5,16 +5,18 @@ Kotoba Beaconは、配信向けの日本語ライブ文字起こし・英訳字�
 ## 実行形態
 
 - **Nativeアプリ**: GPUI + Rustの単一プロセス。CPAL、Silero VAD、sherpa-onnx ASR、ローカル翻訳をスレッドとbounded channelで接続します。
+- **Flutterコンパニオン**: 同一LAN上のNativeからPCMを受け、Android ML KitまたはiOS SpeechAnalyzerでASRし、Rust AzooKeyと端末内翻訳を実行できます。
 - **ブラウザ版**: Web Audioで取得した音声をCloudflareの推論経路へ送り、字幕をブラウザで表示します。
 - **Cloudflare Worker**: Workers AI ASRとAzooKey変換のHTTP・WebSocket契約を提供します。
 
-旧Tauriアプリ、Tauri sidecar、アプリ内WebSocket IPCは使用しません。
+旧Tauriアプリ、Tauri sidecar、内部localhost WebSocket IPCは使用しません。Flutter連携を有効にした場合だけ、pairing tokenで認証するbounded LAN WebSocketを使用します。
 
 ## 構成
 
 ```text
 apps/
   native/                    GPUI Nativeアプリ
+  mobile/                    Android/iOS Flutterコンパニオン
   desktop/                   ReactブラウザUI
   cloudflare-worker-server/  Cloudflare Worker推論API
   azookey-compare/           Browser音声 → Cloudflare統合パイプライン検証UI
@@ -55,6 +57,12 @@ bun run build
 bun run worker:dev
 bun run worker:typecheck
 bun run worker:test
+
+# Flutterコンパニオン
+cd apps/mobile
+flutter analyze
+flutter test
+flutter build apk --release
 
 # Native（macOS: release build、package、インストール済み.appの置換）
 make build
