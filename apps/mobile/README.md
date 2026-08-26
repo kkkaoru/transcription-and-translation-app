@@ -10,7 +10,7 @@ Route controls stay disabled until the LAN WebSocket is open and Android/iOS rep
 
 Both apps show the authenticated connection state and synchronized three-letter route. Mobile also shows the Desktop endpoint and detected Mobile API availability. Native shows the connected device, platform, session, endpoint, capabilities, and saved per-device route count.
 
-Native advertises a bounded UDP discovery response on port `18184`. The production mobile app automatically broadcasts a nonce-scoped discovery request, receives the current endpoint and high-entropy pairing token by unicast reply, and then performs the normal authenticated WebSocket first frame on port `18183`. Manual endpoint/token fields remain available as a fallback. Discovery is restricted to the trusted LAN and never accepts PCM or route configuration.
+Native advertises `_kotobabeacon._tcp` with Bonjour and also provides a bounded UDP discovery fallback on port `18184`. iOS/iPadOS use the platform `NetServiceBrowser`, avoiding multicast/broadcast entitlements; other platforms use a nonce-scoped UDP request and unicast response. Discovery returns the current endpoint and high-entropy pairing token, then the app performs the normal authenticated WebSocket first frame on port `18183`. Manual endpoint/token fields remain available as a fallback. Discovery is restricted to the trusted LAN and never accepts PCM or route configuration.
 
 - Android ASR: ML Kit GenAI Speech Recognition Basic mode (`ja-JP`, API 31+), fed with raw PCM16/16 kHz/mono through a `ParcelFileDescriptor` pipe.
 - Android translation: ML Kit on-device Japanese-to-English Translation.
