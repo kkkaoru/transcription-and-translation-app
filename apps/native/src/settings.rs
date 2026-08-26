@@ -2,11 +2,10 @@
 
 use gpui::prelude::*;
 use gpui::{Context, IntoElement};
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonGroup};
 use gpui_component::group_box::{GroupBox, GroupBoxVariants as _};
 use gpui_component::label::Label;
 use gpui_component::switch::Switch;
-use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{h_flex, v_flex, Selectable as _, StyledExt as _};
 use rust_lib_kotoba_beacon_companion::api::simple::{
     pipeline_route_id, MobileCapabilities, PipelineRoute,
@@ -228,17 +227,28 @@ fn stage_location_control<V: 'static>(
     on_change: fn(&mut V),
 ) -> impl IntoElement {
     h_flex().gap_3().child(Label::new(stage).w_24().font_semibold()).child(
-        TabBar::new(id)
+        ButtonGroup::new(id)
             .w_56()
-            .segmented()
-            .selected_index(usize::from(mobile))
-            .on_click(cx.listener(move |view, index, _window, _cx| {
-                if (*index == 1) != mobile {
+            .outline()
+            .on_click(cx.listener(move |view, selected: &Vec<usize>, _window, _cx| {
+                if selected.first().is_some_and(|index| (*index == 1) != mobile) {
                     on_change(view);
                 }
             }))
-            .child(Tab::new().flex_1().label("Desktop").aria_label(format!("{stage}: Desktop")))
-            .child(Tab::new().flex_1().label("Mobile").aria_label(format!("{stage}: Mobile"))),
+            .child(
+                Button::new(format!("{id}-desktop"))
+                    .flex_1()
+                    .label("Desktop")
+                    .accessibility_id(format!("{stage}: Desktop"))
+                    .selected(!mobile),
+            )
+            .child(
+                Button::new(format!("{id}-mobile"))
+                    .flex_1()
+                    .label("Mobile")
+                    .accessibility_id(format!("{stage}: Mobile"))
+                    .selected(mobile),
+            ),
     )
 }
 

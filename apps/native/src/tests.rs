@@ -514,11 +514,14 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(settings.contains("settings-scroll"));
     assert!(settings.contains("overflow_y_scroll()"));
     assert!(settings.contains("stage_location_control"));
-    assert!(settings.contains(".segmented()"));
+    assert!(settings.contains("ButtonGroup::new"));
+    assert!(settings.contains(".outline()"));
     assert!(settings.contains("label(\"Desktop\")"));
     assert!(settings.contains("label(\"Mobile\")"));
-    assert!(settings.contains("aria_label(format!(\"{stage}: Desktop\"))"));
-    assert!(settings.contains("aria_label(format!(\"{stage}: Mobile\"))"));
+    assert!(settings.contains("accessibility_id(format!(\"{stage}: Desktop\"))"));
+    assert!(settings.contains("accessibility_id(format!(\"{stage}: Mobile\"))"));
+    assert!(settings.contains(".selected(!mobile)"));
+    assert!(settings.contains(".selected(mobile)"));
     assert!(settings.contains("copy-companion-endpoint"));
     assert!(settings.contains("copy-companion-token"));
     assert!(settings.contains("Connected and authenticated"));
