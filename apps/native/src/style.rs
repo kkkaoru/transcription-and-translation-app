@@ -4,8 +4,8 @@ use std::{rc::Rc, sync::Arc};
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, relative, rems, Bounds, Context, IntoElement, MouseDownEvent, MouseMoveEvent,
-    Pixels, Point, RenderImage, SharedString,
+    canvas, div, px, relative, rems, Bounds, Context, FocusHandle, IntoElement, MouseDownEvent,
+    MouseMoveEvent, Pixels, Point, RenderImage, SharedString,
 };
 use gpui_component::button::Button;
 use gpui_component::label::Label;
@@ -98,12 +98,15 @@ pub struct StyleViewState<'a> {
     pub active_color_picker: Option<&'a str>,
     pub preview_source_caret: Option<usize>,
     pub preview_translation_caret: Option<usize>,
+    pub preview_source_focus: &'a FocusHandle,
+    pub preview_translation_focus: &'a FocusHandle,
     pub persist_error: Option<&'a str>,
 }
 
 pub struct FontPickerState<'a> {
     pub query: &'a str,
     pub families: &'a [String],
+    pub focus_handle: &'a FocusHandle,
     pub open: bool,
     pub caret: Option<usize>,
 }
@@ -190,6 +193,8 @@ pub fn render_style<V: 'static>(
         active_color_picker,
         preview_source_caret,
         preview_translation_caret,
+        preview_source_focus,
+        preview_translation_focus,
         persist_error,
     } = state;
 
@@ -262,6 +267,7 @@ pub fn render_style<V: 'static>(
             text(language, TextKey::PreviewRecognition),
             preview_source,
             preview_source_caret,
+            preview_source_focus,
             cx,
             callbacks.on_preview_source_focus,
         ))
@@ -270,6 +276,7 @@ pub fn render_style<V: 'static>(
             text(language, TextKey::PreviewTranslation),
             preview_translation,
             preview_translation_caret,
+            preview_translation_focus,
             cx,
             callbacks.on_preview_translation_focus,
         ))
@@ -681,12 +688,16 @@ fn preview_input<V: 'static>(
     label: &'static str,
     value: &str,
     caret: Option<usize>,
+    focus_handle: &FocusHandle,
     cx: &mut Context<V>,
     on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
 ) -> impl IntoElement {
+    let focus_handle = focus_handle.clone();
     v_flex().flex_1().gap_2().child(muted(label, cx)).child(
         h_flex()
             .id(id)
+            .track_focus(&focus_handle)
+            .tab_index(0)
             .min_h_8()
             .px_3()
             .py_2()
@@ -694,9 +705,13 @@ fn preview_input<V: 'static>(
             .border_1()
             .when(caret.is_some(), |this| this.border_2())
             .border_color(if caret.is_some() { cx.theme().primary } else { cx.theme().input })
+            .focus(|style| style.border_2().border_color(cx.theme().primary))
             .bg(cx.theme().background)
             .cursor_text()
-            .on_click(cx.listener(move |view, _event, window, cx| on_focus(view, window, cx)))
+            .on_click(cx.listener(move |view, _event, window, cx| {
+                on_focus(view, window, cx);
+                window.focus(&focus_handle, cx);
+            }))
             .child(editable_text(value, caret, cx)),
     )
 }
@@ -710,6 +725,7 @@ fn font_picker<V: 'static>(
 ) -> impl IntoElement {
     let on_font_focus = callbacks.on_font_focus;
     let on_font_select = callbacks.on_font_select;
+    let font_focus = state.focus_handle.clone();
     let displayed_font = if state.query.is_empty() && state.caret.is_none() {
         editable_text(&style.font_family, None, cx)
     } else {
@@ -718,6 +734,8 @@ fn font_picker<V: 'static>(
     let mut picker = v_flex().gap_2().child(muted(text(language, TextKey::FontFamily), cx)).child(
         h_flex()
             .id("font-search")
+            .track_focus(&font_focus)
+            .tab_index(0)
             .min_h_8()
             .px_3()
             .py_2()
@@ -725,10 +743,12 @@ fn font_picker<V: 'static>(
             .border_1()
             .when(state.caret.is_some(), |this| this.border_2())
             .border_color(if state.caret.is_some() { cx.theme().primary } else { cx.theme().input })
+            .focus(|style| style.border_2().border_color(cx.theme().primary))
             .bg(cx.theme().background)
             .cursor_text()
             .on_click(cx.listener(move |view, _event, window, cx| {
                 on_font_focus(view, window, cx);
+                window.focus(&font_focus, cx);
             }))
             .child(displayed_font),
     );

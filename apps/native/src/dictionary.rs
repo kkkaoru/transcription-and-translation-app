@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
-use gpui::{Context, ExternalPaths, IntoElement, SharedString};
+use gpui::{Context, ExternalPaths, FocusHandle, IntoElement, SharedString};
 use gpui_component::{h_flex, v_flex, ActiveTheme as _};
 
 use crate::domain::{NativeDictionaryProfile, UiLanguage};
@@ -21,6 +21,9 @@ pub struct DictionaryViewState<'a> {
     pub query_caret: Option<usize>,
     pub reading_caret: Option<usize>,
     pub word_caret: Option<usize>,
+    pub query_focus: &'a FocusHandle,
+    pub reading_focus: &'a FocusHandle,
+    pub word_focus: &'a FocusHandle,
     pub language: UiLanguage,
     pub persist_error: Option<&'a str>,
 }
@@ -53,6 +56,9 @@ pub fn render_dictionary<V: 'static>(
         query_caret,
         reading_caret,
         word_caret,
+        query_focus,
+        reading_focus,
+        word_focus,
         language,
         persist_error,
     } = state;
@@ -142,6 +148,7 @@ pub fn render_dictionary<V: 'static>(
             query,
             "dict-query",
             query_caret,
+            query_focus,
             cx,
             callbacks.on_focus_query,
         ))
@@ -150,6 +157,7 @@ pub fn render_dictionary<V: 'static>(
             draft_reading,
             "dict-reading",
             reading_caret,
+            reading_focus,
             cx,
             callbacks.on_focus_reading,
         ))
@@ -158,6 +166,7 @@ pub fn render_dictionary<V: 'static>(
             draft_word,
             "dict-word",
             word_caret,
+            word_focus,
             cx,
             callbacks.on_focus_word,
         ))
@@ -175,12 +184,16 @@ fn field_editor<V: 'static>(
     value: &str,
     id: &'static str,
     caret: Option<usize>,
+    focus_handle: &FocusHandle,
     cx: &mut Context<V>,
     on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
 ) -> impl IntoElement {
+    let focus_handle = focus_handle.clone();
     h_flex().gap_3().child(gpui_component::label::Label::new(label).w_24()).child(
         h_flex()
             .id(id)
+            .track_focus(&focus_handle)
+            .tab_index(0)
             .flex_1()
             .min_h_8()
             .px_3()
@@ -189,9 +202,13 @@ fn field_editor<V: 'static>(
             .border_1()
             .when(caret.is_some(), |this| this.border_2())
             .border_color(if caret.is_some() { cx.theme().primary } else { cx.theme().input })
+            .focus(|style| style.border_2().border_color(cx.theme().primary))
             .bg(cx.theme().background)
             .cursor_text()
-            .on_click(cx.listener(move |view, _event, window, cx| on_focus(view, window, cx)))
+            .on_click(cx.listener(move |view, _event, window, cx| {
+                on_focus(view, window, cx);
+                window.focus(&focus_handle, cx);
+            }))
             .child(editable_text(value, caret, cx)),
     )
 }

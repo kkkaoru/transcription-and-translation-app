@@ -87,6 +87,12 @@ pub struct MainView {
     active_companion_device_id: Option<String>,
     focused_field: Option<FocusField>,
     focus_handle: FocusHandle,
+    query_focus_handle: FocusHandle,
+    reading_focus_handle: FocusHandle,
+    word_focus_handle: FocusHandle,
+    font_focus_handle: FocusHandle,
+    preview_source_focus_handle: FocusHandle,
+    preview_translation_focus_handle: FocusHandle,
     surfaces: Rc<RefCell<DebugSurfaces>>,
     preview_source: String,
     preview_translation: String,
@@ -268,6 +274,12 @@ impl MainView {
             active_companion_device_id: None,
             focused_field: None,
             focus_handle: cx.focus_handle(),
+            query_focus_handle: cx.focus_handle(),
+            reading_focus_handle: cx.focus_handle(),
+            word_focus_handle: cx.focus_handle(),
+            font_focus_handle: cx.focus_handle(),
+            preview_source_focus_handle: cx.focus_handle(),
+            preview_translation_focus_handle: cx.focus_handle(),
             surfaces,
             preview_source,
             preview_translation,
@@ -615,7 +627,54 @@ impl MainView {
         self.persist_dictionary(entries);
     }
 
+    fn focused_text_field(&self, window: &Window) -> Option<FocusField> {
+        [
+            (FocusField::Query, &self.query_focus_handle),
+            (FocusField::Reading, &self.reading_focus_handle),
+            (FocusField::Word, &self.word_focus_handle),
+            (FocusField::Font, &self.font_focus_handle),
+            (FocusField::PreviewSource, &self.preview_source_focus_handle),
+            (FocusField::PreviewTranslation, &self.preview_translation_focus_handle),
+        ]
+        .into_iter()
+        .find_map(|(field, handle)| handle.is_focused(window).then_some(field))
+    }
+
+    fn text_field_focus_handle(&self, field: FocusField) -> &FocusHandle {
+        match field {
+            FocusField::Query => &self.query_focus_handle,
+            FocusField::Reading => &self.reading_focus_handle,
+            FocusField::Word => &self.word_focus_handle,
+            FocusField::Font => &self.font_focus_handle,
+            FocusField::PreviewSource => &self.preview_source_focus_handle,
+            FocusField::PreviewTranslation => &self.preview_translation_focus_handle,
+        }
+    }
+
+    fn activate_text_field(&mut self, field: FocusField) {
+        self.focused_field = Some(field);
+        match field {
+            FocusField::Query => self.query_caret = self.query.len(),
+            FocusField::Reading => self.reading_caret = self.draft_reading.len(),
+            FocusField::Word => self.word_caret = self.draft_word.len(),
+            FocusField::Font => {
+                self.font_caret = self.font_query.len();
+                self.font_select_open = true;
+            }
+            FocusField::PreviewSource => self.preview_source_caret = self.preview_source.len(),
+            FocusField::PreviewTranslation => {
+                self.preview_translation_caret = self.preview_translation.len();
+            }
+        }
+    }
+
     fn apply_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_text_field(window) {
+            if self.focused_field != Some(field) {
+                self.activate_text_field(field);
+            }
+        }
+
         if event.keystroke.key == "escape"
             && dismissible_keyboard_context(
                 self.focused_field,
@@ -657,7 +716,8 @@ impl MainView {
             let reverse = event.keystroke.modifiers.shift;
             let field = self.focused_field.expect("accepts_input requires a focused text field");
             if let Some(next) = adjacent_text_field(field, reverse) {
-                self.focused_field = Some(next);
+                self.activate_text_field(next);
+                window.focus(self.text_field_focus_handle(next), cx);
                 cx.notify();
             } else if reverse {
                 window.focus_prev(cx);
@@ -757,7 +817,6 @@ impl Render for MainView {
         for image in self.stale_render_images.drain(..) {
             let _ = window.drop_image(image);
         }
-        window.focus(&self.focus_handle, cx);
         let language = self.app_settings.ui_language;
         let persist = self.persist_error.clone();
         let companion_snapshot = self.capture.companion_snapshot();
@@ -803,6 +862,7 @@ impl Render for MainView {
                     fonts: FontPickerState {
                         query: &self.font_query,
                         families: &self.fonts,
+                        focus_handle: &self.font_focus_handle,
                         open: self.font_select_open,
                         caret: (self.focused_field == Some(FocusField::Font))
                             .then_some(self.font_caret),
@@ -814,6 +874,8 @@ impl Render for MainView {
                     preview_translation_caret: (self.focused_field
                         == Some(FocusField::PreviewTranslation))
                     .then_some(self.preview_translation_caret),
+                    preview_source_focus: &self.preview_source_focus_handle,
+                    preview_translation_focus: &self.preview_translation_focus_handle,
                     persist_error: persist.as_deref(),
                 },
                 cx,
@@ -882,6 +944,9 @@ impl Render for MainView {
                         .then_some(self.reading_caret),
                     word_caret: (self.focused_field == Some(FocusField::Word))
                         .then_some(self.word_caret),
+                    query_focus: &self.query_focus_handle,
+                    reading_focus: &self.reading_focus_handle,
+                    word_focus: &self.word_focus_handle,
                     language,
                     persist_error: persist.as_deref(),
                 },
@@ -1287,6 +1352,8 @@ pub fn run() {
                 )
             });
             main_view_slot_for_window.borrow_mut().replace(view.clone());
+            let focus_handle = view.read(cx).focus_handle.clone();
+            window.focus(&focus_handle, cx);
             cx.new(|cx| Root::new(view, window, cx))
         }) {
             Ok(handle) => handle,
