@@ -670,8 +670,8 @@ pub fn render_style<V: 'static>(
                 .child(typography)
                 .child(h_flex().items_start().gap_3().child(source).child(translation))
                 .child(placement)
-                .child(h_flex().items_start().gap_3().child(background).child(shadow))
-                .child(outline),
+                .child(h_flex().items_start().gap_3().child(outline).child(shadow))
+                .child(background),
         )
 }
 

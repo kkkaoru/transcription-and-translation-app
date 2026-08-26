@@ -293,6 +293,9 @@ fn style_editor_has_continuous_controls_and_nested_scrolling() {
     let settings_scroll = style.find("style-settings-scroll").expect("settings scroll");
     assert!(preview_background < settings_scroll);
     assert!(style.contains("cx.stop_propagation()"));
+    assert!(style.contains(
+        ".child(h_flex().items_start().gap_3().child(outline).child(shadow))\n                .child(background)"
+    ));
     let app = include_str!("app.rs");
     assert!(app.contains("caption_bridge_render::font_families()"));
     assert!(!app.contains("text_system().all_font_names()"));
