@@ -6,6 +6,7 @@ use gpui_component::button::Button;
 use gpui_component::group_box::{GroupBox, GroupBoxVariants as _};
 use gpui_component::label::Label;
 use gpui_component::switch::Switch;
+use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{h_flex, v_flex, Selectable as _, StyledExt as _};
 use rust_lib_kotoba_beacon_companion::api::simple::{
     pipeline_route_id, MobileCapabilities, PipelineRoute,
@@ -114,42 +115,27 @@ pub fn render_settings<V: 'static>(
                                 "Assign each processing stage to Desktop or Mobile"
                             }
                         }))
-                        .child(
-                            Switch::new("companion-asr")
-                                .label(stage_location_label(
-                                    "ASR",
-                                    settings.companion_asr_on_mobile,
-                                    language,
-                                ))
-                                .checked(settings.companion_asr_on_mobile)
-                                .on_click(cx.listener(move |view, _checked, _window, _cx| {
-                                    (callbacks.on_toggle_companion_asr)(view);
-                                })),
-                        )
-                        .child(
-                            Switch::new("companion-azookey")
-                                .label(stage_location_label(
-                                    "AzooKey",
-                                    settings.companion_azookey_on_mobile,
-                                    language,
-                                ))
-                                .checked(settings.companion_azookey_on_mobile)
-                                .on_click(cx.listener(move |view, _checked, _window, _cx| {
-                                    (callbacks.on_toggle_companion_azookey)(view);
-                                })),
-                        )
-                        .child(
-                            Switch::new("companion-translation")
-                                .label(stage_location_label(
-                                    "Translation",
-                                    settings.companion_translation_on_mobile,
-                                    language,
-                                ))
-                                .checked(settings.companion_translation_on_mobile)
-                                .on_click(cx.listener(move |view, _checked, _window, _cx| {
-                                    (callbacks.on_toggle_companion_translation)(view);
-                                })),
-                        )
+                        .child(stage_location_control(
+                            "companion-asr",
+                            "ASR",
+                            settings.companion_asr_on_mobile,
+                            cx,
+                            callbacks.on_toggle_companion_asr,
+                        ))
+                        .child(stage_location_control(
+                            "companion-azookey",
+                            "AzooKey",
+                            settings.companion_azookey_on_mobile,
+                            cx,
+                            callbacks.on_toggle_companion_azookey,
+                        ))
+                        .child(stage_location_control(
+                            "companion-translation",
+                            "Translation",
+                            settings.companion_translation_on_mobile,
+                            cx,
+                            callbacks.on_toggle_companion_translation,
+                        ))
                         .child(companion_status(runtime))
                         .when_some(
                             runtime.companion_endpoint.map(str::to_string),
@@ -228,12 +214,26 @@ pub fn render_settings<V: 'static>(
     v_flex().id("settings-scroll").size_full().min_h_0().overflow_y_scroll().pb_3().child(content)
 }
 
-fn stage_location_label(stage: &str, mobile: bool, language: UiLanguage) -> String {
-    let location = if mobile { "Mobile" } else { "Desktop" };
-    match language {
-        UiLanguage::Japanese => format!("{stage}: {location}で処理"),
-        UiLanguage::English => format!("{stage}: process on {location}"),
-    }
+fn stage_location_control<V: 'static>(
+    id: &'static str,
+    stage: &'static str,
+    mobile: bool,
+    cx: &mut Context<V>,
+    on_change: fn(&mut V),
+) -> impl IntoElement {
+    h_flex().justify_between().gap_3().child(Label::new(stage).font_semibold()).child(
+        TabBar::new(id)
+            .w_56()
+            .segmented()
+            .selected_index(usize::from(mobile))
+            .on_click(cx.listener(move |view, index, _window, _cx| {
+                if (*index == 1) != mobile {
+                    on_change(view);
+                }
+            }))
+            .child(Tab::new().flex_1().label("Desktop"))
+            .child(Tab::new().flex_1().label("Mobile")),
+    )
 }
 
 fn companion_status(runtime: &SettingsRuntimeInfo<'_>) -> impl IntoElement {
