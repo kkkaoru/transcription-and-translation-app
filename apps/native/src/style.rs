@@ -993,6 +993,7 @@ fn color_picker_control<V: 'static>(
         .child(
             Button::new(format!("color-picker-{id}"))
                 .selected(active)
+                .toggled(active)
                 .child(
                     h_flex()
                         .gap_2()

@@ -549,6 +549,8 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(!settings.contains("Copy LAN endpoint"));
 }
 
+    let live = include_str!("live.rs");
+    let style = include_str!("style.rs");
 #[test]
 fn style_round_trip_preserves_new_native_fields() {
     let dir = unique_temp_dir("style");
@@ -560,6 +562,10 @@ fn style_round_trip_preserves_new_native_fields() {
     };
     save_style_settings(&dir, &style).expect("save style");
     let loaded = load_style_settings(&dir).expect("load style");
+    assert!(settings.contains(".toggled(language == UiLanguage::Japanese)"));
+    assert!(settings.contains(".toggled(settings.caption_timeout_ms == timeout)"));
+    assert!(live.contains(".toggled(Some(device.id.as_str()) == selected_device_id)"));
+    assert!(style.contains(".toggled(active)"));
     assert_eq!(loaded.font_family, "Hiragino Sans");
     assert!(loaded.background_enabled);
     assert_eq!(loaded.preview_background_color, "#ffffff");

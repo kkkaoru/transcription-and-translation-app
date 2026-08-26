@@ -72,6 +72,7 @@ pub fn render_settings<V: 'static>(
                     .child(
                         Button::new("language-japanese")
                             .selected(language == UiLanguage::Japanese)
+                            .toggled(language == UiLanguage::Japanese)
                             .label(text(language, TextKey::Japanese))
                             .on_click(cx.listener(move |view, _event, _window, _cx| {
                                 (callbacks.on_language)(view, UiLanguage::Japanese);
@@ -80,6 +81,7 @@ pub fn render_settings<V: 'static>(
                     .child(
                         Button::new("language-english")
                             .selected(language == UiLanguage::English)
+                            .toggled(language == UiLanguage::English)
                             .label(text(language, TextKey::English))
                             .on_click(cx.listener(move |view, _event, _window, _cx| {
                                 (callbacks.on_language)(view, UiLanguage::English);
@@ -202,6 +204,7 @@ pub fn render_settings<V: 'static>(
                 let timeout = seconds * 1_000;
                 Button::new(format!("caption-timeout-{seconds}"))
                     .selected(settings.caption_timeout_ms == timeout)
+                    .toggled(settings.caption_timeout_ms == timeout)
                     .label(format!("{seconds}s"))
                     .on_click(cx.listener(move |view, _event, _window, _cx| {
                         (callbacks.on_timeout)(view, timeout);

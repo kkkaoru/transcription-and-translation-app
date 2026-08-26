@@ -76,6 +76,7 @@ pub fn render_live<V: 'static>(
                 let id = device.id.clone();
                 Button::new(format!("live-device-option-{id}"))
                     .selected(Some(device.id.as_str()) == selected_device_id)
+                    .toggled(Some(device.id.as_str()) == selected_device_id)
                     .label(device_label(device.name.as_str(), device.is_default, language))
                     .on_click(cx.listener(move |view, _event, _window, _cx| {
                         (callbacks.on_select_device)(view, &id);
