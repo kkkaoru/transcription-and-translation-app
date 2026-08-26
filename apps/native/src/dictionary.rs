@@ -76,10 +76,10 @@ pub fn render_dictionary<V: 'static>(
 
     let mut list = v_flex().gap_2();
     if entries.is_empty() {
-        list = list.child(muted(text(language, TextKey::NoEntries)));
+        list = list.child(muted(text(language, TextKey::NoEntries), cx));
     } else {
-        list =
-            list.child(muted(format!("{} {}", entries.len(), text(language, TextKey::EntryCount))));
+        list = list
+            .child(muted(format!("{} {}", entries.len(), text(language, TextKey::EntryCount)), cx));
         for entry in entries {
             let id = entry.id.clone();
             list = list.child(
@@ -120,22 +120,24 @@ pub fn render_dictionary<V: 'static>(
                         (callbacks.on_add_dictionary)(view)
                     }),
                 ))
-                .child(button(
-                    "dictionary-profile-delete",
-                    text(language, TextKey::DeleteDictionary),
-                    cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_delete_dictionary)(view)
-                    }),
-                ))
-                .child(button(
-                    "dictionary-clear",
-                    text(language, TextKey::ClearDictionary),
-                    cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_clear_dictionary)(view)
-                    }),
-                )),
+                .child(
+                    Button::new("dictionary-profile-delete")
+                        .danger()
+                        .label(text(language, TextKey::DeleteDictionary))
+                        .on_click(cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_delete_dictionary)(view);
+                        })),
+                )
+                .child(
+                    Button::new("dictionary-clear")
+                        .danger()
+                        .label(text(language, TextKey::ClearDictionary))
+                        .on_click(cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_clear_dictionary)(view);
+                        })),
+                ),
         )
-        .child(muted(text(language, TextKey::DictionaryImportHint)))
+        .child(muted(text(language, TextKey::DictionaryImportHint), cx))
         .child(field_editor(
             text(language, TextKey::Search),
             query,

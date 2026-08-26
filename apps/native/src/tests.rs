@@ -428,9 +428,13 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     }
     assert!(ui.contains(".text_base()"));
     assert!(ui.contains(".text_sm()"));
+    assert!(ui.contains("theme().muted_foreground"));
+    assert!(!ui.contains(".opacity("));
     assert!(live.contains("Label::new(source).text_lg()"));
     assert!(live.contains(".primary()"));
+    assert!(settings.contains("Label::new(stage).w_24()"));
     assert!(dictionary.contains(".danger()"));
+    assert!(style.contains(".danger()"));
 }
 
 #[test]
@@ -513,6 +517,8 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(settings.contains(".segmented()"));
     assert!(settings.contains("label(\"Desktop\")"));
     assert!(settings.contains("label(\"Mobile\")"));
+    assert!(settings.contains("aria_label(format!(\"{stage}: Desktop\"))"));
+    assert!(settings.contains("aria_label(format!(\"{stage}: Mobile\"))"));
     assert!(settings.contains("copy-companion-endpoint"));
     assert!(settings.contains("copy-companion-token"));
     assert!(settings.contains("Connected and authenticated"));

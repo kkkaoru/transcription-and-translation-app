@@ -99,7 +99,7 @@ pub fn render_live<V: 'static>(
             h_flex()
                 .justify_between()
                 .gap_3()
-                .child(muted(text(language, TextKey::InputDevice)))
+                .child(muted(text(language, TextKey::InputDevice), cx))
                 .child(button(
                     "live-refresh-devices",
                     text(language, TextKey::RefreshDevices),
@@ -113,7 +113,10 @@ pub fn render_live<V: 'static>(
         .child(
             h_flex()
                 .gap_3()
-                .child(muted(format!("{}: {}", text(language, TextKey::Level), format_rms(level))))
+                .child(muted(
+                    format!("{}: {}", text(language, TextKey::Level), format_rms(level)),
+                    cx,
+                ))
                 .child(
                     gpui::div().h_2().w_40().rounded_full().bg(cx.theme().muted).child(
                         gpui::div()
@@ -159,14 +162,14 @@ pub fn render_live<V: 'static>(
         .child(
             v_flex()
                 .gap_2()
-                .child(muted(text(language, TextKey::RecognitionResult)))
+                .child(muted(text(language, TextKey::RecognitionResult), cx))
                 .child(Label::new(source).text_lg()),
         )
         .when(translation_enabled, |this| {
             this.child(
                 v_flex()
                     .gap_2()
-                    .child(muted(text(language, TextKey::TranslationResult)))
+                    .child(muted(text(language, TextKey::TranslationResult), cx))
                     .child(Label::new(translation).text_lg()),
             )
         })

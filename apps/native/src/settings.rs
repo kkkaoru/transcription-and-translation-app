@@ -77,18 +77,21 @@ pub fn render_settings<V: 'static>(
             GroupBox::new().outline().title(text(language, TextKey::Translation)).child(
                 v_flex()
                     .gap_2()
-                    .child(muted(format!(
-                        "{}: {}",
-                        text(language, TextKey::TranslationModel),
-                        text(
-                            language,
-                            if runtime.translation_model_installed {
-                                TextKey::Installed
-                            } else {
-                                TextKey::Missing
-                            },
+                    .child(muted(
+                        format!(
+                            "{}: {}",
+                            text(language, TextKey::TranslationModel),
+                            text(
+                                language,
+                                if runtime.translation_model_installed {
+                                    TextKey::Installed
+                                } else {
+                                    TextKey::Missing
+                                },
+                            ),
                         ),
-                    )))
+                        cx,
+                    ))
                     .child(
                         Switch::new("translation-enabled")
                             .label(text(language, TextKey::Translation))
@@ -109,12 +112,15 @@ pub fn render_settings<V: 'static>(
                 .child(
                     v_flex()
                         .gap_3()
-                        .child(muted(match language {
-                            UiLanguage::Japanese => "各処理をDesktopまたはMobileへ割り当てます",
-                            UiLanguage::English => {
-                                "Assign each processing stage to Desktop or Mobile"
-                            }
-                        }))
+                        .child(muted(
+                            match language {
+                                UiLanguage::Japanese => "各処理をDesktopまたはMobileへ割り当てます",
+                                UiLanguage::English => {
+                                    "Assign each processing stage to Desktop or Mobile"
+                                }
+                            },
+                            cx,
+                        ))
                         .child(stage_location_control(
                             "companion-asr",
                             "ASR",
@@ -204,7 +210,7 @@ pub fn render_settings<V: 'static>(
                                 (callbacks.on_toggle_syphon)(view);
                             })),
                     )
-                    .child(muted(format!("{}: {BUILD_ID}", text(language, TextKey::BuildId),))),
+                    .child(muted(format!("{}: {BUILD_ID}", text(language, TextKey::BuildId),), cx)),
             ),
         )
         .when_some(runtime.persist_error.map(str::to_string), |this, error| {
@@ -221,7 +227,7 @@ fn stage_location_control<V: 'static>(
     cx: &mut Context<V>,
     on_change: fn(&mut V),
 ) -> impl IntoElement {
-    h_flex().justify_between().gap_3().child(Label::new(stage).font_semibold()).child(
+    h_flex().gap_3().child(Label::new(stage).w_24().font_semibold()).child(
         TabBar::new(id)
             .w_56()
             .segmented()
@@ -231,8 +237,8 @@ fn stage_location_control<V: 'static>(
                     on_change(view);
                 }
             }))
-            .child(Tab::new().flex_1().label("Desktop"))
-            .child(Tab::new().flex_1().label("Mobile")),
+            .child(Tab::new().flex_1().label("Desktop").aria_label(format!("{stage}: Desktop")))
+            .child(Tab::new().flex_1().label("Mobile").aria_label(format!("{stage}: Mobile"))),
     )
 }
 

@@ -52,8 +52,8 @@ pub fn heading(value: impl Into<SharedString>) -> impl IntoElement {
     Label::new(value).font_semibold()
 }
 
-pub fn muted(value: impl Into<SharedString>) -> impl IntoElement {
-    Label::new(value).text_sm().opacity(0.72)
+pub fn muted(value: impl Into<SharedString>, cx: &App) -> impl IntoElement {
+    Label::new(value).text_sm().text_color(cx.theme().muted_foreground)
 }
 
 pub fn editable_text(value: &str, caret: Option<usize>, cx: &App) -> gpui::Div {

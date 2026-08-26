@@ -7,7 +7,7 @@ use gpui::{
     canvas, div, px, relative, rems, Bounds, Context, IntoElement, MouseDownEvent, MouseMoveEvent,
     Pixels, Point, RenderImage, SharedString,
 };
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::label::Label;
 use gpui_component::switch::Switch;
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, Selectable as _, StyledExt as _};
@@ -196,13 +196,14 @@ pub fn render_style<V: 'static>(
                     text(language, TextKey::AddStyle),
                     cx.listener(move |view, _event, _window, _cx| (callbacks.on_add_profile)(view)),
                 ))
-                .child(button(
-                    "style-profile-delete",
-                    text(language, TextKey::DeleteStyle),
-                    cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_delete_profile)(view)
-                    }),
-                )),
+                .child(
+                    Button::new("style-profile-delete")
+                        .danger()
+                        .label(text(language, TextKey::DeleteStyle))
+                        .on_click(cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_delete_profile)(view);
+                        })),
+                ),
         );
 
     let preview_image = div()
@@ -627,7 +628,7 @@ fn preview_input<V: 'static>(
     cx: &mut Context<V>,
     on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
 ) -> impl IntoElement {
-    v_flex().flex_1().gap_2().child(muted(label)).child(
+    v_flex().flex_1().gap_2().child(muted(label, cx)).child(
         h_flex()
             .id(id)
             .min_h_8()
@@ -657,7 +658,7 @@ fn font_picker<V: 'static>(
     } else {
         editable_text(state.query, state.caret, cx)
     };
-    let mut picker = v_flex().gap_2().child(muted(text(language, TextKey::FontFamily))).child(
+    let mut picker = v_flex().gap_2().child(muted(text(language, TextKey::FontFamily), cx)).child(
         h_flex()
             .id("font-search")
             .min_h_8()
@@ -874,7 +875,7 @@ fn color_picker_control<V: 'static>(
                                 .bg(parse_rgb(value)),
                         )
                         .child(Label::new(label))
-                        .child(muted(value.to_uppercase())),
+                        .child(muted(value.to_uppercase(), cx)),
                 )
                 .on_click(cx.listener(move |view, _event, _window, _cx| {
                     on_toggle(view, id);
