@@ -29,6 +29,7 @@ pub struct SettingsRuntimeInfo<'a> {
 }
 
 pub struct SettingsCallbacks<V> {
+    pub on_toggle_advanced: fn(&mut V),
     pub on_language: fn(&mut V, UiLanguage),
     pub on_toggle_translation: fn(&mut V),
     pub on_timeout: fn(&mut V, u64),
@@ -42,6 +43,7 @@ pub struct SettingsCallbacks<V> {
 
 pub fn render_settings<V: 'static>(
     settings: &NativeAppSettings,
+    show_advanced: bool,
     runtime: &SettingsRuntimeInfo<'_>,
     cx: &mut Context<V>,
     callbacks: SettingsCallbacks<V>,
@@ -49,7 +51,20 @@ pub fn render_settings<V: 'static>(
     let language = settings.ui_language;
     let content = card(cx)
         .flex_shrink_0()
-        .child(heading(text(language, TextKey::Settings)))
+        .child(
+            h_flex()
+                .justify_between()
+                .gap_3()
+                .child(heading(text(language, TextKey::Settings)))
+                .child(
+                    Switch::new("settings-show-advanced")
+                        .label(text(language, TextKey::ShowAdvancedSettings))
+                        .checked(show_advanced)
+                        .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                            (callbacks.on_toggle_advanced)(view);
+                        })),
+                ),
+        )
         .child(
             GroupBox::new().outline().title(text(language, TextKey::UiLanguage)).child(
                 h_flex()
@@ -76,21 +91,6 @@ pub fn render_settings<V: 'static>(
             GroupBox::new().outline().title(text(language, TextKey::Translation)).child(
                 v_flex()
                     .gap_2()
-                    .child(muted(
-                        format!(
-                            "{}: {}",
-                            text(language, TextKey::TranslationModel),
-                            text(
-                                language,
-                                if runtime.translation_model_installed {
-                                    TextKey::Installed
-                                } else {
-                                    TextKey::Missing
-                                },
-                            ),
-                        ),
-                        cx,
-                    ))
                     .child(
                         Switch::new("translation-enabled")
                             .label(text(language, TextKey::Translation))
@@ -98,7 +98,24 @@ pub fn render_settings<V: 'static>(
                             .on_click(cx.listener(move |view, _checked, _window, _cx| {
                                 (callbacks.on_toggle_translation)(view);
                             })),
-                    ),
+                    )
+                    .when(show_advanced, |this| {
+                        this.child(muted(
+                            format!(
+                                "{}: {}",
+                                text(language, TextKey::TranslationModel),
+                                text(
+                                    language,
+                                    if runtime.translation_model_installed {
+                                        TextKey::Installed
+                                    } else {
+                                        TextKey::Missing
+                                    },
+                                ),
+                            ),
+                            cx,
+                        ))
+                    }),
             ),
         )
         .child(
@@ -141,77 +158,95 @@ pub fn render_settings<V: 'static>(
                             cx,
                             callbacks.on_toggle_companion_translation,
                         ))
-                        .child(companion_status(runtime))
-                        .when_some(
-                            runtime.companion_endpoint.map(str::to_string),
-                            |this, endpoint| {
-                                this.child(
-                                    h_flex()
-                                        .justify_between()
-                                        .gap_3()
-                                        .child(
-                                            Label::new(format!("LAN endpoint: {endpoint}"))
-                                                .text_sm(),
+                        .when(show_advanced, |this| {
+                            this.child(companion_status(runtime))
+                                .when_some(
+                                    runtime.companion_endpoint.map(str::to_string),
+                                    |this, endpoint| {
+                                        this.child(
+                                            h_flex()
+                                                .justify_between()
+                                                .gap_3()
+                                                .child(
+                                                    Label::new(format!("LAN endpoint: {endpoint}"))
+                                                        .text_sm(),
+                                                )
+                                                .child(button(
+                                                    "copy-companion-endpoint",
+                                                    "Copy LAN endpoint",
+                                                    cx.listener(
+                                                        move |view, _event, _window, cx| {
+                                                            (callbacks.on_copy_companion_endpoint)(
+                                                                view, cx,
+                                                            );
+                                                        },
+                                                    ),
+                                                )),
                                         )
-                                        .child(button(
-                                            "copy-companion-endpoint",
-                                            "Copy LAN endpoint",
-                                            cx.listener(move |view, _event, _window, cx| {
-                                                (callbacks.on_copy_companion_endpoint)(view, cx);
-                                            }),
-                                        )),
+                                    },
                                 )
-                            },
-                        )
-                        .when_some(
-                            runtime.companion_pairing_token.map(str::to_string),
-                            |this, token| {
-                                this.child(
-                                    h_flex()
-                                        .justify_between()
-                                        .gap_3()
-                                        .child(
-                                            Label::new(format!("Pairing token: {token}")).text_sm(),
+                                .when_some(
+                                    runtime.companion_pairing_token.map(str::to_string),
+                                    |this, token| {
+                                        this.child(
+                                            h_flex()
+                                                .justify_between()
+                                                .gap_3()
+                                                .child(
+                                                    Label::new(format!("Pairing token: {token}"))
+                                                        .text_sm(),
+                                                )
+                                                .child(button(
+                                                    "copy-companion-token",
+                                                    "Copy pairing token",
+                                                    cx.listener(
+                                                        move |view, _event, _window, cx| {
+                                                            (callbacks.on_copy_companion_token)(
+                                                                view, cx,
+                                                            );
+                                                        },
+                                                    ),
+                                                )),
                                         )
-                                        .child(button(
-                                            "copy-companion-token",
-                                            "Copy pairing token",
-                                            cx.listener(move |view, _event, _window, cx| {
-                                                (callbacks.on_copy_companion_token)(view, cx);
-                                            }),
-                                        )),
+                                    },
                                 )
-                            },
-                        ),
+                        }),
                 ),
         )
-        .child(GroupBox::new().outline().title(text(language, TextKey::CaptionTimeout)).child(
-            h_flex().flex_wrap().gap_2().children((1_u64..=10).map(|seconds| {
-                let timeout = seconds * 1_000;
-                Button::new(format!("caption-timeout-{seconds}"))
-                    .selected(settings.caption_timeout_ms == timeout)
-                    .label(format!("{seconds}s"))
-                    .on_click(cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_timeout)(view, timeout);
-                    }))
-            })),
-        ))
-        .child(
-            GroupBox::new().outline().title(text(language, TextKey::RecognitionEngine)).child(
-                v_flex()
-                    .gap_2()
-                    .child(Label::new(RECOGNITION_MODE_LABEL).text_sm())
-                    .child(
-                        Switch::new("settings-syphon")
-                            .label(text(language, TextKey::Syphon))
-                            .checked(runtime.syphon_on)
-                            .on_click(cx.listener(move |view, _checked, _window, _cx| {
-                                (callbacks.on_toggle_syphon)(view);
-                            })),
-                    )
-                    .child(muted(format!("{}: {BUILD_ID}", text(language, TextKey::BuildId),), cx)),
-            ),
-        )
+        .when(show_advanced, |this| {
+            this.child(
+                GroupBox::new().outline().title(text(language, TextKey::CaptionTimeout)).child(
+                    h_flex().flex_wrap().gap_2().children((1_u64..=10).map(|seconds| {
+                        let timeout = seconds * 1_000;
+                        Button::new(format!("caption-timeout-{seconds}"))
+                            .selected(settings.caption_timeout_ms == timeout)
+                            .label(format!("{seconds}s"))
+                            .on_click(cx.listener(move |view, _event, _window, _cx| {
+                                (callbacks.on_timeout)(view, timeout);
+                            }))
+                    })),
+                ),
+            )
+            .child(
+                GroupBox::new().outline().title(text(language, TextKey::RecognitionEngine)).child(
+                    v_flex()
+                        .gap_2()
+                        .child(Label::new(RECOGNITION_MODE_LABEL).text_sm())
+                        .child(
+                            Switch::new("settings-syphon")
+                                .label(text(language, TextKey::Syphon))
+                                .checked(runtime.syphon_on)
+                                .on_click(cx.listener(move |view, _checked, _window, _cx| {
+                                    (callbacks.on_toggle_syphon)(view);
+                                })),
+                        )
+                        .child(muted(
+                            format!("{}: {BUILD_ID}", text(language, TextKey::BuildId),),
+                            cx,
+                        )),
+                ),
+            )
+        })
         .when_some(runtime.persist_error.map(str::to_string), |this, error| {
             this.child(error_line(error))
         });

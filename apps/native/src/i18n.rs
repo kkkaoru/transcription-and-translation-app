@@ -14,6 +14,7 @@ pub enum TextKey {
     DictionaryImportHint,
     Output,
     Settings,
+    ShowAdvancedSettings,
     InputDevice,
     RefreshDevices,
     NoMicrophone,
@@ -107,6 +108,7 @@ fn japanese(key: TextKey) -> &'static str {
         }
         TextKey::Output => "取り込み画面",
         TextKey::Settings => "設定",
+        TextKey::ShowAdvancedSettings => "詳細設定を表示",
         TextKey::InputDevice => "入力デバイス",
         TextKey::RefreshDevices => "入力デバイスを更新",
         TextKey::NoMicrophone => "マイク未検出",
@@ -192,6 +194,7 @@ fn english(key: TextKey) -> &'static str {
         TextKey::DictionaryImportHint => "Drop CSV / TSV files here to import words in bulk",
         TextKey::Output => "Capture output",
         TextKey::Settings => "Settings",
+        TextKey::ShowAdvancedSettings => "Show advanced settings",
         TextKey::InputDevice => "Input device",
         TextKey::RefreshDevices => "Refresh input devices",
         TextKey::NoMicrophone => "No microphone detected",

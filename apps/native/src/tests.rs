@@ -513,6 +513,8 @@ fn settings_support_one_ui_language_at_a_time() {
     let settings = include_str!("settings.rs");
     assert!(settings.contains("settings-scroll"));
     assert!(settings.contains("overflow_y_scroll()"));
+    assert!(settings.contains("settings-show-advanced"));
+    assert!(settings.contains(".when(show_advanced"));
     assert!(settings.contains("stage_location_control"));
     assert!(settings.contains("ButtonGroup::new"));
     assert!(settings.contains(".outline()"));
