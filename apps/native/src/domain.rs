@@ -759,6 +759,39 @@ pub fn parse_dictionary_delimited(
 }
 
 #[cfg(any(feature = "gpui", test))]
+pub fn export_dictionary_delimited(
+    entries: &[CustomDictionaryEntry],
+    tab_separated: bool,
+) -> String {
+    let delimiter = if tab_separated { '\t' } else { ',' };
+    let mut output = format!("reading{delimiter}word\n");
+    if entries.is_empty() {
+        output.push_str(&format!("とうきょう{delimiter}東京\n"));
+        return output;
+    }
+    for entry in entries {
+        output.push_str(&escape_dictionary_column(&entry.reading, delimiter));
+        output.push(delimiter);
+        output.push_str(&escape_dictionary_column(&entry.word, delimiter));
+        output.push('\n');
+    }
+    output
+}
+
+#[cfg(any(feature = "gpui", test))]
+fn escape_dictionary_column(value: &str, delimiter: char) -> String {
+    if value.contains(delimiter)
+        || value.contains('"')
+        || value.contains('\r')
+        || value.contains('\n')
+    {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+#[cfg(any(feature = "gpui", test))]
 fn parse_delimited_line(line: &str, delimiter: char) -> Result<Vec<String>, String> {
     let mut columns = Vec::new();
     let mut column = String::new();

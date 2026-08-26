@@ -17,9 +17,9 @@ use crate::debug_surfaces::{
 use crate::domain::{
     add_dictionary_entry, add_dictionary_profile, add_style_profile, clear_selected_dictionary,
     delete_dictionary_entry, delete_selected_dictionary_profile, delete_selected_style_profile,
-    geometry_from_style, ingest_fixture_caption, layout_from_style, load_app_settings,
-    load_dictionary_catalog, load_style_catalog, load_style_settings, native_settings_path,
-    native_style_path, parse_debug_launch, parse_dictionary_delimited,
+    export_dictionary_delimited, geometry_from_style, ingest_fixture_caption, layout_from_style,
+    load_app_settings, load_dictionary_catalog, load_style_catalog, load_style_settings,
+    native_settings_path, native_style_path, parse_debug_launch, parse_dictionary_delimited,
     rasterize_live_caption_at_scale, rasterize_style_preview, replace_selected_dictionary_entries,
     save_app_settings, save_dictionary_catalog, save_style_catalog, save_style_settings,
     search_dictionary_entries, select_dictionary_profile, select_style_profile, AppTab,
@@ -403,6 +403,9 @@ fn native_ui_uses_gpui_component_roots_controls_and_theme_tokens() {
     assert!(output.contains("Switch::new"));
     assert!(settings.contains("GroupBox::new"));
     assert!(dictionary.contains("danger_button("));
+    assert!(dictionary.contains("TextKey::DownloadCsv"));
+    assert!(dictionary.contains("TextKey::DownloadTsv"));
+    assert!(app.contains("prompt_for_new_path"));
     assert!(style.contains("Switch::new"));
     assert!(style.contains("cx.theme().primary"));
     assert!(!ui.contains("rgb(0x"));
@@ -769,6 +772,41 @@ fn window_options_keep_native_identity() {
     };
     assert_eq!(bounds.size.width, px(WINDOW_WIDTH_PX));
     assert_eq!(bounds.size.height, px(WINDOW_HEIGHT_PX));
+}
+
+#[test]
+fn dictionary_export_round_trips_and_empty_csv_contains_a_sample() {
+    let entries = vec![
+        CustomDictionaryEntry {
+            id: "one".to_string(),
+            reading: "えーびー".to_string(),
+            word: "A,B".to_string(),
+        },
+        CustomDictionaryEntry {
+            id: "two".to_string(),
+            reading: "引用".to_string(),
+            word: "C \"quoted\"".to_string(),
+        },
+    ];
+    let csv = export_dictionary_delimited(&entries, false);
+    assert!(csv.starts_with("reading,word\n"));
+    let parsed_csv = parse_dictionary_delimited(&csv, false).expect("parse exported CSV");
+    assert_eq!(
+        parsed_csv.iter().map(|entry| entry.word.as_str()).collect::<Vec<_>>(),
+        ["A,B", "C \"quoted\""]
+    );
+
+    let tsv = export_dictionary_delimited(&entries, true);
+    assert!(tsv.starts_with("reading\tword\n"));
+    let parsed_tsv = parse_dictionary_delimited(&tsv, true).expect("parse exported TSV");
+    assert_eq!(
+        parsed_tsv.iter().map(|entry| entry.reading.as_str()).collect::<Vec<_>>(),
+        ["えーびー", "引用"]
+    );
+
+    let sample = export_dictionary_delimited(&[], false);
+    assert_eq!(sample, "reading,word\nとうきょう,東京\n");
+    assert_eq!(parse_dictionary_delimited(&sample, false).expect("parse sample CSV").len(), 1);
 }
 
 #[test]

@@ -29,11 +29,11 @@ use crate::dictionary::{render_dictionary, DictionaryCallbacks, DictionaryViewSt
 use crate::domain::{
     add_dictionary_entry, add_dictionary_profile, add_style_profile, clear_selected_dictionary,
     delete_dictionary_entry, delete_selected_dictionary_profile, delete_selected_style_profile,
-    import_dictionary_file, ingest_fixture_caption, load_app_settings, load_dictionary_catalog,
-    load_style_catalog, local_translation_model_installed, merge_dictionary_entries,
-    native_config_dir, parse_debug_launch, rasterize_live_caption_at_scale,
-    rasterize_style_preview, replace_selected_dictionary_entries, save_app_settings,
-    save_dictionary_catalog, save_style_catalog, search_dictionary_entries,
+    export_dictionary_delimited, import_dictionary_file, ingest_fixture_caption, load_app_settings,
+    load_dictionary_catalog, load_style_catalog, local_translation_model_installed,
+    merge_dictionary_entries, native_config_dir, parse_debug_launch,
+    rasterize_live_caption_at_scale, rasterize_style_preview, replace_selected_dictionary_entries,
+    save_app_settings, save_dictionary_catalog, save_style_catalog, search_dictionary_entries,
     select_dictionary_profile, select_style_profile, AppTab, CaptureStatus,
     CompanionDeviceSettings, NativeAppSettings, NativeDictionaryCatalog, NativeStyleCatalog,
     NativeStyleSettings, BUNDLE_ID, DEFAULT_PREVIEW_SOURCE, DEFAULT_PREVIEW_TRANSLATION, FLAG_HELP,
@@ -627,6 +627,43 @@ impl MainView {
         self.persist_dictionary(entries);
     }
 
+    fn download_selected_dictionary(
+        &mut self,
+        tab_separated: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dictionary = self.dictionary_catalog.selected();
+        let extension = if tab_separated { "tsv" } else { "csv" };
+        let safe_name = dictionary.name.replace(['/', ':'], "-");
+        let suggested_name = format!("{safe_name}.{extension}");
+        let home =
+            std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        let downloads = home.join("Downloads");
+        let directory = if downloads.is_dir() { downloads } else { home };
+        let contents = export_dictionary_delimited(&dictionary.entries, tab_separated);
+        let export_error = text(self.app_settings.ui_language, TextKey::DictionaryExportError);
+        let receiver = cx.prompt_for_new_path(&directory, Some(&suggested_name));
+
+        cx.spawn_in(window, async move |view, window| {
+            let Some(path) = receiver.await.ok().into_iter().flatten().flatten().next() else {
+                return;
+            };
+            let result = window
+                .background_executor()
+                .spawn(async move {
+                    std::fs::write(path, contents)
+                        .map_err(|error| format!("{export_error}: {error}"))
+                })
+                .await;
+            _ = view.update_in(window, move |view, _window, cx| {
+                view.persist_error = result.err();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn focused_text_field(&self, window: &Window) -> Option<FocusField> {
         [
             (FocusField::Query, &self.query_focus_handle),
@@ -969,6 +1006,9 @@ impl Render for MainView {
                         view.set_dictionary_catalog(catalog);
                     },
                     on_import_paths: |view, paths| view.import_dictionary_paths(paths),
+                    on_download: |view, tab_separated, window, cx| {
+                        view.download_selected_dictionary(tab_separated, window, cx);
+                    },
                     on_focus_query: |view, window, cx| {
                         view.focused_field = Some(FocusField::Query);
                         view.query_caret = view.query.len();

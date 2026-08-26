@@ -12,6 +12,9 @@ pub enum TextKey {
     DeleteDictionary,
     ClearDictionary,
     DictionaryImportHint,
+    DownloadCsv,
+    DownloadTsv,
+    DictionaryExportError,
     Output,
     Settings,
     ShowDetails,
@@ -133,6 +136,9 @@ fn japanese(key: TextKey) -> &'static str {
         TextKey::DictionaryImportHint => {
             "CSV / TSVファイルをこの画面にドロップして一括登録できます"
         }
+        TextKey::DownloadCsv => "CSVをダウンロード",
+        TextKey::DownloadTsv => "TSVをダウンロード",
+        TextKey::DictionaryExportError => "辞書を書き出せませんでした",
         TextKey::Output => "取り込み画面",
         TextKey::Settings => "設定",
         TextKey::ShowDetails => "詳細表示",
@@ -246,6 +252,9 @@ fn english(key: TextKey) -> &'static str {
         TextKey::DeleteDictionary => "Delete selected dictionary",
         TextKey::ClearDictionary => "Delete all words",
         TextKey::DictionaryImportHint => "Drop CSV / TSV files here to import words in bulk",
+        TextKey::DownloadCsv => "Download CSV",
+        TextKey::DownloadTsv => "Download TSV",
+        TextKey::DictionaryExportError => "Could not export dictionary",
         TextKey::Output => "Capture output",
         TextKey::Settings => "Settings",
         TextKey::ShowDetails => "Show details",

@@ -34,6 +34,7 @@ pub struct DictionaryCallbacks<V> {
     pub on_delete_dictionary: fn(&mut V),
     pub on_clear_dictionary: fn(&mut V),
     pub on_import_paths: fn(&mut V, &[PathBuf]),
+    pub on_download: fn(&mut V, bool, &mut gpui::Window, &mut Context<V>),
     pub on_focus_query: fn(&mut V, &mut gpui::Window, &mut Context<V>),
     pub on_focus_reading: fn(&mut V, &mut gpui::Window, &mut Context<V>),
     pub on_focus_word: fn(&mut V, &mut gpui::Window, &mut Context<V>),
@@ -139,6 +140,20 @@ pub fn render_dictionary<V: 'static>(
                     cx,
                     cx.listener(move |view, _event, _window, _cx| {
                         (callbacks.on_clear_dictionary)(view);
+                    }),
+                ))
+                .child(button(
+                    "dictionary-download-csv",
+                    text(language, TextKey::DownloadCsv),
+                    cx.listener(move |view, _event, window, cx| {
+                        (callbacks.on_download)(view, false, window, cx);
+                    }),
+                ))
+                .child(button(
+                    "dictionary-download-tsv",
+                    text(language, TextKey::DownloadTsv),
+                    cx.listener(move |view, _event, window, cx| {
+                        (callbacks.on_download)(view, true, window, cx);
                     }),
                 )),
         )
