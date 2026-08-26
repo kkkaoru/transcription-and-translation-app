@@ -47,7 +47,8 @@ pub fn render_settings<V: 'static>(
     callbacks: SettingsCallbacks<V>,
 ) -> impl IntoElement {
     let language = settings.ui_language;
-    card(cx)
+    let content = card(cx)
+        .flex_shrink_0()
         .child(heading(text(language, TextKey::Settings)))
         .child(
             GroupBox::new().outline().title(text(language, TextKey::UiLanguage)).child(
@@ -115,7 +116,11 @@ pub fn render_settings<V: 'static>(
                         }))
                         .child(
                             Switch::new("companion-asr")
-                                .label("ASR on Mobile")
+                                .label(stage_location_label(
+                                    "ASR",
+                                    settings.companion_asr_on_mobile,
+                                    language,
+                                ))
                                 .checked(settings.companion_asr_on_mobile)
                                 .on_click(cx.listener(move |view, _checked, _window, _cx| {
                                     (callbacks.on_toggle_companion_asr)(view);
@@ -123,7 +128,11 @@ pub fn render_settings<V: 'static>(
                         )
                         .child(
                             Switch::new("companion-azookey")
-                                .label("AzooKey on Mobile")
+                                .label(stage_location_label(
+                                    "AzooKey",
+                                    settings.companion_azookey_on_mobile,
+                                    language,
+                                ))
                                 .checked(settings.companion_azookey_on_mobile)
                                 .on_click(cx.listener(move |view, _checked, _window, _cx| {
                                     (callbacks.on_toggle_companion_azookey)(view);
@@ -131,7 +140,11 @@ pub fn render_settings<V: 'static>(
                         )
                         .child(
                             Switch::new("companion-translation")
-                                .label("Translation on Mobile")
+                                .label(stage_location_label(
+                                    "Translation",
+                                    settings.companion_translation_on_mobile,
+                                    language,
+                                ))
                                 .checked(settings.companion_translation_on_mobile)
                                 .on_click(cx.listener(move |view, _checked, _window, _cx| {
                                     (callbacks.on_toggle_companion_translation)(view);
@@ -210,7 +223,17 @@ pub fn render_settings<V: 'static>(
         )
         .when_some(runtime.persist_error.map(str::to_string), |this, error| {
             this.child(error_line(error))
-        })
+        });
+
+    v_flex().id("settings-scroll").size_full().min_h_0().overflow_y_scroll().pb_3().child(content)
+}
+
+fn stage_location_label(stage: &str, mobile: bool, language: UiLanguage) -> String {
+    let location = if mobile { "Mobile" } else { "Desktop" };
+    match language {
+        UiLanguage::Japanese => format!("{stage}: {location}で処理"),
+        UiLanguage::English => format!("{stage}: process on {location}"),
+    }
 }
 
 fn companion_status(runtime: &SettingsRuntimeInfo<'_>) -> impl IntoElement {

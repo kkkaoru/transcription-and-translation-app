@@ -18,8 +18,8 @@ use crate::ui::{
     button, card, editable_text, error_line, heading, image_view, muted, render_image,
 };
 
-const PREVIEW_WIDTH_PX: f32 = 900.0;
-const PREVIEW_HEIGHT_PX: f32 = 253.125;
+const PREVIEW_WIDTH_PX: f32 = 560.0;
+const PREVIEW_HEIGHT_PX: f32 = 157.5;
 
 macro_rules! slider {
     ($id:expr, $label:expr, $value:expr, $min:expr, $max:expr, $step:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
@@ -205,41 +205,34 @@ pub fn render_style<V: 'static>(
                 )),
         );
 
-    let preview = card(cx)
+    let preview_image = div()
+        .w(px(PREVIEW_WIDTH_PX))
+        .h(px(PREVIEW_HEIGHT_PX))
         .flex_shrink_0()
-        .child(heading(text(language, TextKey::Preview)))
-        .child(
-            h_flex().justify_center().child(
-                div()
-                    .w(px(PREVIEW_WIDTH_PX))
-                    .h(px(PREVIEW_HEIGHT_PX))
-                    .flex_shrink_0()
-                    .rounded_md()
-                    .overflow_hidden()
-                    .bg(parse_rgb(&style.preview_background_color))
-                    .child(image_view(preview_image)),
-            ),
-        )
-        .child(
-            h_flex()
-                .gap_3()
-                .child(preview_input(
-                    "preview-source-input",
-                    text(language, TextKey::PreviewRecognition),
-                    preview_source,
-                    preview_source_caret,
-                    cx,
-                    callbacks.on_preview_source_focus,
-                ))
-                .child(preview_input(
-                    "preview-translation-input",
-                    text(language, TextKey::PreviewTranslation),
-                    preview_translation,
-                    preview_translation_caret,
-                    cx,
-                    callbacks.on_preview_translation_focus,
-                )),
-        )
+        .rounded_md()
+        .overflow_hidden()
+        .bg(parse_rgb(&style.preview_background_color))
+        .child(image_view(preview_image));
+    let preview_controls = v_flex()
+        .flex_1()
+        .min_w_0()
+        .gap_2()
+        .child(preview_input(
+            "preview-source-input",
+            text(language, TextKey::PreviewRecognition),
+            preview_source,
+            preview_source_caret,
+            cx,
+            callbacks.on_preview_source_focus,
+        ))
+        .child(preview_input(
+            "preview-translation-input",
+            text(language, TextKey::PreviewTranslation),
+            preview_translation,
+            preview_translation_caret,
+            cx,
+            callbacks.on_preview_translation_focus,
+        ))
         .child(color_picker!(
             "preview-background",
             text(language, TextKey::PreviewBackground),
@@ -252,6 +245,10 @@ pub fn render_style<V: 'static>(
             callbacks.on_change,
             |next, color| next.preview_background_color = color.to_string(),
         ));
+    let preview = card(cx)
+        .flex_shrink_0()
+        .child(heading(text(language, TextKey::Preview)))
+        .child(h_flex().items_start().gap_3().child(preview_image).child(preview_controls));
 
     let typography = setting_section(
         text(language, TextKey::Typography),
@@ -1159,9 +1156,9 @@ mod tests {
     }
 
     #[test]
-    fn preview_keeps_a_fixed_display_area() {
-        assert_eq!(PREVIEW_WIDTH_PX, 900.0);
-        assert_eq!(PREVIEW_HEIGHT_PX, 253.125);
+    fn preview_keeps_a_compact_widescreen_display_area() {
+        assert_eq!(PREVIEW_WIDTH_PX, 560.0);
+        assert_eq!(PREVIEW_HEIGHT_PX, 157.5);
     }
 
     #[test]

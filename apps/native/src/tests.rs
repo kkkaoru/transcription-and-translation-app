@@ -507,6 +507,11 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(!source.contains("Live ライブ"));
     assert!(!source.contains("ライブ Live"));
     let settings = include_str!("settings.rs");
+    assert!(settings.contains("settings-scroll"));
+    assert!(settings.contains("overflow_y_scroll()"));
+    assert!(settings.contains("stage_location_label"));
+    assert!(settings.contains("process on {location}"));
+    assert!(settings.contains("{location}で処理"));
     assert!(settings.contains("copy-companion-endpoint"));
     assert!(settings.contains("copy-companion-token"));
     assert!(settings.contains("Connected and authenticated"));
