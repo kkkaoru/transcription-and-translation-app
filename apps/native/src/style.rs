@@ -126,6 +126,14 @@ struct RangeSpec {
     accent: gpui::Rgba,
 }
 
+struct ColorChannelSpec {
+    id: String,
+    label: &'static str,
+    channel_index: usize,
+    channels: [u8; 3],
+    set: fn(&mut NativeStyleSettings, &str),
+}
+
 struct ColorSquareSpec {
     id: String,
     hue: f32,
@@ -893,6 +901,24 @@ fn color_picker_control<V: 'static>(
         cx,
         on_change,
     );
+    let red = color_channel_stepper(
+        ColorChannelSpec { id: format!("{id}-red"), label: "R", channel_index: 0, channels, set },
+        style,
+        cx,
+        on_change,
+    );
+    let green = color_channel_stepper(
+        ColorChannelSpec { id: format!("{id}-green"), label: "G", channel_index: 1, channels, set },
+        style,
+        cx,
+        on_change,
+    );
+    let blue = color_channel_stepper(
+        ColorChannelSpec { id: format!("{id}-blue"), label: "B", channel_index: 2, channels, set },
+        style,
+        cx,
+        on_change,
+    );
 
     v_flex()
         .gap_2()
@@ -918,7 +944,60 @@ fn color_picker_control<V: 'static>(
                     on_toggle(view, id);
                 })),
         )
-        .when(active, |this| this.child(h_flex().justify_center().child(square)).child(hue_bar))
+        .when(active, |this| {
+            this.child(h_flex().justify_center().child(square))
+                .child(hue_bar)
+                .child(h_flex().justify_center().gap_3().child(red).child(green).child(blue))
+        })
+}
+
+fn color_channel_stepper<V: 'static>(
+    spec: ColorChannelSpec,
+    style: &NativeStyleSettings,
+    cx: &mut Context<V>,
+    on_change: fn(&mut V, NativeStyleSettings),
+) -> impl IntoElement {
+    let ColorChannelSpec { id, label, channel_index, channels, set } = spec;
+    let entity = cx.entity();
+    let current = style.clone();
+    let update = Rc::new(move |view: &mut V, next_channels: [u8; 3]| {
+        let mut next = current.clone();
+        set(&mut next, &rgb_hex(next_channels));
+        on_change(view, next);
+    });
+    let decrease_entity = entity.clone();
+    let decrease_update = Rc::clone(&update);
+    let decrease = Button::new(format!("{id}-decrease"))
+        .label("−")
+        .tooltip(format!("{label}: decrease"))
+        .disabled(channels[channel_index] == 0)
+        .on_click(move |_event, _window, app| {
+            decrease_entity.update(app, |view, _| {
+                decrease_update(view, step_rgb_channel(channels, channel_index, -1));
+            });
+        });
+    let increase = Button::new(format!("{id}-increase"))
+        .label("+")
+        .tooltip(format!("{label}: increase"))
+        .disabled(channels[channel_index] == u8::MAX)
+        .on_click(move |_event, _window, app| {
+            entity.update(app, |view, _| {
+                update(view, step_rgb_channel(channels, channel_index, 1));
+            });
+        });
+
+    h_flex()
+        .gap_2()
+        .child(Label::new(label).text_sm().text_color(cx.theme().muted_foreground))
+        .child(Label::new(channels[channel_index].to_string()).min_w_8().text_center().text_sm())
+        .child(decrease)
+        .child(increase)
+}
+
+fn step_rgb_channel(mut channels: [u8; 3], channel_index: usize, delta: i16) -> [u8; 3] {
+    let next = i16::from(channels[channel_index]) + delta;
+    channels[channel_index] = next.clamp(0, i16::from(u8::MAX)) as u8;
+    channels
 }
 
 fn color_square_control<V: 'static>(
@@ -1168,7 +1247,7 @@ mod tests {
 
     use super::{
         color_square_image, hsv_to_rgb, parse_rgb_channels, quantize_range_value, range_value,
-        rgb_to_hsv, PREVIEW_HEIGHT_PX, PREVIEW_WIDTH_PX,
+        rgb_to_hsv, step_rgb_channel, PREVIEW_HEIGHT_PX, PREVIEW_WIDTH_PX,
     };
 
     #[test]
@@ -1184,6 +1263,13 @@ mod tests {
         assert!((quantize_range_value(1.26, 0.0, 2.0, 0.1) - 1.3).abs() < f32::EPSILON * 2.0);
         assert_eq!(quantize_range_value(-1.0, 0.0, 2.0, 0.1), 0.0);
         assert_eq!(quantize_range_value(3.0, 0.0, 2.0, 0.1), 2.0);
+    }
+
+    #[test]
+    fn keyboard_color_steps_one_channel_and_clamps_at_rgb_bounds() {
+        assert_eq!(step_rgb_channel([0, 20, 255], 1, 1), [0, 21, 255]);
+        assert_eq!(step_rgb_channel([0, 20, 255], 0, -1), [0, 20, 255]);
+        assert_eq!(step_rgb_channel([0, 20, 255], 2, 1), [0, 20, 255]);
     }
 
     #[test]
