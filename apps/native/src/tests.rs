@@ -439,9 +439,14 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(ui.contains("contrast_ratio(background"));
     assert!(dictionary.contains(".track_focus(&focus_handle)"));
     assert!(dictionary.contains(".tab_index(0)"));
+    assert!(dictionary.contains(".accessibility_id(label)"));
     assert!(style.contains(".track_focus(&focus_handle)"));
     assert!(style.contains(".track_focus(&font_focus)"));
     assert!(style.contains(".tab_index(0)"));
+    assert!(style.contains(".accessibility_id(label)"));
+    assert!(style.contains(".accessibility_id(text(language, TextKey::FontFamily))"));
+    assert!(dictionary.contains("border_color(cx.theme().foreground)"));
+    assert!(style.contains("border_color(cx.theme().foreground)"));
 }
 
 #[test]

@@ -698,14 +698,15 @@ fn preview_input<V: 'static>(
             .id(id)
             .track_focus(&focus_handle)
             .tab_index(0)
+            .accessibility_id(label)
             .min_h_8()
             .px_3()
             .py_2()
             .rounded(cx.theme().radius)
             .border_1()
             .when(caret.is_some(), |this| this.border_2())
-            .border_color(if caret.is_some() { cx.theme().primary } else { cx.theme().input })
-            .focus(|style| style.border_2().border_color(cx.theme().primary))
+            .border_color(if caret.is_some() { cx.theme().foreground } else { cx.theme().input })
+            .focus(|style| style.border_2().border_color(cx.theme().foreground))
             .bg(cx.theme().background)
             .cursor_text()
             .on_click(cx.listener(move |view, _event, window, cx| {
@@ -736,14 +737,19 @@ fn font_picker<V: 'static>(
             .id("font-search")
             .track_focus(&font_focus)
             .tab_index(0)
+            .accessibility_id(text(language, TextKey::FontFamily))
             .min_h_8()
             .px_3()
             .py_2()
             .rounded(cx.theme().radius)
             .border_1()
             .when(state.caret.is_some(), |this| this.border_2())
-            .border_color(if state.caret.is_some() { cx.theme().primary } else { cx.theme().input })
-            .focus(|style| style.border_2().border_color(cx.theme().primary))
+            .border_color(if state.caret.is_some() {
+                cx.theme().foreground
+            } else {
+                cx.theme().input
+            })
+            .focus(|style| style.border_2().border_color(cx.theme().foreground))
             .bg(cx.theme().background)
             .cursor_text()
             .on_click(cx.listener(move |view, _event, window, cx| {
