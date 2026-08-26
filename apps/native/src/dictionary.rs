@@ -5,12 +5,11 @@ use std::path::PathBuf;
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
 use gpui::{Context, ExternalPaths, IntoElement, SharedString};
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{h_flex, v_flex, ActiveTheme as _};
 
 use crate::domain::{NativeDictionaryProfile, UiLanguage};
 use crate::i18n::{text, TextKey};
-use crate::ui::{button, card, editable_text, error_line, heading, muted};
+use crate::ui::{button, card, danger_button, editable_text, error_line, heading, muted};
 
 pub struct DictionaryViewState<'a> {
     pub dictionaries: &'a [NativeDictionaryProfile],
@@ -91,14 +90,14 @@ pub fn render_dictionary<V: 'static>(
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().muted)
                     .child(SharedString::from(format!("{} → {}", entry.reading, entry.word)))
-                    .child(
-                        Button::new(format!("dict-delete-{}", entry.id))
-                            .danger()
-                            .label(text(language, TextKey::Delete))
-                            .on_click(cx.listener(move |view, _event, _window, _cx| {
-                                (callbacks.on_delete)(view, &id);
-                            })),
-                    ),
+                    .child(danger_button(
+                        format!("dict-delete-{}", entry.id),
+                        text(language, TextKey::Delete),
+                        cx,
+                        cx.listener(move |view, _event, _window, _cx| {
+                            (callbacks.on_delete)(view, &id);
+                        }),
+                    )),
             );
         }
     }
@@ -120,22 +119,22 @@ pub fn render_dictionary<V: 'static>(
                         (callbacks.on_add_dictionary)(view)
                     }),
                 ))
-                .child(
-                    Button::new("dictionary-profile-delete")
-                        .danger()
-                        .label(text(language, TextKey::DeleteDictionary))
-                        .on_click(cx.listener(move |view, _event, _window, _cx| {
-                            (callbacks.on_delete_dictionary)(view);
-                        })),
-                )
-                .child(
-                    Button::new("dictionary-clear")
-                        .danger()
-                        .label(text(language, TextKey::ClearDictionary))
-                        .on_click(cx.listener(move |view, _event, _window, _cx| {
-                            (callbacks.on_clear_dictionary)(view);
-                        })),
-                ),
+                .child(danger_button(
+                    "dictionary-profile-delete",
+                    text(language, TextKey::DeleteDictionary),
+                    cx,
+                    cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_delete_dictionary)(view);
+                    }),
+                ))
+                .child(danger_button(
+                    "dictionary-clear",
+                    text(language, TextKey::ClearDictionary),
+                    cx,
+                    cx.listener(move |view, _event, _window, _cx| {
+                        (callbacks.on_clear_dictionary)(view);
+                    }),
+                )),
         )
         .child(muted(text(language, TextKey::DictionaryImportHint), cx))
         .child(field_editor(

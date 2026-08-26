@@ -7,7 +7,7 @@ use gpui::{
     canvas, div, px, relative, rems, Bounds, Context, IntoElement, MouseDownEvent, MouseMoveEvent,
     Pixels, Point, RenderImage, SharedString,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::Button;
 use gpui_component::label::Label;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::switch::Switch;
@@ -18,7 +18,8 @@ use gpui_component::{
 use crate::domain::{NativeStyleProfile, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
 use crate::ui::{
-    button, card, editable_text, error_line, heading, image_view, muted, render_image,
+    button, card, danger_button, editable_text, error_line, heading, image_view, muted,
+    render_image,
 };
 
 const PREVIEW_WIDTH_PX: f32 = 560.0;
@@ -234,14 +235,14 @@ pub fn render_style<V: 'static>(
                 text(language, TextKey::AddStyle),
                 cx.listener(move |view, _event, _window, _cx| (callbacks.on_add_profile)(view)),
             ))
-            .child(
-                Button::new("style-profile-delete")
-                    .danger()
-                    .label(text(language, TextKey::DeleteStyle))
-                    .on_click(cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_delete_profile)(view);
-                    })),
-            ),
+            .child(danger_button(
+                "style-profile-delete",
+                text(language, TextKey::DeleteStyle),
+                cx,
+                cx.listener(move |view, _event, _window, _cx| {
+                    (callbacks.on_delete_profile)(view);
+                }),
+            )),
     );
 
     let preview_image = div()

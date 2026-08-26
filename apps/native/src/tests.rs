@@ -399,7 +399,7 @@ fn native_ui_uses_gpui_component_roots_controls_and_theme_tokens() {
     assert!(live.contains("Switch::new"));
     assert!(output.contains("Switch::new"));
     assert!(settings.contains("GroupBox::new"));
-    assert!(dictionary.contains("Button::new"));
+    assert!(dictionary.contains("danger_button("));
     assert!(style.contains("Switch::new"));
     assert!(style.contains("cx.theme().primary"));
     assert!(!ui.contains("rgb(0x"));
@@ -434,8 +434,9 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(live.contains("Label::new(source).text_lg()"));
     assert!(live.contains(".primary()"));
     assert!(settings.contains("Label::new(stage).w_24()"));
-    assert!(dictionary.contains(".danger()"));
-    assert!(style.contains(".danger()"));
+    assert!(dictionary.contains("danger_button("));
+    assert!(style.contains("danger_button("));
+    assert!(ui.contains("contrast_ratio(background"));
 }
 
 #[test]
