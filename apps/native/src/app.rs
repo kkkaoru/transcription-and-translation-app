@@ -403,11 +403,18 @@ impl MainView {
             .unwrap_or("png")
             .to_ascii_lowercase();
         let directory = self.config_dir.join("preview-backgrounds");
-        let target = directory.join(format!("{}.{}", self.style_catalog.selected_id, extension));
+        let revision = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let target =
+            directory.join(format!("{}-{revision}.{extension}", self.style_catalog.selected_id));
         let result =
             std::fs::create_dir_all(&directory).and_then(|_| std::fs::copy(source, &target));
         match result {
             Ok(_) => {
+                if let Some(previous) = self.style.preview_background_image_path.as_deref() {
+                    _ = std::fs::remove_file(previous);
+                }
                 let mut next = self.style.clone();
                 next.preview_background_image_path = Some(target.to_string_lossy().into_owned());
                 next.preview_background_image_x_percent = 0.0;
