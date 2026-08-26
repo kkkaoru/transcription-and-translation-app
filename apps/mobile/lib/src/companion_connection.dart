@@ -2,12 +2,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:kotoba_beacon_companion/src/rust/api/simple.dart';
 
 const _discoveryPort = 18184;
 const _discoveryTimeout = Duration(seconds: 3);
+const _processingChannel = MethodChannel('kotoba_beacon/processing');
+
+/// Platform-native trusted-LAN discovery callback.
+typedef NativeCompanionDiscovery = Future<Map<String, Object?>> Function(
+  Duration timeout,
+);
 
 /// Discovers Native on the trusted LAN and returns authenticated connection
 /// data.
@@ -15,7 +21,14 @@ Future<DiscoveryResponse> discoverCompanion({
   InternetAddress? broadcastAddress,
   int port = _discoveryPort,
   Duration timeout = _discoveryTimeout,
+  NativeCompanionDiscovery? nativeDiscovery,
 }) async {
+  if (Platform.isIOS || nativeDiscovery != null) {
+    return _discoverWithBonjour(
+      timeout,
+      nativeDiscovery ?? _invokeNativeDiscovery,
+    );
+  }
   final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
   final nonce = BigInt.from(Random.secure().nextInt(0x7fffffff));
   final completion = Completer<DiscoveryResponse>();
@@ -45,6 +58,40 @@ Future<DiscoveryResponse> discoverCompanion({
     await subscription.cancel();
     socket.close();
   }
+}
+
+Future<Map<String, Object?>> _invokeNativeDiscovery(Duration timeout) async {
+  final response = await _processingChannel.invokeMapMethod<String, Object?>(
+    'discoverCompanion',
+    {
+      'timeoutMillis': timeout.inMilliseconds,
+    },
+  );
+  if (response == null) {
+    throw StateError('Native companion discovery returned no result');
+  }
+  return response;
+}
+
+Future<DiscoveryResponse> _discoverWithBonjour(
+  Duration timeout,
+  NativeCompanionDiscovery discovery,
+) async {
+  final response = await discovery(timeout).timeout(timeout);
+  final endpoint = response['endpoint'];
+  final token = response['token'];
+  if (endpoint is! String || token is! String) {
+    throw const FormatException('Invalid Bonjour companion response');
+  }
+  return decodeDiscoveryResponse(
+    json: jsonEncode({
+      'version': 1,
+      'type': 'discovery.response',
+      'nonce': 0,
+      'endpoint': endpoint,
+      'token': token,
+    }),
+  );
 }
 
 /// Transport boundary between Flutter processing and Native on the trusted LAN.

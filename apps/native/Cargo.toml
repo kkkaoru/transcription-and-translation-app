@@ -30,6 +30,7 @@ parapper-engine = { path = "../../crates/parapper-engine" }
 rust_lib_kotoba_beacon_companion = { path = "../mobile/rust", default-features = false }
 fs2 = "0.4"
 getrandom = "0.3"
+mdns-sd = "0.21"
 tungstenite = "0.28"
 image = { version = "0.25", default-features = false }
 smallvec = "1"

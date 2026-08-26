@@ -28,6 +28,14 @@ void main() {
   );
   test('UDP discovery returns matching authenticated data', _testDiscovery);
   test(
+    'native Bonjour discovery validates authenticated data',
+    _testBonjourDiscovery,
+  );
+  test(
+    'native Bonjour discovery rejects malformed data',
+    _testMalformedBonjourDiscovery,
+  );
+  test(
     'real loopback WebSocket completes the mobile-owned pipeline',
     _testLoopbackPipeline,
   );
@@ -90,6 +98,31 @@ Future<void> _testDiscovery() async {
   expect(discovered.token, '0123456789abcdef0123456789abcdef');
   await subscription.cancel();
   server.close();
+}
+
+Future<void> _testBonjourDiscovery() async {
+  final discovered = await discoverCompanion(
+    timeout: const Duration(seconds: 1),
+    nativeDiscovery: (_) async => const {
+      'endpoint': 'ws://192.168.1.227:18183/companion',
+      'token': '0123456789abcdef0123456789abcdef',
+    },
+  );
+
+  expect(discovered.endpoint, 'ws://192.168.1.227:18183/companion');
+  expect(discovered.token, '0123456789abcdef0123456789abcdef');
+}
+
+Future<void> _testMalformedBonjourDiscovery() async {
+  await expectLater(
+    discoverCompanion(
+      timeout: const Duration(seconds: 1),
+      nativeDiscovery: (_) async => const {
+        'endpoint': 'ws://192.168.1.227:18183/companion',
+      },
+    ),
+    throwsFormatException,
+  );
 }
 
 Future<void> _testLoopbackPipeline() async {

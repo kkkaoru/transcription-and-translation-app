@@ -31,8 +31,12 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_kotobabeacon._tcp</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Kotoba Beacon Nativeから音声を受信し、認識結果と翻訳結果を返すためにローカルネットワークを使用します。</string>
+	<string>Kotoba Beacon Nativeを自動検出し、音声を受信して認識結果と翻訳結果を返すためにローカルネットワークを使用します。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>デスクトップから受信した音声を端末内のSpeechAnalyzerで文字起こしします。</string>
 	<key>UIApplicationSceneManifest</key>

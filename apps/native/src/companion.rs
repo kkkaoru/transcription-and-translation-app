@@ -9,6 +9,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use getrandom::fill as fill_random;
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use rust_lib_kotoba_beacon_companion::api::simple::{
     decode_discovery_request, decode_mobile_route_request, decode_mobile_stage_result,
     decode_pair_request, decode_session_configuration, encode_discovery_response,
@@ -27,6 +28,9 @@ const IO_POLL_INTERVAL: Duration = Duration::from_millis(8);
 const PAIRING_TOKEN_BYTES: usize = 16;
 const MAX_PCM_FRAME_BYTES: usize = 4_096;
 const MAX_DISCOVERY_DATAGRAM_BYTES: usize = 1_024;
+const COMPANION_SERVICE_TYPE: &str = "_kotobabeacon._tcp.local.";
+const COMPANION_SERVICE_INSTANCE: &str = "Kotoba Beacon Native";
+const COMPANION_SERVICE_HOSTNAME: &str = "kotoba-beacon.local.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompanionConnectionSnapshot {
@@ -41,9 +45,9 @@ pub struct CompanionConnectionSnapshot {
 }
 
 impl CompanionConnectionSnapshot {
-    fn disconnected(pairing_token: String, route: PipelineRoute) -> Self {
+    fn disconnected_at(pairing_token: String, route: PipelineRoute, host: &str, port: u16) -> Self {
         Self {
-            endpoint: format!("ws://{}:{COMPANION_PORT}/companion", discover_lan_address()),
+            endpoint: format!("ws://{host}:{port}/companion"),
             pairing_token,
             device_id: None,
             device_name: None,
@@ -83,20 +87,53 @@ pub struct CompanionHandle {
 
 impl CompanionServer {
     pub fn start(route: PipelineRoute) -> Result<Self, String> {
-        let listener = TcpListener::bind(("0.0.0.0", COMPANION_PORT))
+        Self::start_on_ports(
+            route,
+            "0.0.0.0",
+            COMPANION_PORT,
+            COMPANION_DISCOVERY_PORT,
+            &discover_lan_address(),
+        )
+        .map(|(server, _, _)| server)
+    }
+
+    fn start_on_ports(
+        route: PipelineRoute,
+        bind_host: &str,
+        companion_port: u16,
+        discovery_port: u16,
+        advertised_host: &str,
+    ) -> Result<(Self, u16, u16), String> {
+        let listener = TcpListener::bind((bind_host, companion_port))
             .map_err(|error| format!("could not bind companion LAN port: {error}"))?;
         listener
             .set_nonblocking(true)
             .map_err(|error| format!("could not configure companion LAN listener: {error}"))?;
-        let discovery_socket = UdpSocket::bind(("0.0.0.0", COMPANION_DISCOVERY_PORT))
+        let companion_port = listener
+            .local_addr()
+            .map_err(|error| format!("could not read companion LAN port: {error}"))?
+            .port();
+        let discovery_socket = UdpSocket::bind((bind_host, discovery_port))
             .map_err(|error| format!("could not bind companion discovery port: {error}"))?;
         discovery_socket
             .set_nonblocking(true)
             .map_err(|error| format!("could not configure companion discovery socket: {error}"))?;
+        let discovery_port = discovery_socket
+            .local_addr()
+            .map_err(|error| format!("could not read companion discovery port: {error}"))?
+            .port();
         let pairing_token = generate_pairing_token()?;
-        let snapshot = Arc::new(Mutex::new(CompanionConnectionSnapshot::disconnected(
+        let endpoint = format!("ws://{advertised_host}:{companion_port}/companion");
+        let bonjour = if bind_host == "0.0.0.0" {
+            Some(start_bonjour(&endpoint, &pairing_token, advertised_host, companion_port)?)
+        } else {
+            None
+        };
+        let snapshot = Arc::new(Mutex::new(CompanionConnectionSnapshot::disconnected_at(
             pairing_token.clone(),
             route,
+            advertised_host,
+            companion_port,
         )));
         let (outbound_tx, outbound_rx) = mpsc::sync_channel(OUTBOUND_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::sync_channel(INBOUND_CAPACITY);
@@ -109,21 +146,28 @@ impl CompanionServer {
                 run_server(
                     listener,
                     discovery_socket,
-                    pairing_token,
-                    outbound_rx,
-                    inbound_tx,
-                    worker_snapshot,
-                    worker_stop,
+                    ServerRuntime {
+                        pairing_token,
+                        outbound_rx,
+                        inbound_tx,
+                        snapshot: worker_snapshot,
+                        stop_requested: worker_stop,
+                        bonjour,
+                    },
                 )
             })
             .map_err(|error| format!("could not start companion LAN thread: {error}"))?;
-        Ok(Self {
-            outbound_tx,
-            inbound_rx: Arc::new(Mutex::new(inbound_rx)),
-            snapshot,
-            stop_requested,
-            worker: Some(worker),
-        })
+        Ok((
+            Self {
+                outbound_tx,
+                inbound_rx: Arc::new(Mutex::new(inbound_rx)),
+                snapshot,
+                stop_requested,
+                worker: Some(worker),
+            },
+            companion_port,
+            discovery_port,
+        ))
     }
 
     pub fn snapshot(&self) -> CompanionConnectionSnapshot {
@@ -196,41 +240,69 @@ impl Drop for CompanionServer {
     }
 }
 
-fn run_server(
-    listener: TcpListener,
-    discovery_socket: UdpSocket,
+struct ServerRuntime {
     pairing_token: String,
     outbound_rx: Receiver<CompanionOutbound>,
     inbound_tx: SyncSender<CompanionInbound>,
     snapshot: Arc<Mutex<CompanionConnectionSnapshot>>,
     stop_requested: Arc<AtomicBool>,
-) {
-    while !stop_requested.load(Ordering::Acquire) {
-        respond_to_discovery(&discovery_socket, &pairing_token, &snapshot);
+    bonjour: Option<ServiceDaemon>,
+}
+
+fn run_server(listener: TcpListener, discovery_socket: UdpSocket, runtime: ServerRuntime) {
+    while !runtime.stop_requested.load(Ordering::Acquire) {
+        respond_to_discovery(&discovery_socket, &runtime.pairing_token, &runtime.snapshot);
         match listener.accept() {
             Ok((stream, _address)) => {
                 if let Err(error) = serve_connection(
                     stream,
-                    &pairing_token,
-                    &outbound_rx,
-                    &inbound_tx,
-                    &snapshot,
-                    &stop_requested,
+                    &runtime.pairing_token,
+                    &runtime.outbound_rx,
+                    &runtime.inbound_tx,
+                    &runtime.snapshot,
+                    &runtime.stop_requested,
                 ) {
-                    set_error(&snapshot, error);
+                    set_error(&runtime.snapshot, error);
                 }
-                mark_disconnected(&snapshot);
-                let _ = inbound_tx.try_send(CompanionInbound::Disconnected);
+                mark_disconnected(&runtime.snapshot);
+                let _ = runtime.inbound_tx.try_send(CompanionInbound::Disconnected);
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(IO_POLL_INTERVAL);
             }
             Err(error) => {
-                set_error(&snapshot, format!("companion LAN accept failed: {error}"));
+                set_error(&runtime.snapshot, format!("companion LAN accept failed: {error}"));
                 thread::sleep(IO_POLL_INTERVAL);
             }
         }
     }
+    if let Some(bonjour) = runtime.bonjour {
+        let _ = bonjour.shutdown();
+    }
+}
+
+fn start_bonjour(
+    endpoint: &str,
+    pairing_token: &str,
+    advertised_host: &str,
+    companion_port: u16,
+) -> Result<ServiceDaemon, String> {
+    let daemon = ServiceDaemon::new()
+        .map_err(|error| format!("could not start companion Bonjour discovery: {error}"))?;
+    let properties = [("endpoint", endpoint), ("token", pairing_token), ("version", "1")];
+    let service = ServiceInfo::new(
+        COMPANION_SERVICE_TYPE,
+        COMPANION_SERVICE_INSTANCE,
+        COMPANION_SERVICE_HOSTNAME,
+        advertised_host,
+        companion_port,
+        &properties[..],
+    )
+    .map_err(|error| format!("could not describe companion Bonjour service: {error}"))?;
+    daemon
+        .register(service)
+        .map_err(|error| format!("could not advertise companion Bonjour service: {error}"))?;
+    Ok(daemon)
 }
 
 fn respond_to_discovery(
@@ -429,7 +501,7 @@ mod tests {
 
     use super::{
         constant_time_equal, generate_pairing_token, CompanionConnectionSnapshot, CompanionInbound,
-        CompanionServer, COMPANION_DISCOVERY_PORT, COMPANION_PORT,
+        CompanionServer, COMPANION_PORT,
     };
     use rust_lib_kotoba_beacon_companion::api::simple::{
         decode_discovery_response, default_pipeline_route, encode_discovery_request,
@@ -454,13 +526,15 @@ mod tests {
 
     #[test]
     fn disconnected_snapshot_has_no_session_identity() {
-        let snapshot = CompanionConnectionSnapshot::disconnected(
+        let snapshot = CompanionConnectionSnapshot::disconnected_at(
             "secret".to_string(),
             PipelineRoute {
                 asr: ExecutionDevice::Mobile,
                 azookey: ExecutionDevice::Mobile,
                 translation: ExecutionDevice::Mobile,
             },
+            "192.0.2.1",
+            COMPANION_PORT,
         );
         assert!(snapshot.endpoint.starts_with("ws://"));
         assert!(snapshot.endpoint.ends_with(":18183/companion"));
@@ -471,7 +545,9 @@ mod tests {
     #[test]
     fn authenticated_loopback_session_exchanges_revision_scoped_results() {
         let route = default_pipeline_route();
-        let server = CompanionServer::start(route).expect("start companion server");
+        let (server, companion_port, discovery_port) =
+            CompanionServer::start_on_ports(route, "127.0.0.1", 0, 0, "127.0.0.1")
+                .expect("start companion server");
         let handle = server.handle();
         let snapshot = server.snapshot();
         let discovery = UdpSocket::bind(("127.0.0.1", 0)).expect("bind discovery client");
@@ -479,7 +555,7 @@ mod tests {
         discovery
             .send_to(
                 encode_discovery_request(77).expect("encode discovery request").as_bytes(),
-                ("127.0.0.1", COMPANION_DISCOVERY_PORT),
+                ("127.0.0.1", discovery_port),
             )
             .expect("send discovery request");
         let mut discovery_bytes = [0_u8; 1_024];
@@ -493,7 +569,7 @@ mod tests {
         assert_eq!(discovered.nonce, 77);
         assert_eq!(discovered.endpoint, snapshot.endpoint);
         assert_eq!(discovered.token, snapshot.pairing_token);
-        let (mut socket, _response) = connect(format!("ws://127.0.0.1:{COMPANION_PORT}/companion"))
+        let (mut socket, _response) = connect(format!("ws://127.0.0.1:{companion_port}/companion"))
             .expect("connect companion client");
         socket
             .send(Message::Text(

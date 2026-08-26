@@ -30,6 +30,7 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
   private static let eventChannel = "kotoba_beacon/processing_events"
 
   private var eventSink: FlutterEventSink?
+  private var bonjourDiscovery: BonjourCompanionDiscovery?
   private var speechProcessor: SpeechAnalyzerProcessor?
   private var translationSession: TranslationSession?
 
@@ -62,6 +63,8 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
 
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
+    case "discoverCompanion":
+      discoverCompanion(call.arguments, result: result)
     case "capabilities":
       reportCapabilities(result: result)
     case "prepareAsr":
@@ -113,6 +116,19 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func discoverCompanion(_ arguments: Any?, result: @escaping FlutterResult) {
+    let values = arguments as? [String: Any]
+    let requestedMilliseconds = values?["timeoutMillis"] as? Int ?? 3_000
+    let timeout = Double(min(max(requestedMilliseconds, 500), 10_000)) / 1_000
+    bonjourDiscovery?.cancel()
+    let discovery = BonjourCompanionDiscovery(timeout: timeout) { [weak self] value in
+      self?.bonjourDiscovery = nil
+      result(value)
+    }
+    bonjourDiscovery = discovery
+    discovery.start()
   }
 
   private func reportCapabilities(result: @escaping FlutterResult) {
@@ -241,6 +257,96 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
 
   private func emitError(stage: String, message: String) {
     eventSink?(["type": "error", "stage": stage, "message": message])
+  }
+}
+
+@MainActor
+private final class BonjourCompanionDiscovery: NSObject,
+  NetServiceBrowserDelegate, NetServiceDelegate
+{
+  private static let serviceType = "_kotobabeacon._tcp."
+
+  private let timeout: TimeInterval
+  private let completion: (Any?) -> Void
+  private let browser = NetServiceBrowser()
+  private var service: NetService?
+  private var timeoutTimer: Timer?
+  private var completed = false
+
+  init(timeout: TimeInterval, completion: @escaping (Any?) -> Void) {
+    self.timeout = timeout
+    self.completion = completion
+  }
+
+  func start() {
+    browser.delegate = self
+    timeoutTimer = Timer.scheduledTimer(
+      withTimeInterval: timeout,
+      repeats: false
+    ) { [weak self] _ in
+      Task { @MainActor in
+        self?.finish(
+          FlutterError(
+            code: "discovery_timeout",
+            message: "Kotoba Beacon Native was not found on the local network",
+            details: nil
+          )
+        )
+      }
+    }
+    browser.searchForServices(ofType: Self.serviceType, inDomain: "local.")
+  }
+
+  func cancel() {
+    guard !completed else { return }
+    completed = true
+    cleanup()
+  }
+
+  func netServiceBrowser(
+    _ browser: NetServiceBrowser,
+    didFind service: NetService,
+    moreComing: Bool
+  ) {
+    guard self.service == nil else { return }
+    self.service = service
+    service.delegate = self
+    service.resolve(withTimeout: timeout)
+  }
+
+  func netServiceDidResolveAddress(_ sender: NetService) {
+    guard let data = sender.txtRecordData() else { return }
+    let record = NetService.dictionary(fromTXTRecord: data)
+    guard
+      let endpointData = record["endpoint"],
+      let tokenData = record["token"],
+      let endpoint = String(data: endpointData, encoding: .utf8),
+      let token = String(data: tokenData, encoding: .utf8)
+    else { return }
+    finish(["endpoint": endpoint, "token": token])
+  }
+
+  func netService(
+    _ sender: NetService,
+    didNotResolve errorDict: [String: NSNumber]
+  ) {
+    service = nil
+  }
+
+  private func finish(_ value: Any?) {
+    guard !completed else { return }
+    completed = true
+    cleanup()
+    completion(value)
+  }
+
+  private func cleanup() {
+    timeoutTimer?.invalidate()
+    timeoutTimer = nil
+    service?.stop()
+    service = nil
+    browser.stop()
+    browser.delegate = nil
   }
 }
 
