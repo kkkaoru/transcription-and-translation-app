@@ -114,6 +114,21 @@ enum FocusField {
     PreviewTranslation,
 }
 
+fn adjacent_app_tab(tab: AppTab, reverse: bool) -> AppTab {
+    match (tab, reverse) {
+        (AppTab::Live, false) => AppTab::Style,
+        (AppTab::Style, false) => AppTab::Dictionary,
+        (AppTab::Dictionary, false) => AppTab::Output,
+        (AppTab::Output, false) => AppTab::Settings,
+        (AppTab::Settings, false) => AppTab::Live,
+        (AppTab::Live, true) => AppTab::Settings,
+        (AppTab::Style, true) => AppTab::Live,
+        (AppTab::Dictionary, true) => AppTab::Style,
+        (AppTab::Output, true) => AppTab::Dictionary,
+        (AppTab::Settings, true) => AppTab::Output,
+    }
+}
+
 fn adjacent_text_field(field: FocusField, reverse: bool) -> Option<FocusField> {
     match (field, reverse) {
         (FocusField::Query | FocusField::Font, true)
@@ -590,6 +605,13 @@ impl MainView {
     }
 
     fn apply_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "tab" && event.keystroke.modifiers.control {
+            self.select_tab(adjacent_app_tab(self.tab, event.keystroke.modifiers.shift));
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+
         let accepts_input = match self.tab {
             AppTab::Dictionary => matches!(
                 self.focused_field,
@@ -1371,7 +1393,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod focus_tests {
-    use super::{adjacent_text_field, FocusField};
+    use super::{adjacent_app_tab, adjacent_text_field, AppTab, FocusField};
+
+    #[test]
+    fn control_tab_cycles_all_app_tabs_in_both_directions() {
+        assert_eq!(adjacent_app_tab(AppTab::Live, false), AppTab::Style);
+        assert_eq!(adjacent_app_tab(AppTab::Settings, false), AppTab::Live);
+        assert_eq!(adjacent_app_tab(AppTab::Live, true), AppTab::Settings);
+        assert_eq!(adjacent_app_tab(AppTab::Settings, true), AppTab::Output);
+    }
 
     #[test]
     fn tab_navigation_leaves_custom_text_groups_at_each_edge() {
