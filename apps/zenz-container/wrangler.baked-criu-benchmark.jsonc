@@ -1,0 +1,100 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kotoba-beacon-zenz-baked-criu-benchmark",
+  "main": "src/baked-criu-benchmark.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "containers": [
+    {
+      "name": "zenz-normal-cold-benchmark",
+      "class_name": "NormalBenchmarkContainer",
+      "image": "./Dockerfile",
+      "image_vars": {
+        "MODEL": "xsmall",
+        "N5_LM": "off"
+      },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-normal-nommap-cold-benchmark",
+      "class_name": "NormalNommapBenchmarkContainer",
+      "image": "./Dockerfile",
+      "image_vars": {
+        "MODEL": "xsmall",
+        "N5_LM": "off"
+      },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "zenz-baked-criu-benchmark",
+      "class_name": "BakedCriuBenchmarkContainer",
+      "image": "./Dockerfile",
+      "image_vars": {
+        "MODEL": "xsmall",
+        "N5_LM": "criu-baked"
+      },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NORMAL_BENCHMARK",
+        "class_name": "NormalBenchmarkContainer"
+      },
+      {
+        "name": "NORMAL_NOMMAP_BENCHMARK",
+        "class_name": "NormalNommapBenchmarkContainer"
+      },
+      {
+        "name": "BAKED_CRIU_BENCHMARK",
+        "class_name": "BakedCriuBenchmarkContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-baked-criu-benchmark",
+      "new_sqlite_classes": ["NormalBenchmarkContainer", "BakedCriuBenchmarkContainer"]
+    },
+    {
+      "tag": "v2-baked-criu-nommap-benchmark",
+      "new_sqlite_classes": ["BakedCriuNommapBenchmarkContainer"]
+    },
+    {
+      "tag": "v3-normal-nommap-benchmark",
+      "new_sqlite_classes": ["NormalNommapBenchmarkContainer"]
+    },
+    {
+      "tag": "v4-delete-baked-criu-nommap-benchmark",
+      "deleted_classes": ["BakedCriuNommapBenchmarkContainer"]
+    },
+    {
+      "tag": "v5-standard-criu-reconsideration",
+      "new_sqlite_classes": [
+        "StandardNormalBenchmarkContainer",
+        "StandardNormalNommapBenchmarkContainer",
+        "StandardBakedCriuBenchmarkContainer"
+      ]
+    },
+    {
+      "tag": "v6-delete-standard-criu-reconsideration",
+      "deleted_classes": [
+        "StandardNormalBenchmarkContainer",
+        "StandardNormalNommapBenchmarkContainer",
+        "StandardBakedCriuBenchmarkContainer"
+      ]
+    }
+  ]
+}

@@ -92,6 +92,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@cloudflare/containers": "^0.0.24",
+        "@cloudflare/containers-outbound": "npm:@cloudflare/containers@0.3.7",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20260702.1",
@@ -265,6 +266,8 @@
     "@caption-bridge/zenz-container": ["@caption-bridge/zenz-container@workspace:apps/zenz-container"],
 
     "@cloudflare/containers": ["@cloudflare/containers@0.0.24", "", {}, "sha512-M9XMcaHSd2i2ijdFdc/1lq32loKe0fu3N3lSgH+BdzyWfLQDOoDVhYo42Agkagg6G4CJS8w9kzYhDjh3NPTrhw=="],
+
+    "@cloudflare/containers-outbound": ["@cloudflare/containers@0.3.7", "", {}, "sha512-DM9dm3FnIBSyiSJ1FLavKwl/lk3oAmTaynCzZQ9pZR0ncRPquSxkxd8Nu2MFILxmDDsPkxKsSNEh9mHHMty4Fw=="],
 
     "@cloudflare/kv-asset-handler": ["@cloudflare/kv-asset-handler@0.5.0", "", {}, "sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg=="],
 

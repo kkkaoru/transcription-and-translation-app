@@ -1,0 +1,46 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kotoba-beacon-zenz-criu-cache-poc",
+  "main": "src/criu-cache-poc.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "r2_buckets": [
+    {
+      "binding": "CRIU_CACHE_CHECKPOINTS",
+      "bucket_name": "kotoba-beacon-zenz-criu-poc"
+    }
+  ],
+  "containers": [
+    {
+      "name": "zenz-criu-cache-diagnostic",
+      "class_name": "CriuCacheDiagnosticContainer",
+      "image": "./Dockerfile",
+      "image_vars": {
+        "MODEL": "xsmall",
+        "N5_LM": "diagnostic-llama"
+      },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CRIU_CACHE_DIAGNOSTIC",
+        "class_name": "CriuCacheDiagnosticContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-criu-cache-diagnostic",
+      "new_sqlite_classes": ["CriuCacheDiagnosticContainer"]
+    }
+  ]
+}

@@ -8,7 +8,8 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@cloudflare/containers": "^0.0.24"
+    "@cloudflare/containers": "^0.0.24",
+    "@cloudflare/containers-outbound": "npm:@cloudflare/containers@0.3.7"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",

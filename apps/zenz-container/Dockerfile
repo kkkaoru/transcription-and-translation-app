@@ -24,6 +24,11 @@ RUN cmake -S /src -B /build \
     cp /lib64/ld-linux-x86-64.so.2 /runtime/lib64/ && \
     chmod 1777 /runtime/tmp
 
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS criu-bootstrap-builder
+COPY criu-bootstrap/Cargo.toml criu-bootstrap/Cargo.lock /src/
+COPY criu-bootstrap/src /src/src
+RUN cargo build --locked --release --manifest-path /src/Cargo.toml
+
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS n5-builder
 RUN git clone --filter=blob:none https://github.com/kkkaoru/transcription-and-translation-app.git /repo && \
     cd /repo && git checkout 88fd4424dde90b28b517e4dfb93710eeaefaa7fe && \
@@ -70,5 +75,83 @@ COPY --from=n5-builder /repo/apps/zenz-container/n5-server/target/release/zenz-c
 COPY --from=n5-model /models/input_n5_lm_v1 /models/input_n5_lm_v1
 EXPOSE 8081
 ENTRYPOINT ["/usr/local/bin/zenz-entrypoint", "/usr/local/bin/llama-server"]
+
+# Isolated capability probes only. Production profiles never select these stages.
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime-snapshot-diagnostic
+COPY --from=llama-builder /build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=gguf-model /models/model.gguf /models/model.gguf
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/llama-server"]
+
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS criu-builder
+ARG CRIU_VERSION=4.2.1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl libbsd-dev libcap-dev libnet1-dev \
+      libnl-3-dev libnl-route-3-dev libprotobuf-c-dev libprotobuf-dev \
+      patch pkg-config protobuf-c-compiler protobuf-compiler python3-protobuf uuid-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY criu-poc/pr-set-mm-order.patch /tmp/pr-set-mm-order.patch
+RUN curl -fL --retry 3 -o /tmp/criu.tar.gz \
+      "https://github.com/checkpoint-restore/criu/archive/refs/tags/v${CRIU_VERSION}.tar.gz" && \
+    echo 'feffdf4638125ebb12d2434754f80a1d7bbba85a3e6bee98c216f88fb99a5d96  /tmp/criu.tar.gz' | sha256sum -c - && \
+    mkdir /src && tar -xzf /tmp/criu.tar.gz --strip-components=1 -C /src && \
+    patch -d /src -p1 < /tmp/pr-set-mm-order.patch
+RUN make -C /src -j1
+RUN make -C /src DESTDIR=/out PREFIX=/usr/local install-criu
+
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime-diagnostic
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      iproute2 libbsd0 libcap2 libcap2-bin libgcc-s1 libnet1 libnl-3-200 \
+      libnl-route-3-200 libprotobuf-c1 libstdc++6 libuuid1 nftables procps \
+      python3-protobuf && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=criu-builder /out /
+ENTRYPOINT ["/bin/sleep", "infinity"]
+
+FROM runtime-diagnostic AS runtime-diagnostic-llama
+COPY --from=llama-builder /build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=gguf-model /models/model.gguf /models/model.gguf
+EXPOSE 8080
+
+FROM runtime-diagnostic AS criu-runtime-files
+RUN mkdir -p \
+      /minimal/lib/x86_64-linux-gnu \
+      /minimal/usr/bin \
+      /minimal/usr/lib/x86_64-linux-gnu && \
+    cp /usr/bin/setarch /minimal/usr/bin/setarch && \
+    cp -L \
+      /lib/x86_64-linux-gnu/libbsd.so.0 \
+      /lib/x86_64-linux-gnu/libmd.so.0 \
+      /lib/x86_64-linux-gnu/libnet.so.1 \
+      /lib/x86_64-linux-gnu/libnl-3.so.200 \
+      /lib/x86_64-linux-gnu/libprotobuf-c.so.1 \
+      /lib/x86_64-linux-gnu/libuuid.so.1 \
+      /minimal/lib/x86_64-linux-gnu/ && \
+    cp -L /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+      /minimal/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 && \
+    cp -L /lib/x86_64-linux-gnu/libc.so.6 \
+      /minimal/usr/lib/x86_64-linux-gnu/libc.so.6 && \
+    cp -L /lib/x86_64-linux-gnu/libgcc_s.so.1 \
+      /minimal/usr/lib/x86_64-linux-gnu/libgcc_s.so.1 && \
+    cp -L /lib/x86_64-linux-gnu/libm.so.6 \
+      /minimal/usr/lib/x86_64-linux-gnu/libm.so.6 && \
+    cp -L /lib/x86_64-linux-gnu/libstdc++.so.6 \
+      /minimal/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.30
+
+FROM runtime-diagnostic AS criu-checkpoint
+COPY criu-poc/llama-xsmall-amd64.tar.gz /tmp/llama-checkpoint.tar.gz
+RUN echo '03b99a129b5e64ecf61b78c99bfab081092c120db411141ecdb7d797d9aa9537  /tmp/llama-checkpoint.tar.gz' | sha256sum -c - && \
+    mkdir -p /checkpoint && \
+    tar -xzf /tmp/llama-checkpoint.tar.gz -C /checkpoint
+
+FROM runtime-common AS runtime-criu-base
+USER 0:0
+COPY --from=criu-builder /out/usr/local/sbin/criu /usr/local/sbin/criu
+COPY --from=criu-runtime-files /minimal /
+COPY --from=criu-bootstrap-builder /src/target/release/criu-bootstrap /usr/local/bin/criu-bootstrap
+ENTRYPOINT ["/usr/local/bin/criu-bootstrap"]
+
+FROM runtime-criu-base AS runtime-criu-baked
+COPY --from=criu-checkpoint /checkpoint /opt/criu-checkpoint
 
 FROM runtime-${N5_LM} AS final

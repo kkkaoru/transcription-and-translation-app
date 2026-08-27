@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kotoba-beacon-zenz-snapshot-poc",
+  "main": "src/snapshot-poc.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "containers": [
+    {
+      "name": "zenz-snapshot-diagnostic",
+      "class_name": "SnapshotDiagnosticContainer",
+      "image": "./Dockerfile",
+      "image_vars": {
+        "MODEL": "xsmall",
+        "N5_LM": "snapshot-diagnostic"
+      },
+      "instance_type": "basic",
+      "max_instances": 1,
+      "constraints": { "regions": ["APAC"] }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SNAPSHOT_DIAGNOSTIC",
+        "class_name": "SnapshotDiagnosticContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-snapshot-diagnostic",
+      "new_sqlite_classes": ["SnapshotDiagnosticContainer"]
+    }
+  ]
+}

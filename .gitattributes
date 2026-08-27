@@ -4,3 +4,4 @@ apps/mobile/rust/vendor/** linguist-vendored -whitespace
 apps/mobile/lib/src/rust/** linguist-generated -whitespace
 apps/mobile/assets/**/*.md -whitespace
 apps/mobile/assets/**/*LICENSE* -whitespace
+apps/zenz-container/criu-poc/*.patch -whitespace
