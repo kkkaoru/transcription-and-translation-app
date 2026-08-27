@@ -1,7 +1,7 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "kotoba-beacon-zenz-baked-criu-benchmark",
-  "main": "src/baked-criu-benchmark.ts",
+  "main": "./baked-criu-benchmark.ts",
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
@@ -14,6 +14,7 @@
       "name": "zenz-normal-cold-benchmark",
       "class_name": "NormalBenchmarkContainer",
       "image": "./Dockerfile",
+      "image_build_context": "../..",
       "image_vars": {
         "MODEL": "xsmall",
         "N5_LM": "off"
@@ -26,6 +27,7 @@
       "name": "zenz-normal-nommap-cold-benchmark",
       "class_name": "NormalNommapBenchmarkContainer",
       "image": "./Dockerfile",
+      "image_build_context": "../..",
       "image_vars": {
         "MODEL": "xsmall",
         "N5_LM": "off"
@@ -38,6 +40,7 @@
       "name": "zenz-baked-criu-benchmark",
       "class_name": "BakedCriuBenchmarkContainer",
       "image": "./Dockerfile",
+      "image_build_context": "../..",
       "image_vars": {
         "MODEL": "xsmall",
         "N5_LM": "criu-baked"

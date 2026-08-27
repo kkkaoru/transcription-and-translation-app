@@ -19,14 +19,15 @@ checkpointをContainer imageへ展開済みで同梱し、専用Rust bootstrap�
 
 | 目的 | 実装 |
 | --- | --- |
-| Cloudflare CRIU capability、R2 restore、dump失敗理由 | `src/criu-poc.ts`, `src/criu-poc.test.ts`, `wrangler.criu.jsonc` |
-| Workers Cache → R2 fallback付きcheckpoint delivery | `src/criu-cache-poc.ts`, `src/criu-cache-poc.test.ts`, `wrangler.criu-cache.jsonc` |
-| image-baked CRIUと通常起動のcold benchmark | `src/baked-criu-benchmark.ts`, `src/baked-criu-benchmark.test.ts`, `wrangler.baked-criu-benchmark.jsonc` |
+| Cloudflare CRIU capability、R2 restore、dump失敗理由 | `src/criu-poc/criu-poc.ts`, `src/criu-poc/criu-poc.test.ts`, `src/criu-poc/wrangler.criu.jsonc` |
+| Workers Cache → R2 fallback付きcheckpoint delivery | `src/criu-poc/criu-cache-poc.ts`, `src/criu-poc/criu-cache-poc.test.ts`, `src/criu-poc/wrangler.criu-cache.jsonc` |
+| image-baked CRIUと通常起動のcold benchmark | `src/criu-poc/baked-criu-benchmark.ts`, `src/criu-poc/baked-criu-benchmark.test.ts`, `src/criu-poc/wrangler.baked-criu-benchmark.jsonc` |
 | Cloudflare native snapshotの作成・復元・cold control比較 | `src/snapshot-poc.ts`, `src/snapshot-poc.test.ts`, `wrangler.snapshot.jsonc` |
-| 直接restore用の最小bootstrap | `criu-bootstrap/` |
-| Cloudflare向けCRIU 4.2.1互換patch | `criu-poc/pr-set-mm-order.patch` |
-| 再現用xsmall checkpoint fixture | `criu-poc/llama-xsmall-amd64.tar.gz` |
-| 診断用image stage | `Dockerfile`の`runtime-snapshot-diagnostic`、`runtime-diagnostic*`、`runtime-criu-baked` |
+| 直接restore用の最小bootstrap | `src/criu-poc/criu-bootstrap/` |
+| Cloudflare向けCRIU 4.2.1互換patch | `src/criu-poc/pr-set-mm-order.patch` |
+| 再現用xsmall checkpoint fixture | `src/criu-poc/llama-xsmall-amd64.tar.gz` |
+| CRIU診断用image stage | `src/criu-poc/Dockerfile`の`runtime-diagnostic*`、`runtime-criu-baked` |
+| native snapshot診断用image stage | `Dockerfile`の`runtime-snapshot-diagnostic` |
 
 診断Workerはすべてproduction class・binding・routingから分離している。`max_instances: 1`、`sleepAfter: 30s`、`enableInternet: false`を使用し、`/run`と`/last`はWrangler secretで認証する。secret値はrepositoryへ保存しない。
 
@@ -37,13 +38,13 @@ checkpointをContainer imageへ展開済みで同梱し、専用Rust bootstrap�
 - CRIU: 4.2.1
 - source SHA-256: `feffdf4638125ebb12d2434754f80a1d7bbba85a3e6bee98c216f88fb99a5d96`
 - Cloudflareへdeployしたpatched binary SHA-256: `371a164ecbf67c3d00f5f65441ca77ddc5435b591447fb2b0af6b302b9c71ad6`
-- patch: `criu-poc/pr-set-mm-order.patch`
+- patch: `src/criu-poc/pr-set-mm-order.patch`
 
 Cloudflare Firecracker環境ではatomic `PR_SET_MM_MAP`が失敗し、legacy `PR_SET_MM` fallbackも元の順序では範囲検証に失敗した。patchはcode/data/argument/environment/BRKの上限を先に設定してから下限を設定する。
 
 ### 3.2 repository fixture
 
-- path: `criu-poc/llama-xsmall-amd64.tar.gz`
+- path: `src/criu-poc/llama-xsmall-amd64.tar.gz`
 - bytes: `1,061,548`
 - SHA-256: `03b99a129b5e64ecf61b78c99bfab081092c120db411141ecdb7d797d9aa9537`
 - server: warmed xsmall `llama-server`
@@ -279,12 +280,12 @@ bun install --frozen-lockfile
 bun run typecheck
 bun run test
 bunx biome check src \
-  wrangler.criu.jsonc \
-  wrangler.criu-cache.jsonc \
-  wrangler.baked-criu-benchmark.jsonc \
+  src/criu-poc/wrangler.criu.jsonc \
+  src/criu-poc/wrangler.criu-cache.jsonc \
+  src/criu-poc/wrangler.baked-criu-benchmark.jsonc \
   wrangler.snapshot.jsonc
 
-cd criu-bootstrap
+cd src/criu-poc/criu-bootstrap
 cargo fmt --check
 cargo check --locked
 cargo clippy --locked -- -D warnings
@@ -298,7 +299,7 @@ R2を耐久ソースとして使うprobeでは、repository fixtureと同じobje
 ```bash
 bunx wrangler r2 object put \
   kotoba-beacon-zenz-criu-poc/checkpoints/llama-xsmall-amd64-criu-4.2.1.tar.gz \
-  --file criu-poc/llama-xsmall-amd64.tar.gz \
+  --file src/criu-poc/llama-xsmall-amd64.tar.gz \
   --content-type application/gzip \
   --remote
 ```
@@ -308,15 +309,15 @@ bunx wrangler r2 object put \
 secretは対話入力または権限を制限した一時ファイルから設定し、shell historyやrepositoryへ残さない。
 
 ```bash
-bunx wrangler secret put CRIU_DIAGNOSTIC_TOKEN --config wrangler.criu.jsonc
-bunx wrangler deploy --config wrangler.criu.jsonc
+bunx wrangler secret put CRIU_DIAGNOSTIC_TOKEN --config src/criu-poc/wrangler.criu.jsonc
+bunx wrangler deploy --config src/criu-poc/wrangler.criu.jsonc
 
-bunx wrangler secret put CRIU_CACHE_DIAGNOSTIC_TOKEN --config wrangler.criu-cache.jsonc
-bunx wrangler deploy --config wrangler.criu-cache.jsonc
+bunx wrangler secret put CRIU_CACHE_DIAGNOSTIC_TOKEN --config src/criu-poc/wrangler.criu-cache.jsonc
+bunx wrangler deploy --config src/criu-poc/wrangler.criu-cache.jsonc
 
 bunx wrangler secret put BAKED_CRIU_BENCHMARK_TOKEN \
-  --config wrangler.baked-criu-benchmark.jsonc
-bunx wrangler deploy --config wrangler.baked-criu-benchmark.jsonc
+  --config src/criu-poc/wrangler.baked-criu-benchmark.jsonc
+bunx wrangler deploy --config src/criu-poc/wrangler.baked-criu-benchmark.jsonc
 
 bunx wrangler secret put SNAPSHOT_DIAGNOSTIC_TOKEN --config wrangler.snapshot.jsonc
 bunx wrangler deploy --config wrangler.snapshot.jsonc

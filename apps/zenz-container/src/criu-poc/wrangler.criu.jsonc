@@ -1,7 +1,7 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "kotoba-beacon-zenz-criu-poc",
-  "main": "src/criu-poc.ts",
+  "main": "./criu-poc.ts",
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
@@ -20,6 +20,7 @@
       "name": "zenz-criu-diagnostic",
       "class_name": "CriuDiagnosticContainer",
       "image": "./Dockerfile",
+      "image_build_context": "../..",
       "image_vars": {
         "MODEL": "xsmall",
         "N5_LM": "diagnostic-llama"

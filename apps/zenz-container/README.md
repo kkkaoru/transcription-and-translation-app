@@ -7,6 +7,8 @@ The Container Worker has no public `workers.dev` route.
 The complete CRIU, Workers Cache, native snapshot, and future snapshot
 acceptance report is in
 [`docs/cloudflare-container-checkpoint-evaluation.md`](docs/cloudflare-container-checkpoint-evaluation.md).
+All CRIU-specific source, configuration, image, bootstrap, patch, and fixture
+files are isolated under [`src/criu-poc/`](src/criu-poc/).
 
 ## Profiles and optimized images
 
@@ -171,7 +173,7 @@ Container snapshot prerequisites or enables the feature for the account.
 
 ### Isolated CRIU capability probe
 
-`wrangler.criu.jsonc` defines a separate workers.dev-only Worker, Durable Object
+`src/criu-poc/wrangler.criu.jsonc` defines a separate workers.dev-only Worker, Durable Object
 class, R2 bucket, and `basic` Container image. It does not change or route
 traffic to any production Container class. The image builds the security-fixed
 CRIU 4.2.1 source release after verifying its SHA-256 and includes only the
@@ -189,10 +191,10 @@ Create the isolated bucket once, upload the pinned fixture, and run the probe:
 bunx wrangler r2 bucket create kotoba-beacon-zenz-criu-poc
 bunx wrangler r2 object put \
   kotoba-beacon-zenz-criu-poc/checkpoints/llama-xsmall-amd64-criu-4.2.1.tar.gz \
-  --file criu-poc/llama-xsmall-amd64.tar.gz \
+  --file src/criu-poc/llama-xsmall-amd64.tar.gz \
   --content-type application/gzip --remote
-bunx wrangler secret put CRIU_DIAGNOSTIC_TOKEN --config wrangler.criu.jsonc
-bunx wrangler deploy --config wrangler.criu.jsonc
+bunx wrangler secret put CRIU_DIAGNOSTIC_TOKEN --config src/criu-poc/wrangler.criu.jsonc
+bunx wrangler deploy --config src/criu-poc/wrangler.criu.jsonc
 curl -fsS -X POST \
   -H "Authorization: Bearer $CRIU_DIAGNOSTIC_TOKEN" \
   https://kotoba-beacon-zenz-criu-poc.<account-subdomain>.workers.dev/run
@@ -213,7 +215,7 @@ The 2026-08-27 Cloudflare probe produced two distinct results:
 The llama checkpoint is generated in a true x86_64 QEMU VM from the exact
 binary, model, library, arguments, and CRIU version used by the diagnostic
 image. Both dump and restore use `setarch x86_64 -R` so the PIE memory layout is
-stable. The diagnostic CRIU applies `criu-poc/pr-set-mm-order.patch` to make its
+stable. The diagnostic CRIU applies `src/criu-poc/pr-set-mm-order.patch` to make its
 legacy `PR_SET_MM` fallback set upper bounds before lower bounds when the
 Cloudflare kernel rejects atomic `PR_SET_MM_MAP`.
 
@@ -242,7 +244,7 @@ remains in the diagnostic Durable Object and is available through authenticated
 
 ### CRIU archive delivery through Workers Cache
 
-`wrangler.criu-cache.jsonc` tests the complete delivery path used by the
+`src/criu-poc/wrangler.criu-cache.jsonc` tests the complete delivery path used by the
 Cloudflare Tech World design rather than caching only snapshot metadata:
 
 ```text
