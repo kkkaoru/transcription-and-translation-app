@@ -7,7 +7,14 @@ vi.mock("@cloudflare/containers", () => ({
   switchPort: vi.fn((request: Request) => request),
 }));
 
-import { fetchContainerBeforeDeadline, parseContainerRoute, warmupTargets } from "./index";
+import {
+  BASIC_XSMALL_ENTRYPOINT,
+  fetchContainerBeforeDeadline,
+  llamaEntrypoint,
+  parseContainerRoute,
+  warmupTargets,
+  withoutMemoryMapping,
+} from "./index";
 
 describe("Zenz Container routing", () => {
   it("parses every profile dimension and preserves the upstream path", () => {
@@ -34,6 +41,48 @@ describe("Zenz Container routing", () => {
     });
     expect(parseContainerRoute("/basic/small")).toBeUndefined();
     expect(parseContainerRoute("/premium/small/n5-on")).toBeUndefined();
+  });
+
+  it("defers llama model warm-up until a session explicitly requests it", () => {
+    expect(
+      llamaEntrypoint({
+        contextSize: 256,
+        threads: 1,
+        batchSize: 256,
+        supervised: false,
+      }),
+    ).toStrictEqual([
+      "/usr/local/bin/llama-server",
+      "--model",
+      "/models/model.gguf",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8080",
+      "--ctx-size",
+      "256",
+      "--batch-size",
+      "256",
+      "--ubatch-size",
+      "256",
+      "--parallel",
+      "1",
+      "--threads",
+      "1",
+      "--threads-batch",
+      "1",
+      "--no-webui",
+      "--no-warmup",
+    ]);
+  });
+
+  it("loads the measured xsmall model into anonymous memory", () => {
+    expect(withoutMemoryMapping(["/usr/local/bin/llama-server", "--no-warmup"])).toStrictEqual([
+      "/usr/local/bin/llama-server",
+      "--no-warmup",
+      "--no-mmap",
+    ]);
+    expect(BASIC_XSMALL_ENTRYPOINT.slice(-2)).toStrictEqual(["--no-warmup", "--no-mmap"]);
   });
 
   it("preloads GGUF alone when N5 is disabled", () => {

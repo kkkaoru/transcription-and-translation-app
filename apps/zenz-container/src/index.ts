@@ -30,7 +30,7 @@ export interface ParsedContainerRoute {
   upstreamPath: string;
 }
 
-interface LlamaRuntimeOptions {
+export interface LlamaRuntimeOptions {
   contextSize: number;
   threads: number;
   batchSize: number;
@@ -62,7 +62,18 @@ interface WarmContainerOptions {
 type ComputeTier = "basic" | "standard";
 type ModelSize = "small" | "xsmall";
 type N5Mode = "n5-off" | "n5-on";
+type ContainerSelector = (env: Env, key: string) => ContainerStub;
 
+const CONTAINER_SELECTORS: ReadonlyMap<string, ContainerSelector> = new Map([
+  ["basic:small:n5-off", (env, key) => getContainer(env.ZENZ_BASIC_SMALL_N5_OFF, key)],
+  ["basic:small:n5-on", (env, key) => getContainer(env.ZENZ_BASIC_SMALL_N5_ON, key)],
+  ["basic:xsmall:n5-off", (env, key) => getContainer(env.ZENZ_BASIC_XSMALL_N5_OFF, key)],
+  ["basic:xsmall:n5-on", (env, key) => getContainer(env.ZENZ_BASIC_XSMALL_N5_ON, key)],
+  ["standard:small:n5-off", (env, key) => getContainer(env.ZENZ_STANDARD_SMALL_N5_OFF, key)],
+  ["standard:small:n5-on", (env, key) => getContainer(env.ZENZ_STANDARD_SMALL_N5_ON, key)],
+  ["standard:xsmall:n5-off", (env, key) => getContainer(env.ZENZ_STANDARD_XSMALL_N5_OFF, key)],
+  ["standard:xsmall:n5-on", (env, key) => getContainer(env.ZENZ_STANDARD_XSMALL_N5_ON, key)],
+]);
 const HEALTH_PATH = "/health";
 const RELEASE_PATH = "/release";
 const WARMUP_PATH = "/warmup";
@@ -86,7 +97,11 @@ const MODEL_WARMUP_BODY = JSON.stringify({
   cache_prompt: true,
 });
 const N5_WARMUP_BODY = JSON.stringify({ text: "テスト" });
-const llamaEntrypoint = (options: LlamaRuntimeOptions): string[] => [
+export const withoutMemoryMapping = (entrypoint: readonly string[]): string[] => [
+  ...entrypoint,
+  "--no-mmap",
+];
+export const llamaEntrypoint = (options: LlamaRuntimeOptions): string[] => [
   ...(options.supervised ? [ZENZ_ENTRYPOINT, LLAMA_SERVER] : [LLAMA_SERVER]),
   "--model",
   MODEL_PATH,
@@ -107,6 +122,9 @@ const llamaEntrypoint = (options: LlamaRuntimeOptions): string[] => [
   "--threads-batch",
   String(options.threads),
   "--no-webui",
+  // The caller opts into one bounded warm-up completion only when a capture
+  // session will use inference; startup does not run llama.cpp's implicit warm-up.
+  "--no-warmup",
 ];
 const STANDARD_ENTRYPOINT: string[] = llamaEntrypoint({
   contextSize: 256,
@@ -132,6 +150,7 @@ const BASIC_N5_ENTRYPOINT: string[] = llamaEntrypoint({
   batchSize: 256,
   supervised: true,
 });
+export const BASIC_XSMALL_ENTRYPOINT: string[] = withoutMemoryMapping(BASIC_ENTRYPOINT);
 
 export abstract class ZenzContainer extends Container {
   defaultPort = DEFAULT_PORT;
@@ -156,7 +175,7 @@ export class ZenzBasicSmallN5OnContainer extends ZenzContainer {
   override requiredPorts = [DEFAULT_PORT, N5_PORT];
 }
 export class ZenzBasicXsmallN5OffContainer extends ZenzContainer {
-  override entrypoint = BASIC_ENTRYPOINT;
+  override entrypoint = BASIC_XSMALL_ENTRYPOINT;
 }
 export class ZenzBasicXsmallN5OnContainer extends ZenzContainer {
   override entrypoint = BASIC_N5_ENTRYPOINT;
@@ -178,23 +197,11 @@ const selectedContainer = (
   tier: ComputeTier,
   model: ModelSize,
   n5Mode: N5Mode,
-): DurableObjectStub<ZenzContainer> => {
+): ContainerStub => {
   const key = `${tier}:${model}:${n5Mode}`;
-  const containers = new Map<string, DurableObjectStub<ZenzContainer>>([
-    ["basic:small:n5-off", getContainer(env.ZENZ_BASIC_SMALL_N5_OFF, key)],
-    ["basic:small:n5-on", getContainer(env.ZENZ_BASIC_SMALL_N5_ON, key)],
-    ["basic:xsmall:n5-off", getContainer(env.ZENZ_BASIC_XSMALL_N5_OFF, key)],
-    ["basic:xsmall:n5-on", getContainer(env.ZENZ_BASIC_XSMALL_N5_ON, key)],
-    ["standard:small:n5-off", getContainer(env.ZENZ_STANDARD_SMALL_N5_OFF, key)],
-    ["standard:small:n5-on", getContainer(env.ZENZ_STANDARD_SMALL_N5_ON, key)],
-    ["standard:xsmall:n5-off", getContainer(env.ZENZ_STANDARD_XSMALL_N5_OFF, key)],
-    ["standard:xsmall:n5-on", getContainer(env.ZENZ_STANDARD_XSMALL_N5_ON, key)],
-  ]);
-  const container = containers.get(key);
-  if (!container) {
-    throw new Error("Container profile is not configured");
-  }
-  return container;
+  const select = CONTAINER_SELECTORS.get(key);
+  if (!select) throw new Error("Container profile is not configured");
+  return select(env, key);
 };
 
 export const parseContainerRoute = (pathname: string): ParsedContainerRoute | undefined => {
