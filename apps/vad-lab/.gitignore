@@ -1,0 +1,6 @@
+dist
+coverage
+.vite
+.wrangler
+public/vad/*
+!public/vad/.gitkeep

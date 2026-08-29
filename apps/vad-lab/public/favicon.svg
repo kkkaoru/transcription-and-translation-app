@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>VAD Lab waveform</title>
+  <rect width="64" height="64" rx="15" fill="#0b1724"/>
+  <path d="M10 35h7l4-15 7 29 7-37 7 29 5-17 4 11h3" fill="none" stroke="#55e6c1" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

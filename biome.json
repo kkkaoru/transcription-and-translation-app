@@ -25,6 +25,7 @@
       "!.claude",
       "!.codex",
       "!apps/azookey-compare/public/ort",
+      "!apps/vad-lab/public/vad",
       "!apps/mobile",
       "!models",
       "!packages/parapper-asr",
