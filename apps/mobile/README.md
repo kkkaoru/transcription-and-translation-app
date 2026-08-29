@@ -36,35 +36,56 @@ Mobile Rust ASR bundles ReazonSpeech K2 v2 under Apache-2.0 and executes its cha
 
 Mobile translation bundles the published `quickmt/quickmt-ja-en` CTranslate2 model under CC BY 4.0. Reproducible mobile builds use vendored `ct2rs` 0.10.0 and `sentencepiece-sys` 0.13.2 sources with narrowly scoped iOS/Android CMake fixes for position-independent static linking, Android ABI/toolchain selection, and removal of unsupported mobile command-line tools/thread affinity. Its `model.bin` SHA-256 is `d11276f68986d951edc1e5b4b634e00f1f9c493eb14519598be975630965eb47`. The runtime uses CPU INT8, one replica, one queued batch, batch size one, and beam size two, matching Desktop Native. Moving translation to Desktop or disconnecting releases the Mobile model and inference workspace.
 
-## Generate Rust bindings
+## Make targets
+
+The Mobile `Makefile` is the command source of truth. Run targets inside
+`apps/mobile`, or use the `mobile-*` forwarding targets from the repository
+root.
 
 ```sh
-flutter_rust_bridge_codegen generate
+# apps/mobile
+make setup
+make generate
+make verify
+make test
+make coverage
+make android
+make ios
+make build
+make clean
+
+# repository root equivalents
+make mobile-setup
+make mobile-generate
+make mobile-check
+make mobile-test
+make mobile-coverage
+make mobile-build-android
+make mobile-build-ios
+make mobile-build
+make mobile-clean
 ```
 
-Generated Dart definitions must not be edited manually.
+`make android` builds only the supported ARM64 release APK. `make ios` builds
+only the unsigned debug iOS Simulator app. `make build` runs both explicitly
+and sequentially. Run `make help` or `make mobile-help` for the complete target
+list. Generated Dart definitions produced by `make generate` must not be edited
+manually.
 
 ## Verify
 
+`make verify` runs Dart formatting checks, Flutter analysis, strict Dart code
+metrics, Rust formatting/Clippy/tests/build, Flutter tests with coverage, and
+the per-file 95% coverage enforcement. Packaging builds remain separate so
+Android and iOS can be selected independently:
+
 ```sh
-cargo fmt --manifest-path rust/Cargo.toml -- --check
-cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path rust/Cargo.toml
-cargo build --manifest-path rust/Cargo.toml
-dart format --output=none --set-exit-if-changed lib test integration_test
-flutter analyze --fatal-infos --fatal-warnings
-dart run dart_code_linter:metrics analyze lib test integration_test \
-  --exclude='lib/src/rust/**' \
-  --maximum-nesting-level=3 \
-  --set-exit-on-violation-level=warning \
-  --fatal-style \
-  --fatal-performance
-flutter test --coverage
-node ../../scripts/verify-mobile-coverage.mjs
-flutter build apk --release
-flutter build ios --simulator --debug --no-codesign
+make verify
+make android # Android ARM64 release only
+make ios     # iOS Simulator debug only
+make build   # both platforms
 ```
 
-Host Flutter tests load `rust/target/debug/librust_lib_kotoba_beacon_companion.dylib`, so run the Cargo build first. Every hand-written Dart source uses strict casts, strict inference, strict raw types, Very Good Analysis, an 80-column formatter, and a maximum control-flow nesting depth of three. Generated Flutter Rust Bridge sources retain their generator-owned analyzer contract. CI enforces at least 95% line coverage for every hand-written file under `lib/`. The suite includes protocol validation, all route handoff boundaries, stale-revision rejection, bounded PCM buffering, mocked platform-channel contracts, and a real loopback WebSocket pipeline through ASR, AzooKey, and translation. CI additionally builds an iOS 26 simulator app on the pinned macOS 26/Xcode 26.6 runner without launching it.
+Host Flutter tests load `rust/target/debug/librust_lib_kotoba_beacon_companion.dylib`; the `test`, `coverage`, and `verify` Make targets build it automatically. Every hand-written Dart source uses strict casts, strict inference, strict raw types, Very Good Analysis, an 80-column formatter, and a maximum control-flow nesting depth of three. Generated Flutter Rust Bridge sources retain their generator-owned analyzer contract. CI enforces at least 95% line coverage for every hand-written file under `lib/`. The suite includes protocol validation, all route handoff boundaries, stale-revision rejection, bounded PCM buffering, mocked platform-channel contracts, and a real loopback WebSocket pipeline through ASR, AzooKey, and translation. CI additionally builds an iOS 26 simulator app on the pinned macOS 26/Xcode 26.6 runner without launching it.
 
 Android release artifacts target ARM64/API 31+ because the shared CTranslate2/Ruy QuickMT runtime is built for modern ARM64 devices. Android provider validation requires an API 31+ device with the ML Kit speech feature available. Advanced mode is intentionally not selected because its current device coverage is narrower. iOS simulator builds require an accepted Xcode license and installed iOS 26 simulator runtime. Provider/model behavior should still be validated on supported physical hardware.
