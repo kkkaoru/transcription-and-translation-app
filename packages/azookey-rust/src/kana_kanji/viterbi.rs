@@ -5,10 +5,11 @@ use super::dictionary::{
 use super::normalization::{
     is_boundary, japanese_counter_starts_at, japanese_numeral_has_unit, numeric_counter_surface,
     numeric_span_starts_with_digit, numeric_surface_prefix, skip_intervening_numeric_unit_noise,
-    to_hiragana, to_katakana,
+    to_hiragana, to_hiragana_cow, to_katakana,
 };
 use super::verifier::{Draft, DraftVerifier, SessionContext, VerificationState};
 use caption_bridge_japanese_text::{contains_kanji, is_kanji};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -1342,22 +1343,61 @@ pub fn convert_with_dictionary(
 ) -> Vec<ConversionCandidate> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return vec![ConversionCandidate {
-            text: trimmed.to_string(),
-            score: NO_SCORE,
-            trailing: None,
-        }];
+        return empty_conversion_candidate(trimmed);
     }
     // Keep a one-to-one copy of the source characters for the unknown-token
-    // path.  Dictionary lookup uses hiragana readings, but writing the
+    // path. Dictionary lookup uses hiragana readings, but writing the
     // normalized reading back to the caption would unexpectedly turn every
     // unknown katakana token into hiragana (for example, "カタカナ" →
-    // "かたかな").  Keeping these vectors aligned also lets mixed text that
+    // "かたかな"). Keeping these vectors aligned also lets mixed text that
     // already contains kanji continue through the converter: existing kanji
     // are preserved while adjacent kana can still be converted.
-    let source_chars = trimmed.chars().collect::<Vec<_>>();
-    let chars = to_hiragana(trimmed).chars().collect::<Vec<_>>();
-    debug_assert_eq!(source_chars.len(), chars.len());
+    match to_hiragana_cow(trimmed) {
+        Cow::Borrowed(_) => {
+            let chars = trimmed.chars().collect::<Vec<_>>();
+            convert_character_reading(trimmed, None, chars, dictionary, options)
+        }
+        Cow::Owned(normalized) => {
+            let source_chars = trimmed.chars().collect::<Vec<_>>();
+            let chars = normalized.chars().collect::<Vec<_>>();
+            debug_assert_eq!(source_chars.len(), chars.len());
+            convert_character_reading(trimmed, Some(source_chars), chars, dictionary, options)
+        }
+    }
+}
+
+/// Convert an already-normalized hiragana reading without rescanning or
+/// allocating a second normalized input buffer.
+///
+/// Callers must provide hiragana, boundaries, or intentionally preserved OOV
+/// characters. Use [`convert_with_dictionary`] for arbitrary or mixed-script
+/// input. Violating this contract cannot cause memory unsafety, but dictionary
+/// matches and unknown-token rendering may be incorrect.
+pub fn convert_hiragana_with_dictionary(
+    input: &str,
+    dictionary: &AzooKeyDictionary,
+    options: ConversionOptions,
+) -> Vec<ConversionCandidate> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return empty_conversion_candidate(trimmed);
+    }
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    convert_character_reading(trimmed, None, chars, dictionary, options)
+}
+
+fn empty_conversion_candidate(input: &str) -> Vec<ConversionCandidate> {
+    vec![ConversionCandidate { text: input.to_string(), score: NO_SCORE, trailing: None }]
+}
+
+fn convert_character_reading(
+    fallback: &str,
+    source_chars: Option<Vec<char>>,
+    chars: Vec<char>,
+    dictionary: &AzooKeyDictionary,
+    options: ConversionOptions,
+) -> Vec<ConversionCandidate> {
+    let source_chars = source_chars.as_deref().unwrap_or(&chars);
     let width = options.n_best.clamp(MIN_BEAM_WIDTH, MAX_BEAM_WIDTH);
     let max_dictionary_word_chars =
         bounded_dictionary_word_chars(options.max_dictionary_word_chars);
@@ -1426,7 +1466,7 @@ pub fn convert_with_dictionary(
                 && unresolved_single_tail_candidate(
                     dictionary,
                     &chars,
-                    &source_chars,
+                    source_chars,
                     &entries,
                     bounded_dictionary_word_chars(options.max_dictionary_word_chars),
                 )
@@ -1434,7 +1474,7 @@ pub fn convert_with_dictionary(
                 push_state(
                     &mut states[chars.len()],
                     PathState {
-                        text: trimmed.to_string(),
+                        text: fallback.to_string(),
                         score: UNKNOWN_SPAN_PENALTY
                             + unknown_span_multi_kanji_segmentation_penalty(
                                 dictionary,
@@ -1558,7 +1598,7 @@ pub fn convert_with_dictionary(
                     text: format!(
                         "{}{}",
                         state.text,
-                        preserve_unknown_surface_with_context(&source_chars, &chars, start)
+                        preserve_unknown_surface_with_context(source_chars, &chars, start)
                     ),
                     // Unknown characters are a penalty. AzooKey dictionary
                     // values are log-probabilities: higher (less negative)
@@ -1711,7 +1751,7 @@ pub fn convert_with_dictionary(
                 if is_particle(chars[start]) && contains_kanji(&entry.surface) {
                     let after_source_kanji = start > 0 && is_kanji(source_chars[start - 1]);
                     let after_converted_content =
-                        preceding_converted_content_word(&state, &source_chars, start);
+                        preceding_converted_content_word(&state, source_chars, start);
                     let short_particle_homophone = is_particle_reading(&entry.reading);
                     if short_particle_homophone && (after_source_kanji || after_converted_content)
                         || (!short_particle_homophone && after_source_kanji)
@@ -1743,7 +1783,7 @@ pub fn convert_with_dictionary(
                 // DEFAULT_CID loanword orthography so genuine loanwords keep
                 // converting while morphology-bearing filler identities stay.
                 if !entry.user_supplied
-                    && prolonged_mark_adjacent_to_span(&source_chars, &chars, start, end)
+                    && prolonged_mark_adjacent_to_span(source_chars, &chars, start, end)
                     && !entry.surface.chars().any(|character| is_katakana(&character))
                     && entry.lcid == DEFAULT_CID
                     && entry.rcid == DEFAULT_CID
@@ -1955,7 +1995,7 @@ pub fn convert_with_dictionary(
     results.sort_by(|left, right| right.score.total_cmp(&left.score));
     if results.is_empty() {
         results.push(ConversionCandidate {
-            text: trimmed.to_string(),
+            text: fallback.to_string(),
             score: NO_SCORE,
             trailing: None,
         });
@@ -4881,10 +4921,11 @@ fn same_path_context(left: &PathState, right: &PathState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_lattice, convert_kana_to_kanji, convert_kana_to_kanji_with_paths,
-        convert_with_dictionary, convert_with_verifier, convert_with_verifier_with_limit,
-        ConstrainedSearchRequest, ConversionOptions, ConversionRequest, EdgeOrigin, UnknownPolicy,
-        Utf8BytePrefixConstraint, VerifierConversionOptions, VerifierPolicy,
+        build_lattice, convert_hiragana_with_dictionary, convert_kana_to_kanji,
+        convert_kana_to_kanji_with_paths, convert_with_dictionary, convert_with_verifier,
+        convert_with_verifier_with_limit, ConstrainedSearchRequest, ConversionOptions,
+        ConversionRequest, EdgeOrigin, UnknownPolicy, Utf8BytePrefixConstraint,
+        VerifierConversionOptions, VerifierPolicy,
     };
     use crate::dictionary::test_system_dictionary_path;
     use crate::{
@@ -5061,6 +5102,24 @@ mod tests {
         // This assertion holds in both modes, verifying the convenience API
         // end-to-end rather than only the built-in fallback.
         assert_eq!(convert_kana_to_kanji("きょうははいしんです"), "今日は配信です");
+    }
+
+    #[test]
+    fn normalized_hiragana_api_matches_the_general_conversion_path() {
+        let dictionary = AzooKeyDictionary::default();
+        let normalized = convert_hiragana_with_dictionary(
+            "きょうははいしんです",
+            &dictionary,
+            ConversionOptions::default(),
+        );
+        let general = convert_with_dictionary(
+            "きょうははいしんです",
+            &dictionary,
+            ConversionOptions::default(),
+        );
+
+        assert_eq!(normalized[0].text, "今日は配信です");
+        assert_eq!(general[0].text, "今日は配信です");
     }
 
     #[test]
