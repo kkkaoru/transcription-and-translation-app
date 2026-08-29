@@ -304,16 +304,19 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       // Keep the platform-based choices usable; preparation reports a concrete
       // provider error if the capability probe itself is unavailable.
     } finally {
-      if (probe is NativeProcessingBackend) {
-        try {
-          await probe.cancel();
-        } on Object {
-          // Capability probing must not block LAN discovery.
-        }
-        await probe.dispose();
-      }
+      await _disposeCapabilityProbe(probe);
     }
     if (mounted && widget.autoDiscover) await _discoverAndConnect();
+  }
+
+  Future<void> _disposeCapabilityProbe(ProcessingBackend probe) async {
+    if (probe is! NativeProcessingBackend) return;
+    try {
+      await probe.cancel();
+    } on Object {
+      // Capability probing must not block LAN discovery.
+    }
+    await probe.dispose();
   }
 
   @override
