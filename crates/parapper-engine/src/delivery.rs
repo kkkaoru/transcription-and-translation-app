@@ -21,6 +21,7 @@ pub(crate) struct RecognizedTextMeta {
 pub(crate) struct RecognizedTextOutput {
     pub(crate) phrase: Arc<[f32]>,
     pub(crate) text: String,
+    pub(crate) azookey_input_text: Option<String>,
     pub(crate) source_asr_model: AsrModel,
     pub(crate) source_language: AsrLanguage,
     pub(crate) detected_language: Option<String>,
@@ -42,6 +43,7 @@ impl RecognizedTextOutput {
         Self {
             phrase: phrase.into(),
             text,
+            azookey_input_text: None,
             source_asr_model,
             source_language,
             detected_language,

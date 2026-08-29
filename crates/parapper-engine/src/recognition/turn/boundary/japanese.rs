@@ -1,7 +1,7 @@
 use std::{ops::Range, path::Path};
 
 use anyhow::{Context, Result};
-use caption_bridge_japanese_text::MorphFeatureHead;
+use caption_bridge_japanese_text::{katakana_to_hiragana_char, MorphFeatureHead};
 use vibrato_rkyv::{Dictionary, LoadMode, Tokenizer};
 
 use super::{audio_window::audio_window_for_boundary, sample_end_for_char_end_or_ratio};
@@ -25,6 +25,8 @@ pub(super) struct JapaneseMorphToken {
     pub(super) feature: String,
 }
 
+const UNIDIC_KANA_FIELD_INDEX: usize = 20;
+
 impl JapaneseMorphAnalyzer {
     pub(crate) fn from_dictionary_path(path: &Path) -> Result<Self> {
         let dict = Dictionary::from_path(path, LoadMode::TrustCache)
@@ -47,6 +49,25 @@ impl JapaneseMorphAnalyzer {
             })
             .collect()
     }
+
+    pub(crate) fn reading(&self, text: &str) -> String {
+        canonical_reading(&self.analyze(text))
+    }
+}
+
+fn canonical_reading(tokens: &[JapaneseMorphToken]) -> String {
+    let mut reading = String::new();
+    for token in tokens {
+        let token_reading = token
+            .feature
+            .split(',')
+            .nth(UNIDIC_KANA_FIELD_INDEX)
+            .map(str::trim)
+            .filter(|field| !field.is_empty() && *field != "*")
+            .unwrap_or(token.surface.as_str());
+        reading.extend(token_reading.chars().map(katakana_to_hiragana_char));
+    }
+    reading
 }
 
 pub(crate) fn load_japanese_morph_analyzer(root: &Path) -> Option<JapaneseMorphAnalyzer> {
@@ -233,4 +254,38 @@ fn feature_pos1(feature: &str) -> Option<&str> {
 fn feature_pos2(feature: &str) -> Option<&str> {
     let pos2 = MorphFeatureHead::parse(feature).pos2;
     (!pos2.is_empty()).then_some(pos2)
+}
+
+#[cfg(test)]
+mod reading_tests {
+    use super::{canonical_reading, JapaneseMorphToken};
+
+    #[test]
+    fn canonical_reading_uses_unidic_kana_instead_of_the_asr_surface() {
+        let tokens = vec![
+            JapaneseMorphToken {
+                surface: "聞こえ".to_string(),
+                char_range: 0..3,
+                feature: "動詞,一般,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,キコエ".to_string(),
+            },
+            JapaneseMorphToken {
+                surface: "ますか".to_string(),
+                char_range: 3..6,
+                feature: "助動詞,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,マスカ".to_string(),
+            },
+        ];
+
+        assert_eq!(canonical_reading(&tokens), "きこえますか");
+    }
+
+    #[test]
+    fn canonical_reading_preserves_unknown_tokens_without_a_kana_field() {
+        let tokens = vec![JapaneseMorphToken {
+            surface: "VRChat？".to_string(),
+            char_range: 0..7,
+            feature: "未知語,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*".to_string(),
+        }];
+
+        assert_eq!(canonical_reading(&tokens), "VRChat？");
+    }
 }

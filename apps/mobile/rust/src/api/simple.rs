@@ -7,7 +7,9 @@ use std::time::Duration;
 
 #[cfg(feature = "mobile-gguf")]
 use candle_core::Device;
-use caption_bridge_azookey_rust::{convert_with_dictionary, AzooKeyDictionary, ConversionOptions};
+use caption_bridge_azookey_rust::{
+    convert_hiragana_with_dictionary, convert_with_dictionary, AzooKeyDictionary, ConversionOptions,
+};
 #[cfg(feature = "mobile-gguf")]
 use caption_bridge_azookey_rust::{
     convert_with_verifier_with_limit, VerifierConversionOptions, VerifierPolicy,
@@ -868,6 +870,18 @@ fn quickmt_options() -> TranslationOptions<String, String> {
 }
 
 pub fn convert_azookey(reading: String) -> Result<AzooKeyOutput, String> {
+    convert_azookey_input(reading, false)
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(ignore))]
+pub fn convert_azookey_hiragana(reading: String) -> Result<AzooKeyOutput, String> {
+    convert_azookey_input(reading, true)
+}
+
+fn convert_azookey_input(
+    reading: String,
+    input_is_normalized_hiragana: bool,
+) -> Result<AzooKeyOutput, String> {
     let reading = bounded_required_text(reading, MAX_TEXT_CHARACTERS, "AzooKey input")?;
     let active = AZOOKEY_DICTIONARY
         .lock()
@@ -894,7 +908,12 @@ pub fn convert_azookey(reading: String) -> Result<AzooKeyOutput, String> {
             return Ok(AzooKeyOutput { text });
         }
     }
-    let text = convert_with_dictionary(&reading, dictionary, ConversionOptions::default())
+    let candidates = if input_is_normalized_hiragana {
+        convert_hiragana_with_dictionary(&reading, dictionary, ConversionOptions::default())
+    } else {
+        convert_with_dictionary(&reading, dictionary, ConversionOptions::default())
+    };
+    let text = candidates
         .into_iter()
         .next()
         .map(|candidate| candidate.text)
@@ -1063,6 +1082,23 @@ mod tests {
             }
         );
         assert_eq!(default_azookey_model(), AzooKeyModel::Small);
+    }
+
+    #[test]
+    fn normalized_hiragana_fast_path_uses_the_mobile_dictionary() {
+        let mobile_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("mobile root").to_path_buf();
+        initialize_azookey_dictionary(
+            std::fs::read(mobile_root.join("assets/azookey/system.azkdict.gz"))
+                .expect("dictionary asset"),
+        )
+        .expect("initialize dictionary");
+
+        let output = super::convert_azookey_hiragana("こんにちはきこえますか".to_string())
+            .expect("convert normalized reading");
+        release_azookey_dictionary();
+
+        assert_eq!(output.text, "こんにちは聞こえますか");
     }
 
     #[test]

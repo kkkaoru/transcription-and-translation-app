@@ -782,6 +782,8 @@ impl RecognitionSession {
             };
             *self.turn_store.revisions.entry(turn_id).or_insert(0) += 1;
             let mut output = confirmed.into_output();
+            output.azookey_input_text =
+                self.io.japanese_morph.as_ref().map(|analyzer| analyzer.reading(&output.text));
             self.attach_caption_latency(turn_id, true, &mut output);
             self.io.output_sink.emit(output);
             return;
@@ -807,6 +809,8 @@ impl RecognitionSession {
         if let Some(turn) = self.turn_store.turns.get_mut(&turn_id) {
             turn.draft_mut().last_emitted_interim_text = Some(combined_text);
         }
+        output.azookey_input_text =
+            self.io.japanese_morph.as_ref().map(|analyzer| analyzer.reading(&output.text));
         self.attach_caption_latency(turn_id, false, &mut output);
         self.io.output_sink.emit(output);
     }

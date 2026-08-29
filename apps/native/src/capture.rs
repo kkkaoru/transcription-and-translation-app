@@ -15,9 +15,9 @@ use parapper_engine::{
     CaptionUpdateMode, EngineConfig, EngineEvent, LocalTranslator, ParapperEngine,
 };
 use rust_lib_kotoba_beacon_companion::api::simple::{
-    convert_azookey, encode_audio_boundary, encode_stage_request, encode_translation_enabled,
-    initialize_azookey_dictionary, release_azookey_dictionary, should_continue_on_mobile,
-    ExecutionDevice, MobileStageResult, PipelineRoute, ProcessingStage,
+    convert_azookey, convert_azookey_hiragana, encode_audio_boundary, encode_stage_request,
+    encode_translation_enabled, initialize_azookey_dictionary, release_azookey_dictionary,
+    should_continue_on_mobile, ExecutionDevice, MobileStageResult, PipelineRoute, ProcessingStage,
 };
 
 use crate::companion::{
@@ -169,6 +169,7 @@ struct RoutingContext<'a> {
 struct EnginePublishState<'a> {
     recognition_text: &'a mut String,
     recognition_turn_id: &'a mut Option<String>,
+    recognition_input_is_hiragana: &'a mut bool,
     caption_revision: &'a mut u64,
 }
 
@@ -621,6 +622,7 @@ fn run_capture_inner(
     let _ = event_tx.send(WorkerEvent::Status(CaptureStatus::Capturing));
     let mut recognition_text = String::new();
     let mut recognition_turn_id = None;
+    let mut recognition_input_is_hiragana = false;
     let mut caption_revision = 0_u64;
     let mut normalized_samples = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
     let mut last_rms_publish = Instant::now() - RMS_PUBLISH_INTERVAL;
@@ -655,6 +657,7 @@ fn run_capture_inner(
             Ok(WorkerCommand::ResetCaption) => {
                 recognition_text.clear();
                 recognition_turn_id = None;
+                recognition_input_is_hiragana = false;
             }
             Ok(WorkerCommand::SetTranslationEnabled(enabled)) => {
                 translation_requested = enabled;
@@ -707,6 +710,7 @@ fn run_capture_inner(
                     let mut state = EnginePublishState {
                         recognition_text: &mut recognition_text,
                         recognition_turn_id: &mut recognition_turn_id,
+                        recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
                         caption_revision: &mut caption_revision,
                     };
                     publish_engine_events(events, &routing, &mut state)?;
@@ -760,6 +764,7 @@ fn run_capture_inner(
         let mut state = EnginePublishState {
             recognition_text: &mut recognition_text,
             recognition_turn_id: &mut recognition_turn_id,
+            recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
             caption_revision: &mut caption_revision,
         };
         let tick_events = engine.as_mut().map_or_else(Vec::new, ParapperEngine::tick);
@@ -783,6 +788,7 @@ fn run_capture_inner(
     let mut state = EnginePublishState {
         recognition_text: &mut recognition_text,
         recognition_turn_id: &mut recognition_turn_id,
+        recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
         caption_revision: &mut caption_revision,
     };
     publish_engine_events(events, &routing, &mut state)?;
@@ -1035,7 +1041,11 @@ fn desktop_azookey_dictionary_path() -> Option<std::path::PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn route_asr_output(context: &RoutingContext<'_>, output: RoutedStageOutput) -> Result<(), String> {
+fn route_asr_output(
+    context: &RoutingContext<'_>,
+    output: RoutedStageOutput,
+    input_is_normalized_hiragana: bool,
+) -> Result<(), String> {
     let _ = context.event_tx.send(WorkerEvent::Caption {
         revision: output.revision,
         source: output.text.clone(),
@@ -1058,17 +1068,22 @@ fn route_asr_output(context: &RoutingContext<'_>, output: RoutedStageOutput) -> 
         let session_id = context
             .session_id
             .ok_or_else(|| "mobile companion session is unavailable".to_string())?;
-        return companion.send_text(encode_stage_request(
+        let request = encode_stage_request(
             "azookey.request".to_string(),
             session_id.to_string(),
             output.turn_id,
             output.revision,
             output.text,
             output.is_final,
-        )?);
+        )?;
+        return companion.send_text(request);
     }
     initialize_desktop_azookey()?;
-    let converted_source = convert_azookey(output.text.clone())?.text;
+    let converted_source = if input_is_normalized_hiragana {
+        convert_azookey_hiragana(output.text.clone())?.text
+    } else {
+        convert_azookey(output.text.clone())?.text
+    };
     route_azookey_output(context, RoutedStageOutput { text: converted_source, ..output })
 }
 
@@ -1139,6 +1154,7 @@ fn handle_mobile_result(
                     text: result.text,
                     is_final: result.is_final,
                 },
+                false,
             )?;
             Ok(true)
         }
@@ -1255,15 +1271,32 @@ fn publish_engine_events(
     state: &mut EnginePublishState<'_>,
 ) -> Result<(), String> {
     for event in events {
-        if let EngineEvent::Caption { turn_id, text, is_final, update_mode, .. } = event {
+        if let EngineEvent::Caption {
+            turn_id,
+            text,
+            azookey_input_text,
+            is_final,
+            update_mode,
+            ..
+        } = event
+        {
             if routing.route.asr != ExecutionDevice::Desktop {
                 continue;
             }
+            let input_is_normalized_hiragana = azookey_input_text.is_some();
+            let starts_new_input = state.recognition_turn_id.as_deref() != Some(&turn_id)
+                || update_mode == CaptionUpdateMode::Replace;
+            if starts_new_input {
+                *state.recognition_input_is_hiragana = input_is_normalized_hiragana;
+            } else {
+                *state.recognition_input_is_hiragana &= input_is_normalized_hiragana;
+            }
+            let normalizer_input = azookey_input_text.as_deref().unwrap_or(&text);
             apply_turn_caption_update(
                 state.recognition_text,
                 state.recognition_turn_id,
                 &turn_id,
-                &text,
+                normalizer_input,
                 update_mode,
             );
             *state.caption_revision = state.caption_revision.wrapping_add(1).max(1);
@@ -1276,6 +1309,7 @@ fn publish_engine_events(
                     text: state.recognition_text.clone(),
                     is_final,
                 },
+                *state.recognition_input_is_hiragana,
             )?;
         }
     }
@@ -1437,11 +1471,12 @@ mod tests {
     }
 
     #[test]
-    fn partial_recognition_is_queued_for_translation_before_finalization() {
+    fn partial_recognition_uses_canonical_reading_before_azookey_and_translation() {
         let (translation_tx, translation_rx) = translation_mailbox();
         let (event_tx, event_rx) = mpsc::sync_channel(4);
         let mut recognition_text = String::new();
         let mut recognition_turn_id = None;
+        let mut recognition_input_is_hiragana = false;
         let mut caption_revision = 0;
 
         let routing = super::RoutingContext {
@@ -1459,12 +1494,14 @@ mod tests {
         let mut state = super::EnginePublishState {
             recognition_text: &mut recognition_text,
             recognition_turn_id: &mut recognition_turn_id,
+            recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
             caption_revision: &mut caption_revision,
         };
         publish_engine_events(
             vec![EngineEvent::Caption {
                 turn_id: "turn-1".to_string(),
-                text: "こんにちは".to_string(),
+                text: "こんにちは聞超えますか".to_string(),
+                azookey_input_text: Some("こんにちはきこえますか".to_string()),
                 is_final: false,
                 update_mode: CaptionUpdateMode::Replace,
                 elapsed_millis: 10,
@@ -1477,12 +1514,17 @@ mod tests {
         assert!(matches!(
             translation_rx.recv_timeout(Duration::from_millis(10)),
             Ok(TranslationCommand::Translate(TranslationRequest { revision: 1, source }))
-                if source == "こんにちは"
+                if source == "こんにちは聞こえますか"
         ));
         assert!(matches!(
             event_rx.try_recv(),
             Ok(WorkerEvent::Caption { revision: 1, source, is_final: false, .. })
-                if source == "こんにちは"
+                if source == "こんにちはきこえますか"
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::Caption { revision: 1, source, is_final: false, .. })
+                if source == "こんにちは聞こえますか"
         ));
     }
 
@@ -1945,6 +1987,7 @@ mod tests {
                 text: "きょう".to_string(),
                 is_final: false,
             },
+            true,
         )
         .expect("publish immediate ASR partial");
 
@@ -1959,13 +2002,14 @@ mod tests {
             RoutedStageOutput {
                 turn_id: 4,
                 revision: 10,
-                text: "きょう。".to_string(),
+                text: "こんにちはきこえますか".to_string(),
                 is_final: true,
             },
+            true,
         )
         .expect("route finalized ASR");
         assert!(
-            matches!(outbound_rx.recv_timeout(Duration::from_millis(20)), Ok(CompanionOutbound::Text(message)) if message.contains("azookey.request"))
+            matches!(outbound_rx.recv_timeout(Duration::from_millis(20)), Ok(CompanionOutbound::Text(message)) if message.contains("こんにちはきこえますか"))
         );
     }
 

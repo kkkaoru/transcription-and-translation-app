@@ -9,9 +9,10 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'simple.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bounded_required_text`, `decode_dictionary_bytes`, `decode_wire`, `desktop_envelope`, `device_id`, `encode_desktop_message`, `encode_route_message`, `encode`, `quickmt_config`, `quickmt_options`, `required`, `supported_owner`, `validate_mobile_capabilities`
+// These functions are ignored because they are not marked as `pub`: `bounded_required_text`, `convert_azookey_input`, `decode_dictionary_bytes`, `decode_wire`, `desktop_envelope`, `device_id`, `encode_desktop_message`, `encode_route_message`, `encode`, `quickmt_config`, `quickmt_options`, `required`, `supported_owner`, `validate_mobile_capabilities`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ActiveAzooKeyVerifier`, `MobileQuickMtEngine`, `MobileRustAsrEngine`, `WireEnvelope`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `convert_azookey_hiragana`
 
 PipelineRoute defaultPipelineRoute() =>
     RustLib.instance.api.crateApiSimpleDefaultPipelineRoute();

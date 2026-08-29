@@ -71,6 +71,7 @@ pub enum EngineEvent {
     Caption {
         turn_id: String,
         text: String,
+        azookey_input_text: Option<String>,
         is_final: bool,
         update_mode: CaptionUpdateMode,
         elapsed_millis: u128,

@@ -70,6 +70,39 @@ void main() {
     },
   );
 
+  test(
+    'desktop canonical reading converts correctly on mobile AzooKey',
+    () async {
+      final transport = _RoutingTransport();
+      final processing = _RoutingProcessing();
+      final controller = CompanionController(
+        route: const PipelineRoute(
+          asr: ExecutionDevice.desktop,
+          azookey: ExecutionDevice.mobile,
+          translation: ExecutionDevice.desktop,
+        ),
+        transport: transport,
+        processing: processing,
+        onStatus: (_) {},
+        onSource: (_) {},
+        onAzooKey: (_) {},
+        onTranslation: (_) {},
+      );
+
+      transport.addText(
+        '{"version":1,"type":"azookey.request","session_id":"s",'
+        '"turn_id":3,"revision":8,"text":"こんにちはきこえますか",'
+        '"is_final":true}',
+      );
+      await _waitForSentMessages(transport, count: 1);
+
+      expect(transport.sent, hasLength(1));
+      expect(transport.sent.single, contains('"type":"azookey.result"'));
+      expect(transport.sent.single, contains('"text":"こんにちは聞こえますか"'));
+      await controller.dispose();
+    },
+  );
+
   test('mobile ASR stops before desktop-owned AzooKey', () async {
     final transport = _RoutingTransport();
     final processing = _RoutingProcessing();
@@ -312,6 +345,16 @@ void main() {
       await controller.dispose();
     },
   );
+}
+
+Future<void> _waitForSentMessages(
+  _RoutingTransport transport, {
+  required int count,
+}) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (transport.sent.length < count && DateTime.now().isBefore(deadline)) {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
 }
 
 final class _RoutingTransport implements CompanionTransport {

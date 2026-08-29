@@ -1,8 +1,9 @@
 use std::sync::mpsc::SyncSender;
 
 use crate::{
-    CaptionUpdateMode, EngineEvent, config::ParapperConfig, delivery::RecognizedTextOutput,
-    recognition::RecognitionStreamOutput, recognition::control::events::RecognizedTextUpdateMode,
+    config::ParapperConfig, delivery::RecognizedTextOutput,
+    recognition::control::events::RecognizedTextUpdateMode, recognition::RecognitionStreamOutput,
+    CaptionUpdateMode, EngineEvent,
 };
 
 pub(crate) trait TurnOutputSink: Send {
@@ -34,6 +35,7 @@ impl TurnOutputSink for ChannelTurnOutputSink {
         let event = EngineEvent::Caption {
             turn_id: output.meta.id.clone(),
             text: output.text,
+            azookey_input_text: output.azookey_input_text,
             is_final: output.meta.is_final,
             update_mode: match output.meta.update_mode {
                 RecognizedTextUpdateMode::Append => CaptionUpdateMode::Append,
@@ -68,6 +70,10 @@ mod tests {
     use std::sync::mpsc;
 
     use super::{ChannelTurnOutputSink, TurnOutputSink};
+    use crate::config::{AsrLanguage, AsrModel};
+    use crate::delivery::{RecognizedTextMeta, RecognizedTextOutput};
+    use crate::recognition::control::events::RecognitionSourceMeta;
+    use crate::EngineEvent;
 
     #[test]
     fn portable_caption_channel_does_not_request_discarded_pcm_copies() {
@@ -75,5 +81,41 @@ mod tests {
         let sink = ChannelTurnOutputSink::new(sender);
 
         assert!(!sink.requires_audio());
+    }
+
+    #[test]
+    fn caption_channel_preserves_the_canonical_azookey_reading() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut sink = ChannelTurnOutputSink::new(sender);
+        let source = RecognitionSourceMeta {
+            turn_session_id: 1,
+            turn_id: 2,
+            turn_revision: 3,
+            output_sequence: 4,
+            segment_id: 5,
+            previous_segment_id: None,
+        };
+        let meta = RecognizedTextMeta::replace_turn_output("turn-2".to_string(), source, true);
+        let mut output = RecognizedTextOutput::new(
+            Vec::new(),
+            "こんにちは聞超えますか".to_string(),
+            AsrModel::ReazonSpeechK2V2,
+            AsrLanguage::Japanese,
+            None,
+            meta,
+            10,
+        );
+        output.azookey_input_text = Some("こんにちはきこえますか".to_string());
+
+        sink.emit(output);
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(EngineEvent::Caption {
+                text,
+                azookey_input_text: Some(reading),
+                ..
+            }) if text == "こんにちは聞超えますか" && reading == "こんにちはきこえますか"
+        ));
     }
 }
