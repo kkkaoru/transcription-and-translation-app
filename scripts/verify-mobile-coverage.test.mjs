@@ -17,12 +17,18 @@ describe("mobile coverage gate", () => {
           "SF:lib/main.dart\nLF:20\nLH:19\nend_of_record\n" +
           "SF:lib/src/companion_connection.dart\nLF:20\nLH:19\nend_of_record\n" +
           "SF:lib/src/companion_controller.dart\nLF:20\nLH:19\nend_of_record\n" +
+          "SF:lib/src/companion_l10n.dart\nLF:20\nLH:19\nend_of_record\n" +
+          "SF:lib/src/companion_pairing.dart\nLF:20\nLH:19\nend_of_record\n" +
+          "SF:lib/src/companion_style.dart\nLF:20\nLH:19\nend_of_record\n" +
           "SF:lib/src/native_processing.dart\nLF:20\nLH:20\nend_of_record\n",
       }).map(({ path, found, hit }) => ({ path, found, hit })),
       [
         { path: "lib/main.dart", found: 20, hit: 19 },
         { path: "lib/src/companion_connection.dart", found: 20, hit: 19 },
         { path: "lib/src/companion_controller.dart", found: 20, hit: 19 },
+        { path: "lib/src/companion_l10n.dart", found: 20, hit: 19 },
+        { path: "lib/src/companion_pairing.dart", found: 20, hit: 19 },
+        { path: "lib/src/companion_style.dart", found: 20, hit: 19 },
         { path: "lib/src/native_processing.dart", found: 20, hit: 20 },
       ],
     );

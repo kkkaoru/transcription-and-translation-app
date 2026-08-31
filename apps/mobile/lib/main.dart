@@ -8,6 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:kotoba_beacon_companion/src/azookey_assets.dart';
 import 'package:kotoba_beacon_companion/src/companion_connection.dart';
 import 'package:kotoba_beacon_companion/src/companion_controller.dart';
+import 'package:kotoba_beacon_companion/src/companion_l10n.dart';
+import 'package:kotoba_beacon_companion/src/companion_pairing.dart';
+import 'package:kotoba_beacon_companion/src/companion_style.dart';
 import 'package:kotoba_beacon_companion/src/mobile_rust_asr_assets.dart';
 import 'package:kotoba_beacon_companion/src/native_processing.dart';
 import 'package:kotoba_beacon_companion/src/quickmt_assets.dart';
@@ -15,35 +18,23 @@ import 'package:kotoba_beacon_companion/src/rust/api/simple.dart';
 import 'package:kotoba_beacon_companion/src/rust/frb_generated.dart';
 import 'package:path_provider/path_provider.dart';
 
-const _gap = 8.0;
-const _sectionGap = 16.0;
-const _controlHeight = 48.0;
-const _contentColor = Color(0xff1c1c1e);
-const _bodyTextStyle = TextStyle(
-  color: _contentColor,
-  fontSize: 16,
-  height: 1.4,
-  fontWeight: FontWeight.w400,
-);
-const _emphasisTextStyle = TextStyle(
-  color: _contentColor,
-  fontSize: 16,
-  height: 1.3,
-  fontWeight: FontWeight.w600,
-);
-const _titleTextStyle = TextStyle(
-  color: _contentColor,
-  fontSize: 20,
-  height: 1.2,
-  fontWeight: FontWeight.w600,
-);
-
 /// Starts the mobile companion after initializing the generated Rust bridge.
 // coverage:ignore-start
+const _processingChannel = MethodChannel('kotoba_beacon/processing');
+const _pairingEvents = EventChannel('kotoba_beacon/pairing');
+
 Future<void> main() => startCompanion(
   initializeRust: RustLib.init,
-  root: const KotobaBeaconCompanionApp(
-    home: CompanionHomePage(autoDiscover: true),
+  root: KotobaBeaconCompanionApp(
+    home: CompanionHomePage(
+      autoDiscover: true,
+      pairingLinks: _pairingEvents
+          .receiveBroadcastStream()
+          .where((event) => event is String)
+          .map((event) => Uri.parse(event as String)),
+      openSystemCamera: () =>
+          _processingChannel.invokeMethod<void>('openSystemCamera'),
+    ),
   ),
 );
 // coverage:ignore-end
@@ -64,70 +55,146 @@ class KotobaBeaconCompanionApp extends StatelessWidget {
   const KotobaBeaconCompanionApp({
     super.key,
     this.home = const CompanionHomePage(),
+    this.locale,
   });
 
   /// Platform-adaptive home page, replaceable by deterministic tests.
   final Widget home;
 
+  /// Optional locale override for tests; production follows the device.
+  final Locale? locale;
+
   @override
   Widget build(BuildContext context) {
+    final l10n = CompanionL10n.fromLocale(
+      locale ?? WidgetsBinding.instance.platformDispatcher.locale,
+    );
     if (_usesCupertino) {
-      return CupertinoApp(
-        title: 'Kotoba Beacon Companion',
-        debugShowCheckedModeBanner: false,
-        theme: const CupertinoThemeData(
-          brightness: Brightness.light,
-          primaryColor: Color(0xff007a70),
-          scaffoldBackgroundColor: CupertinoColors.systemGroupedBackground,
-          textTheme: CupertinoTextThemeData(
-            textStyle: _bodyTextStyle,
-            actionTextStyle: _emphasisTextStyle,
-            navTitleTextStyle: _titleTextStyle,
+      return CompanionL10nScope(
+        l10n: l10n,
+        child: CupertinoApp(
+          title: l10n.title,
+          debugShowCheckedModeBanner: false,
+          theme: const CupertinoThemeData(
+            brightness: Brightness.light,
+            primaryColor: CompanionStyle.primary,
+            barBackgroundColor: CompanionStyle.pageBackground,
+            scaffoldBackgroundColor: CompanionStyle.pageBackground,
+            textTheme: CupertinoTextThemeData(
+              textStyle: CompanionStyle.body,
+              actionTextStyle: CompanionStyle.emphasis,
+              navTitleTextStyle: CompanionStyle.title,
+            ),
           ),
+          home: home,
         ),
-        home: home,
       );
     }
-    return MaterialApp(
-      title: 'Kotoba Beacon Companion',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff3a7d71)),
-        textTheme: const TextTheme(
-          bodyLarge: _bodyTextStyle,
-          bodyMedium: _bodyTextStyle,
-          titleLarge: _titleTextStyle,
-          titleMedium: _emphasisTextStyle,
-          labelLarge: _emphasisTextStyle,
-        ),
-        inputDecorationTheme: const InputDecorationTheme(
-          contentPadding: EdgeInsets.all(12),
-          border: OutlineInputBorder(),
-        ),
-        filledButtonTheme: const FilledButtonThemeData(
-          style: ButtonStyle(
-            minimumSize: WidgetStatePropertyAll(
-              Size.fromHeight(_controlHeight),
-            ),
-            textStyle: WidgetStatePropertyAll(_emphasisTextStyle),
+    return CompanionL10nScope(
+      l10n: l10n,
+      child: MaterialApp(
+        title: l10n.title,
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          colorScheme: const ColorScheme.light(
+            primary: CompanionStyle.primary,
+            onSurface: CompanionStyle.content,
+            onSurfaceVariant: CompanionStyle.muted,
+            outline: CompanionStyle.primary,
           ),
-        ),
-        outlinedButtonTheme: const OutlinedButtonThemeData(
-          style: ButtonStyle(
-            minimumSize: WidgetStatePropertyAll(
-              Size.fromHeight(_controlHeight),
-            ),
-            textStyle: WidgetStatePropertyAll(_emphasisTextStyle),
+          scaffoldBackgroundColor: CompanionStyle.pageBackground,
+          appBarTheme: const AppBarTheme(
+            backgroundColor: CompanionStyle.pageBackground,
+            foregroundColor: CompanionStyle.content,
+            elevation: 0,
           ),
+          cardColor: CompanionStyle.surface,
+          textTheme: const TextTheme(
+            bodyLarge: CompanionStyle.body,
+            bodyMedium: CompanionStyle.body,
+            titleLarge: CompanionStyle.title,
+            titleMedium: CompanionStyle.emphasis,
+            labelLarge: CompanionStyle.emphasis,
+          ),
+          inputDecorationTheme: const InputDecorationTheme(
+            contentPadding: EdgeInsets.all(CompanionStyle.inset),
+            border: OutlineInputBorder(),
+          ),
+          filledButtonTheme: FilledButtonThemeData(
+            style: ButtonStyle(
+              minimumSize: const WidgetStatePropertyAll(
+                Size.fromHeight(CompanionStyle.controlHeight),
+              ),
+              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                final enabled = !states.contains(WidgetState.disabled);
+                return CompanionStyle.buttonFill(
+                  emphasized: true,
+                  enabled: enabled,
+                );
+              }),
+              foregroundColor: WidgetStateProperty.resolveWith((states) {
+                final enabled = !states.contains(WidgetState.disabled);
+                return CompanionStyle.buttonLabel(
+                  emphasized: true,
+                  enabled: enabled,
+                );
+              }),
+              textStyle: const WidgetStatePropertyAll(CompanionStyle.emphasis),
+            ),
+          ),
+          outlinedButtonTheme: OutlinedButtonThemeData(
+            style: ButtonStyle(
+              minimumSize: const WidgetStatePropertyAll(
+                Size.fromHeight(CompanionStyle.controlHeight),
+              ),
+              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                final enabled = !states.contains(WidgetState.disabled);
+                return CompanionStyle.buttonFill(
+                  emphasized: false,
+                  enabled: enabled,
+                );
+              }),
+              foregroundColor: WidgetStateProperty.resolveWith((states) {
+                final enabled = !states.contains(WidgetState.disabled);
+                return CompanionStyle.buttonLabel(
+                  emphasized: false,
+                  enabled: enabled,
+                );
+              }),
+              side: WidgetStateProperty.resolveWith((states) {
+                final enabled = !states.contains(WidgetState.disabled);
+                return BorderSide(
+                  color: CompanionStyle.buttonBorder(enabled: enabled),
+                );
+              }),
+              textStyle: const WidgetStatePropertyAll(CompanionStyle.emphasis),
+            ),
+          ),
+          useMaterial3: true,
         ),
-        useMaterial3: true,
+        home: home,
       ),
-      home: home,
     );
   }
 }
 
 bool get _usesCupertino => defaultTargetPlatform == TargetPlatform.iOS;
+
+CompanionDeviceKind _deviceKind(BuildContext context) {
+  final isLarge = MediaQuery.sizeOf(context).shortestSide >= 600;
+  if (!isLarge) return CompanionDeviceKind.phone;
+  if (defaultTargetPlatform == TargetPlatform.iOS) {
+    return CompanionDeviceKind.ipad;
+  }
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    return CompanionDeviceKind.androidTablet;
+  }
+  return CompanionDeviceKind.phone;
+}
+
+enum _DisplayMode { standard, detailed }
+
+enum _StatusKind { idle, progress, error }
 
 enum _AsrChoice {
   desktopNative,
@@ -207,6 +274,8 @@ class CompanionHomePage extends StatefulWidget {
     this.prepareAzooKeyDictionary = _prepareAzooKeyDictionary,
     this.prepareAzooKeyModel = _prepareAzooKeyModel,
     this.discoverDesktop = discoverCompanion,
+    this.pairingLinks,
+    this.openSystemCamera,
     this.autoDiscover = false,
   });
 
@@ -234,6 +303,12 @@ class CompanionHomePage extends StatefulWidget {
   /// Starts LAN discovery when the production page first appears.
   final bool autoDiscover;
 
+  /// Camera-scanned pairing URLs delivered while the page is visible.
+  final Stream<Uri>? pairingLinks;
+
+  /// Opens the platform camera app for QR pairing.
+  final Future<void> Function()? openSystemCamera;
+
   @override
   State<CompanionHomePage> createState() => _CompanionHomePageState();
 }
@@ -245,6 +320,7 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
   final _tokenController = TextEditingController();
   late PipelineRoute _route;
   late AzooKeyModel _azooKeyModel;
+  late _DisplayMode _displayMode;
   late _AsrChoice _asrChoice;
   late _AzooKeyChoice _azooKeyChoice;
   late _TranslationChoice _translationChoice;
@@ -253,7 +329,10 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
   CompanionController? _companion;
   MobileCapabilities? _capabilities;
   ProcessingProviderAvailability? _providerAvailability;
-  String _status = 'デスクトップのLAN endpointとpairing tokenを入力してください';
+  CompanionL10n _l10n = CompanionL10n.japanese;
+  _StatusKind _statusKind = _StatusKind.idle;
+  String _status = '';
+  bool _userInitiatedConnection = false;
   String _sourceText = '';
   String _azooKeyText = '';
   String _translationText = '';
@@ -264,14 +343,18 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
   bool _authenticated = false;
   bool _routeControlsEnabled = false;
   bool _selectionPending = false;
+  StreamSubscription<Uri>? _pairingSubscription;
 
   @override
   void initState() {
     super.initState();
     _route = widget.initialRoute ?? defaultPipelineRoute();
     _azooKeyModel = widget.initialAzooKeyModel;
+    _displayMode = _DisplayMode.standard;
     _asrChoice = _route.asr == ExecutionDevice.desktop
         ? _AsrChoice.desktopNative
+        : _displayMode == _DisplayMode.standard
+        ? _AsrChoice.rustSherpaOnnxReazonSpeech
         : _defaultMobileAsrChoice;
     _azooKeyChoice = _route.azookey == ExecutionDevice.desktop
         ? _AzooKeyChoice.desktopNative
@@ -285,9 +368,22 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       rustSherpaOnnx: _usesCupertino,
       translationSession: _usesCupertino,
     );
+    final pairingLinks = widget.pairingLinks;
+    if (pairingLinks != null) {
+      _pairingSubscription = pairingLinks.listen(_applyPairingLink);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_probeProviderAvailabilityAndStart());
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _l10n = CompanionL10n.of(context);
+    if (_status.isEmpty && !_isStandard) {
+      _status = _l10n.enterEndpointAndToken;
+    }
   }
 
   Future<void> _probeProviderAvailabilityAndStart() async {
@@ -326,6 +422,7 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
     unawaited(_companion?.dispose());
     unawaited(_disposeTransport(_transport));
     unawaited(_disposeProcessing(_processing));
+    unawaited(_pairingSubscription?.cancel());
     _endpointController.dispose();
     _tokenController.dispose();
     super.dispose();
@@ -337,12 +434,24 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       if (!mounted) return;
       setState(() {
         _dictionaryReady = true;
-        _status = 'デスクトップのLAN endpointとpairing tokenを入力してください';
+        _setIdleStatus(_isStandard ? '' : _l10n.enterEndpointAndToken);
       });
     } on Object catch (error) {
-      if (mounted) setState(() => _status = 'AzooKey辞書エラー: $error');
+      _reportDictionaryFailure(error);
       rethrow;
     }
+  }
+
+  void _reportDictionaryFailure(Object error) {
+    if (!mounted) return;
+    setState(() {
+      final message = _l10n.dictionaryError(error);
+      if (_userInitiatedConnection) {
+        _setErrorStatus(message);
+      } else {
+        _setIdleStatus(_isStandard ? '' : message);
+      }
+    });
   }
 
   Future<void> _initializeAzooKeyModel() async {
@@ -353,81 +462,170 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
 
   Future<void> _prepareInitialAzooKeyResources() async {
     if (!_dictionaryReady) {
-      setState(() => _status = 'AzooKey辞書を準備中');
+      setState(() => _setProgressStatus(_l10n.preparingAzookeyDictionary));
       await _initializeDictionary();
     }
     if (!_azooKeyModelReady) {
       setState(
-        () => _status = 'AzooKey ${_azooKeyModelLabel(_azooKeyModel)} GGUFを準備中',
+        () => _setProgressStatus(
+          _l10n.preparingAzookeyModel(_azooKeyModelLabel(_azooKeyModel)),
+        ),
       );
       await _initializeAzooKeyModel();
     }
   }
 
-  Future<void> _discoverAndConnect() async {
+  Future<void> _discoverAndConnect({bool userInitiated = false}) async {
     if (_discovering || _connecting || _companion != null) return;
+    if (userInitiated) _userInitiatedConnection = true;
     setState(() {
       _discovering = true;
-      _status = '同一ネットワーク上のNativeを検出中';
+      if (userInitiated || !_isStandard) {
+        _setProgressStatus(_l10n.discoveringNative);
+      }
     });
     try {
       final discovered = await widget.discoverDesktop();
       _endpointController.text = discovered.endpoint;
       _tokenController.text = discovered.token;
       if (!mounted) return;
-      setState(() => _status = 'Nativeを検出しました。認証接続中');
+      setState(() => _setProgressStatus(_l10n.discoveredNative));
       await _toggleConnection();
     } on TimeoutException {
-      if (!mounted) return;
-      setState(() {
-        _status =
-            'Nativeを自動検出できません。'
-            'ローカルネットワーク許可と同一Wi-Fiを確認してください';
-      });
+      _reportDiscoveryFailure(
+        userInitiated: userInitiated,
+        errorMessage: _l10n.discoveryTimeout,
+      );
     } on Object catch (error) {
-      if (mounted) setState(() => _status = '自動検出失敗: $error');
+      _reportDiscoveryFailure(
+        userInitiated: userInitiated,
+        errorMessage: _l10n.discoveryFailed(error),
+      );
     } finally {
       if (mounted) setState(() => _discovering = false);
     }
   }
 
+  void _reportDiscoveryFailure({
+    required bool userInitiated,
+    required String errorMessage,
+  }) {
+    if (!mounted) return;
+    setState(() {
+      if (userInitiated) {
+        _setErrorStatus(errorMessage);
+      } else {
+        _setIdleStatus(_isStandard ? '' : _l10n.enterEndpointAndToken);
+      }
+    });
+  }
+
+  void _applyPairingLink(Uri uri) {
+    final pairing = parseCompanionPairingLink(uri);
+    if (pairing == null || _companion != null || _connecting) return;
+    _endpointController.text = pairing.endpoint;
+    _tokenController.text = pairing.token;
+    _userInitiatedConnection = true;
+    setState(() => _setProgressStatus(_l10n.readPairingFromQr));
+    unawaited(_toggleConnection());
+  }
+
+  Future<void> _openSystemCamera() async {
+    final openCamera = widget.openSystemCamera;
+    _userInitiatedConnection = true;
+    if (openCamera == null) {
+      setState(() => _setProgressStatus(_l10n.scanQrInSystemCamera));
+      return;
+    }
+    try {
+      await openCamera();
+      if (!mounted) return;
+      setState(() => _setProgressStatus(_l10n.scanQrInSystemCamera));
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(
+        () => _setErrorStatus(
+          _l10n.cameraOpenFailed(error),
+          friendly: _l10n.couldNotOpenCamera,
+        ),
+      );
+    }
+  }
+
+  Future<void> _setDisplayMode(_DisplayMode mode) async {
+    if (mode == _displayMode) return;
+    setState(() {
+      _displayMode = mode;
+      if (mode == _DisplayMode.standard) {
+        _applyStandardProviderChoices();
+        _selectionPending = true;
+      }
+    });
+    await _applySelectionOrDefer();
+  }
+
+  void _applyStandardProviderChoices() {
+    if (_asrChoice != _AsrChoice.desktopNative) {
+      _asrChoice = _AsrChoice.rustSherpaOnnxReazonSpeech;
+    }
+    if (_azooKeyChoice != _AzooKeyChoice.desktopNative) {
+      if (_azooKeyModel != AzooKeyModel.small) {
+        _azooKeyModelReady = false;
+        _azooKeyModel = AzooKeyModel.small;
+      }
+      _azooKeyChoice = _AzooKeyChoice.mobileSmall;
+    }
+    if (_translationChoice != _TranslationChoice.desktopNative) {
+      _translationChoice = _TranslationChoice.rustQuickMt;
+    }
+  }
+
   Future<void> _toggleConnection() async {
     if (_companion != null) {
-      final companion = _companion;
-      final transport = _transport;
-      final processing = _processing;
-      setState(() {
-        _companion = null;
-        _transport = null;
-        _processing = null;
-        _status = '切断しました';
-        _dictionaryReady = false;
-        _azooKeyModelReady = false;
-        _capabilities = null;
-        _authenticated = false;
-        _routeControlsEnabled = false;
-      });
-      await companion?.dispose();
-      await _disposeTransport(transport);
-      await _disposeProcessing(processing);
-      await releaseAzookeyDictionary();
-      await releaseAzookeyModel();
+      await _disconnect();
       return;
     }
     if (_connecting) return;
+    await _connect();
+  }
+
+  Future<void> _disconnect() async {
+    final companion = _companion;
+    final transport = _transport;
+    final processing = _processing;
+    setState(() {
+      _companion = null;
+      _transport = null;
+      _processing = null;
+      _userInitiatedConnection = false;
+      _setIdleStatus(_l10n.disconnected);
+      _dictionaryReady = false;
+      _azooKeyModelReady = false;
+      _capabilities = null;
+      _authenticated = false;
+      _routeControlsEnabled = false;
+    });
+    await companion?.dispose();
+    await _disposeTransport(transport);
+    await _disposeProcessing(processing);
+    await releaseAzookeyDictionary();
+    await releaseAzookeyModel();
+  }
+
+  Future<void> _connect() async {
     setState(() {
       _connecting = true;
-      _status = '接続中';
+      _setProgressStatus(_l10n.connecting);
     });
     final transport = widget.createTransport();
     final processing = widget.createProcessing();
     CompanionController? companion;
     try {
-      setState(() => _status = 'LAN接続中');
+      setState(() => _setProgressStatus(_l10n.connectingLan));
       await transport.open(
         endpoint: Uri.parse(_endpointController.text.trim()),
       );
-      setState(() => _status = '接続済み端末のAPI利用可否を判定中');
+      setState(() => _setProgressStatus(_l10n.checkingDeviceApis));
       final capabilities = await processing.capabilities();
       final providerAvailability = await processing.providerAvailability();
       _providerAvailability = providerAvailability;
@@ -443,13 +641,11 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
         route: supportedRoute,
         transport: transport,
         processing: processing,
+        connectedStatus: _l10n.connectedSession,
+        syncedStatus: _l10n.settingsSynced,
         onStatus: _setStatus,
         onRouteRequested: _applyRequestedRoute,
-        onRouteControlsEnabled: ({required enabled}) {
-          if (!mounted) return;
-          setState(() => _routeControlsEnabled = enabled);
-          if (enabled) unawaited(_applyDeferredSelection());
-        },
+        onRouteControlsEnabled: _handleRouteControlsEnabled,
         onConnectionChanged: _handleConnectionChanged,
         onSource: (text) => _setResult(source: text),
         onAzooKey: (text) => _setResult(azooKey: text),
@@ -461,7 +657,11 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       await _configureSelectedProviders(processing);
       if (supportedRoute.translation == ExecutionDevice.mobile) {
         setState(
-          () => _status = '${_translationChoiceLabel(_translationChoice)}を準備中',
+          () => _setProgressStatus(
+            _l10n.preparingTranslation(
+              _translationChoiceLabel(_translationChoice, _l10n),
+            ),
+          ),
         );
         await processing.prepareTranslation(
           sourceLanguage: 'ja',
@@ -480,18 +680,35 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
         _capabilities = capabilities;
         _selectionPending = false;
         _connecting = false;
-        _status = '認証応答を待っています / route ${pipelineRouteId(route: _route)}';
+        _setProgressStatus(
+          _l10n.waitingForAuthentication(pipelineRouteId(route: _route)),
+        );
       });
     } on Object catch (error) {
       await companion?.dispose();
       await _disposeTransport(transport);
       await _disposeProcessing(processing);
-      if (!mounted) return;
-      setState(() {
-        _connecting = false;
-        _status = '接続失敗: $error';
-      });
+      _reportConnectionFailure(error);
     }
+  }
+
+  void _handleRouteControlsEnabled({required bool enabled}) {
+    if (!mounted) return;
+    setState(() => _routeControlsEnabled = enabled);
+    if (enabled) unawaited(_applyDeferredSelection());
+  }
+
+  void _reportConnectionFailure(Object error) {
+    if (!mounted) return;
+    setState(() {
+      _connecting = false;
+      final message = _l10n.connectionFailed(error);
+      if (_userInitiatedConnection) {
+        _setErrorStatus(message);
+      } else {
+        _setIdleStatus(_isStandard ? '' : message);
+      }
+    });
   }
 
   void _handleConnectionChanged({required bool connected}) {
@@ -520,7 +737,8 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       _routeControlsEnabled = false;
       _connecting = false;
       _discovering = false;
-      _status = '接続が切れました。再接続を準備中';
+      _userInitiatedConnection = false;
+      _setIdleStatus(_isStandard ? '' : _l10n.reconnecting);
     });
     companion?.disposeAfterTransportFailure();
     await _disposeTransport(transport);
@@ -544,7 +762,32 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
   }
 
   void _setStatus(String value) {
-    if (mounted) setState(() => _status = value);
+    if (!mounted) return;
+    setState(() {
+      _statusKind = _StatusKind.progress;
+      _status = value;
+    });
+  }
+
+  void _setIdleStatus(String message) {
+    _statusKind = _StatusKind.idle;
+    _status = message;
+  }
+
+  void _setProgressStatus(String message) {
+    _statusKind = _StatusKind.progress;
+    _status = message;
+  }
+
+  void _setErrorStatus(String detailed, {String? friendly}) {
+    _statusKind = _StatusKind.error;
+    _status = _isStandard ? (friendly ?? _l10n.couldNotConnect) : detailed;
+  }
+
+  String _visibleStatusText() {
+    if (!_isStandard) return _status;
+    if (_statusKind == _StatusKind.idle) return '';
+    return _status;
   }
 
   void _setResult({String? source, String? azooKey, String? translation}) {
@@ -570,7 +813,7 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       _asrChoice = choice;
       _selectionPending = true;
     });
-    await _applySelectionOrDefer('${_asrChoiceLabel(choice)}を選択しました');
+    await _applySelectionOrDefer();
   }
 
   Future<void> _setAzooKeyChoice(_AzooKeyChoice choice) async {
@@ -585,7 +828,7 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       _azooKeyChoice = choice;
       _selectionPending = true;
     });
-    await _applySelectionOrDefer('${_azooKeyChoiceLabel(choice)}を選択しました');
+    await _applySelectionOrDefer();
   }
 
   Future<void> _setTranslationChoice(_TranslationChoice choice) async {
@@ -593,8 +836,10 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       _translationChoice = choice;
       _selectionPending = true;
     });
-    await _applySelectionOrDefer('${_translationChoiceLabel(choice)}を選択しました');
+    await _applySelectionOrDefer();
   }
+
+  bool get _isStandard => _displayMode == _DisplayMode.standard;
 
   PipelineRoute get _selectedRoute => PipelineRoute(
     asr: _asrChoice == _AsrChoice.desktopNative
@@ -608,15 +853,8 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
         : ExecutionDevice.mobile,
   );
 
-  Future<void> _applySelectionOrDefer(String selectedStatus) async {
-    if (_companion == null) {
-      setState(() => _status = selectedStatus);
-      return;
-    }
-    if (!_routeControlsEnabled) {
-      setState(() => _status = '$selectedStatus。現在の認識完了後に反映します');
-      return;
-    }
+  Future<void> _applySelectionOrDefer() async {
+    if (_companion == null || !_routeControlsEnabled) return;
     await _applyDeferredSelection();
   }
 
@@ -640,9 +878,9 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
     if (transport == null) return;
     setState(() {
       _routeControlsEnabled = false;
-      _status =
-          '設定をデスクトップと同期中: '
-          '${pipelineRouteId(route: requestedRoute)}';
+      _setProgressStatus(
+        _l10n.syncingRoute(pipelineRouteId(route: requestedRoute)),
+      );
     });
     try {
       await _prepareRouteResources(requestedRoute);
@@ -651,7 +889,7 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       if (!mounted) return;
       setState(() {
         _routeControlsEnabled = true;
-        _status = '設定同期失敗: $error';
+        _setErrorStatus(_l10n.syncFailed(error));
       });
     }
   }
@@ -680,6 +918,10 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
           ? _AsrChoice.rustSherpaOnnxReazonSpeech
           : _AsrChoice.desktopNative;
     }
+    if (_asrChoice == _AsrChoice.rustSherpaOnnxReazonSpeech &&
+        !availability.rustSherpaOnnx) {
+      _asrChoice = _AsrChoice.desktopNative;
+    }
     if (_translationChoice != _TranslationChoice.rustQuickMt &&
         _translationChoice != _TranslationChoice.desktopNative &&
         !availability.translationSession) {
@@ -691,7 +933,9 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
     if (route.asr == ExecutionDevice.desktop) {
       _asrChoice = _AsrChoice.desktopNative;
     } else if (_asrChoice == _AsrChoice.desktopNative) {
-      _asrChoice = _defaultMobileAsrChoice;
+      _asrChoice = _displayMode == _DisplayMode.standard
+          ? _AsrChoice.rustSherpaOnnxReazonSpeech
+          : _defaultMobileAsrChoice;
     }
     if (route.azookey == ExecutionDevice.desktop) {
       _azooKeyChoice = _AzooKeyChoice.desktopNative;
@@ -736,165 +980,245 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
   @override
   Widget build(BuildContext context) {
     final connected = _companion != null;
+    final l10n = CompanionL10n.of(context);
     return _PlatformPage(
-      title: 'Kotoba Beacon Companion',
+      title: l10n.title,
+      menu: _AppMenu(
+        mode: _displayMode,
+        onSelected: (mode) => unawaited(_setDisplayMode(mode)),
+      ),
       child: SafeArea(
         child: _AdaptiveBody(
-          configuration: _configurationWidgets(connected: connected),
-          results: _resultWidgets(),
+          configuration: _configurationWidgets(
+            connected: connected,
+            l10n: l10n,
+          ),
+          results: _isStandard ? const <Widget>[] : _resultWidgets(l10n),
         ),
       ),
     );
   }
 
-  List<Widget> _configurationWidgets({required bool connected}) {
+  List<Widget> _configurationWidgets({
+    required bool connected,
+    required CompanionL10n l10n,
+  }) {
     final providerAvailability = _providerAvailability;
     final translationAvailable =
         providerAvailability?.translationSession ?? false;
     return [
-      const _SectionHeading('接続情報'),
-      const SizedBox(height: _gap),
-      const Text('エンドポイント', style: _emphasisTextStyle),
-      const SizedBox(height: _gap / 2),
-      _PlatformTextField(
-        key: const Key('endpoint-field'),
-        controller: _endpointController,
-        enabled: !connected,
-        keyboardType: TextInputType.url,
-        label: 'Desktop WebSocket endpoint',
-      ),
-      const SizedBox(height: _gap),
-      const Text('ペアリングトークン', style: _emphasisTextStyle),
-      const SizedBox(height: _gap / 2),
-      _PlatformTextField(
-        key: const Key('token-field'),
-        controller: _tokenController,
-        enabled: !connected,
-        obscureText: true,
-        label: 'Pairing token',
-      ),
-      const SizedBox(height: _gap),
+      if (_displayMode == _DisplayMode.detailed) ...[
+        Text(l10n.endpoint, style: CompanionStyle.emphasis),
+        const SizedBox(height: CompanionStyle.gap),
+        _PlatformTextField(
+          key: const Key('endpoint-field'),
+          controller: _endpointController,
+          enabled: !connected,
+          keyboardType: TextInputType.url,
+          label: l10n.endpointHint,
+        ),
+        const SizedBox(height: CompanionStyle.gap),
+        Text(l10n.pairingToken, style: CompanionStyle.emphasis),
+        const SizedBox(height: CompanionStyle.gap),
+        _PlatformTextField(
+          key: const Key('token-field'),
+          controller: _tokenController,
+          enabled: !connected,
+          obscureText: true,
+          label: l10n.pairingTokenHint,
+        ),
+        const SizedBox(height: CompanionStyle.gap),
+      ],
       Semantics(
         liveRegion: true,
         child: Text(
-          _status,
+          _visibleStatusText(),
           key: const Key('connection-status'),
-          style: _bodyTextStyle,
+          style: CompanionStyle.body,
         ),
       ),
-      const SizedBox(height: _gap),
+      const SizedBox(height: CompanionStyle.gap),
       _ConnectionStateCard(connected: _authenticated),
-      const SizedBox(height: _gap),
-      _ConnectionButton(
-        connected: connected,
-        enabled: !_connecting && !_discovering,
-        onPressed: connected
-            ? _toggleConnection
-            : widget.autoDiscover
-            ? _discoverAndConnect
-            : _toggleConnection,
+      if (!connected) ...[
+        const SizedBox(height: CompanionStyle.gap),
+        _PlatformActionButton(
+          buttonKey: const Key('camera-button'),
+          label: l10n.scanQrWithCamera,
+          enabled: !_connecting && !_discovering,
+          emphasized: false,
+          onPressed: () => unawaited(_openSystemCamera()),
+        ),
+        const SizedBox(height: CompanionStyle.gap),
+        _PlatformActionButton(
+          buttonKey: const Key('connection-button'),
+          label: l10n.connect,
+          enabled: !_connecting && !_discovering,
+          emphasized: true,
+          onPressed: widget.autoDiscover
+              ? () => unawaited(_discoverAndConnect(userInitiated: true))
+              : () {
+                  _userInitiatedConnection = true;
+                  unawaited(_toggleConnection());
+                },
+        ),
+      ] else ...[
+        const SizedBox(height: CompanionStyle.gap),
+        _PlatformActionButton(
+          buttonKey: const Key('connection-button'),
+          label: l10n.disconnect,
+          enabled: !_connecting && !_discovering,
+          emphasized: false,
+          onPressed: _toggleConnection,
+        ),
+      ],
+      const SizedBox(height: CompanionStyle.section),
+      _SectionHeading(l10n.features),
+      const SizedBox(height: CompanionStyle.gap),
+      if (_isStandard) ...[
+        _StandardStageToggle<_AsrChoice>(
+          label: l10n.asrMethod,
+          keyId: 'asr-provider',
+          value: _asrChoice == _AsrChoice.desktopNative
+              ? _AsrChoice.desktopNative
+              : _AsrChoice.rustSherpaOnnxReazonSpeech,
+          desktopValue: _AsrChoice.desktopNative,
+          deviceValue: _AsrChoice.rustSherpaOnnxReazonSpeech,
+          deviceAvailable: providerAvailability?.rustSherpaOnnx ?? false,
+          onChanged: (value) => unawaited(_setAsrChoice(value)),
+        ),
+        _StandardStageToggle<_AzooKeyChoice>(
+          label: l10n.azookeyMethod,
+          keyId: 'azookey-provider',
+          value: _azooKeyChoice == _AzooKeyChoice.desktopNative
+              ? _AzooKeyChoice.desktopNative
+              : _AzooKeyChoice.mobileSmall,
+          desktopValue: _AzooKeyChoice.desktopNative,
+          deviceValue: _AzooKeyChoice.mobileSmall,
+          deviceAvailable: true,
+          onChanged: (value) => unawaited(_setAzooKeyChoice(value)),
+        ),
+        _StandardStageToggle<_TranslationChoice>(
+          label: l10n.translationMethod,
+          keyId: 'translation-provider',
+          value: _translationChoice == _TranslationChoice.desktopNative
+              ? _TranslationChoice.desktopNative
+              : _TranslationChoice.rustQuickMt,
+          desktopValue: _TranslationChoice.desktopNative,
+          deviceValue: _TranslationChoice.rustQuickMt,
+          deviceAvailable: true,
+          onChanged: (value) => unawaited(_setTranslationChoice(value)),
+        ),
+      ] else ...[
+        _ChoiceSelector<_AsrChoice>(
+          label: l10n.asrMethod,
+          keyId: 'asr-provider',
+          value: _asrChoice,
+          options: _asrOptions(providerAvailability, l10n),
+          onChanged: (value) => unawaited(_setAsrChoice(value)),
+        ),
+        _ChoiceSelector<_AzooKeyChoice>(
+          label: l10n.azookeyMethod,
+          keyId: 'azookey-provider',
+          value: _azooKeyChoice,
+          options: _azooKeyOptions(l10n),
+          onChanged: (value) => unawaited(_setAzooKeyChoice(value)),
+        ),
+        _ChoiceSelector<_TranslationChoice>(
+          label: l10n.translationMethod,
+          keyId: 'translation-provider',
+          value: _translationChoice,
+          options: _translationOptions(translationAvailable, l10n),
+          onChanged: (value) => unawaited(_setTranslationChoice(value)),
+        ),
+      ],
+    ];
+  }
+
+  List<_ChoiceOption<_AsrChoice>> _asrOptions(
+    ProcessingProviderAvailability? availability,
+    CompanionL10n l10n,
+  ) {
+    final rustAvailable = availability?.rustSherpaOnnx ?? false;
+    return [
+      _ChoiceOption(
+        value: _AsrChoice.desktopNative,
+        label: l10n.desktopNative,
       ),
-      const SizedBox(height: _sectionGap),
-      const _SectionHeading('連携機能'),
-      const SizedBox(height: _gap),
-      _ChoiceSelector<_AsrChoice>(
-        label: 'ASR方式',
-        keyId: 'asr-provider',
-        value: _asrChoice,
-        options: [
-          const _ChoiceOption(
-            value: _AsrChoice.desktopNative,
-            label: 'Desktop Native（デスクトップで処理）',
-          ),
-          if (_usesCupertino)
-            _ChoiceOption(
-              value: _AsrChoice.speechAnalyzer,
-              label: 'iOS SpeechAnalyzer + SpeechTranscriber（リアルタイム）',
-              available: providerAvailability?.speechAnalyzer ?? false,
-            ),
-          if (_usesCupertino)
-            _ChoiceOption(
-              value: _AsrChoice.sfSpeechRecognizer,
-              label: 'iOS SFSpeechRecognizer（オンデバイス・リアルタイム）',
-              available: providerAvailability?.sfSpeechRecognizer ?? false,
-            ),
-          if (!_usesCupertino)
-            _ChoiceOption(
-              value: _AsrChoice.androidMlKit,
-              label: 'Android ML Kit GenAI Speech Recognition',
-              available: _capabilities?.asrAvailable ?? true,
-            ),
-          _ChoiceOption(
-            value: _AsrChoice.rustSherpaOnnxReazonSpeech,
-            label:
-                'Mobile Rust: sherpa-onnx + ReazonSpeech K2 v2 '
-                'INT8（ONNX Runtime）',
-            available: providerAvailability?.rustSherpaOnnx ?? false,
-          ),
-        ],
-        onChanged: (value) => unawaited(_setAsrChoice(value)),
+      if (_usesCupertino)
+        _ChoiceOption(
+          value: _AsrChoice.speechAnalyzer,
+          label: l10n.iosSpeechAnalyzer,
+          available: availability?.speechAnalyzer ?? false,
+        ),
+      if (_usesCupertino)
+        _ChoiceOption(
+          value: _AsrChoice.sfSpeechRecognizer,
+          label: l10n.iosSfSpeechRecognizer,
+          available: availability?.sfSpeechRecognizer ?? false,
+        ),
+      if (!_usesCupertino)
+        _ChoiceOption(
+          value: _AsrChoice.androidMlKit,
+          label: l10n.androidMlKitSpeech,
+          available: _capabilities?.asrAvailable ?? true,
+        ),
+      _ChoiceOption(
+        value: _AsrChoice.rustSherpaOnnxReazonSpeech,
+        label: l10n.mobileRustReazonSpeech,
+        available: rustAvailable,
       ),
-      _ChoiceSelector<_AzooKeyChoice>(
-        label: 'AzooKey方式',
-        keyId: 'azookey-provider',
-        value: _azooKeyChoice,
-        options: const [
-          _ChoiceOption(
-            value: _AzooKeyChoice.desktopNative,
-            label: 'Desktop Native（デスクトップで処理）',
-          ),
-          _ChoiceOption(
-            value: _AzooKeyChoice.mobileSmall,
-            label: 'Mobile Rust: AzooKey + zenz-v3.2-small Q5_K_M GGUF',
-          ),
-          _ChoiceOption(
-            value: _AzooKeyChoice.mobileXsmall,
-            label: 'Mobile Rust: AzooKey + zenz-v3.2-xsmall Q5_K_M GGUF',
-          ),
-        ],
-        onChanged: (value) => unawaited(_setAzooKeyChoice(value)),
+    ];
+  }
+
+  List<_ChoiceOption<_AzooKeyChoice>> _azooKeyOptions(CompanionL10n l10n) {
+    return [
+      _ChoiceOption(
+        value: _AzooKeyChoice.desktopNative,
+        label: l10n.desktopNative,
       ),
-      _ChoiceSelector<_TranslationChoice>(
-        label: '翻訳方式',
-        keyId: 'translation-provider',
-        value: _translationChoice,
-        options: _translationOptions(translationAvailable),
-        onChanged: (value) => unawaited(_setTranslationChoice(value)),
+      _ChoiceOption(
+        value: _AzooKeyChoice.mobileSmall,
+        label: l10n.mobileRustAzookeySmall,
+      ),
+      _ChoiceOption(
+        value: _AzooKeyChoice.mobileXsmall,
+        label: l10n.mobileRustAzookeyXsmall,
       ),
     ];
   }
 
   List<_ChoiceOption<_TranslationChoice>> _translationOptions(
     bool platformAvailable,
-  ) => [
-    const _ChoiceOption(
-      value: _TranslationChoice.desktopNative,
-      label: 'Desktop Native（デスクトップで処理）',
-    ),
-    if (_usesCupertino)
+    CompanionL10n l10n,
+  ) {
+    return [
       _ChoiceOption(
-        value: _TranslationChoice.platformTranslationSession,
-        label: 'iOS TranslationSession（標準 / lowLatency）',
-        available: platformAvailable,
+        value: _TranslationChoice.desktopNative,
+        label: l10n.desktopNative,
       ),
-    if (_usesCupertino)
+      if (_usesCupertino)
+        _ChoiceOption(
+          value: _TranslationChoice.platformTranslationSession,
+          label: l10n.iosTranslationSession,
+          available: platformAvailable,
+        ),
+      if (_usesCupertino)
+        _ChoiceOption(
+          value: _TranslationChoice.platformTranslationSessionHighFidelity,
+          label: l10n.iosTranslationSessionHighFidelity,
+          available: platformAvailable,
+        ),
       _ChoiceOption(
-        value: _TranslationChoice.platformTranslationSessionHighFidelity,
-        label: 'iOS TranslationSession.highFidelity',
-        available: platformAvailable,
+        value: _TranslationChoice.rustQuickMt,
+        label: l10n.mobileRustQuickMt,
       ),
-    const _ChoiceOption(
-      value: _TranslationChoice.rustQuickMt,
-      label:
-          'Mobile Rust: QuickMT ja→en + CTranslate2 INT8 + '
-          'SentencePiece（beam 2）',
-    ),
-  ];
+    ];
+  }
 
-  List<Widget> _resultWidgets() => [
+  List<Widget> _resultWidgets(CompanionL10n l10n) => [
     _CollapsibleSection(
       sectionKey: const Key('processing-details'),
-      label: '詳細情報を表示',
+      label: l10n.showDetails,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -906,9 +1230,9 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
             translationChoice: _translationChoice,
             capabilities: _capabilities,
           ),
-          _ResultCard(label: 'ASR', text: _sourceText),
-          _ResultCard(label: 'AzooKey', text: _azooKeyText),
-          _ResultCard(label: 'Translation', text: _translationText),
+          _ResultCard(label: l10n.asrMethod, text: _sourceText),
+          _ResultCard(label: l10n.azookeyMethod, text: _azooKeyText),
+          _ResultCard(label: l10n.translationMethod, text: _translationText),
         ],
       ),
     ),
@@ -941,14 +1265,15 @@ class _AdaptiveBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      final wide = constraints.maxWidth >= _wideBreakpoint;
+      final hasResults = results.isNotEmpty;
+      final wide = constraints.maxWidth >= _wideBreakpoint && hasResults;
       final content = wide
           ? Row(
               key: const Key('tablet-two-pane'),
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(child: _Pane(children: configuration)),
-                const SizedBox(width: _sectionGap),
+                const SizedBox(width: CompanionStyle.section),
                 Expanded(child: _Pane(children: results)),
               ],
             )
@@ -956,12 +1281,14 @@ class _AdaptiveBody extends StatelessWidget {
               key: const Key('phone-single-pane'),
               children: [
                 ...configuration,
-                const SizedBox(height: _sectionGap),
-                ...results,
+                if (results.isNotEmpty) ...[
+                  const SizedBox(height: CompanionStyle.section),
+                  ...results,
+                ],
               ],
             );
       return SingleChildScrollView(
-        padding: const EdgeInsets.all(_sectionGap),
+        padding: const EdgeInsets.all(CompanionStyle.section),
         child: Center(
           child: ConstrainedBox(
             constraints: BoxConstraints(
@@ -988,23 +1315,99 @@ class _Pane extends StatelessWidget {
 }
 
 class _PlatformPage extends StatelessWidget {
-  const _PlatformPage({required this.title, required this.child});
+  const _PlatformPage({
+    required this.title,
+    required this.menu,
+    required this.child,
+  });
 
   final String title;
+  final Widget menu;
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
     if (_usesCupertino) {
       return CupertinoPageScaffold(
-        navigationBar: CupertinoNavigationBar(middle: Text(title)),
+        navigationBar: CupertinoNavigationBar(
+          middle: Text(title),
+          trailing: menu,
+        ),
         child: child,
       );
     }
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: AppBar(title: Text(title), actions: [menu]),
       body: child,
     );
+  }
+}
+
+class _AppMenu extends StatelessWidget {
+  const _AppMenu({required this.mode, required this.onSelected});
+
+  final _DisplayMode mode;
+  final ValueChanged<_DisplayMode> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = CompanionL10n.of(context);
+    if (_usesCupertino) {
+      return CupertinoButton(
+        key: const Key('menu-button'),
+        padding: EdgeInsets.zero,
+        onPressed: () => unawaited(_showCupertinoMenu(context, l10n)),
+        child: Icon(CupertinoIcons.bars, semanticLabel: l10n.menu),
+      );
+    }
+    return PopupMenuButton<_DisplayMode>(
+      key: const Key('menu-button'),
+      icon: Icon(Icons.menu, semanticLabel: l10n.menu),
+      tooltip: l10n.menu,
+      initialValue: mode,
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          key: const Key('menu-standard'),
+          value: _DisplayMode.standard,
+          child: Text(l10n.standardMode),
+        ),
+        PopupMenuItem(
+          key: const Key('menu-detailed'),
+          value: _DisplayMode.detailed,
+          child: Text(l10n.detailedMode),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _showCupertinoMenu(
+    BuildContext context,
+    CompanionL10n l10n,
+  ) async {
+    final selected = await showCupertinoModalPopup<_DisplayMode>(
+      context: context,
+      builder: (context) => CupertinoActionSheet(
+        title: Text(l10n.menu),
+        actions: [
+          CupertinoActionSheetAction(
+            key: const Key('menu-standard'),
+            onPressed: () => Navigator.pop(context, _DisplayMode.standard),
+            child: Text(l10n.standardMode),
+          ),
+          CupertinoActionSheetAction(
+            key: const Key('menu-detailed'),
+            onPressed: () => Navigator.pop(context, _DisplayMode.detailed),
+            child: Text(l10n.detailedMode),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(context),
+          child: Text(l10n.cancel),
+        ),
+      ),
+    );
+    if (selected != null) onSelected(selected);
   }
 }
 
@@ -1015,7 +1418,7 @@ class _SectionHeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Text(text, style: _emphasisTextStyle);
+    return Text(text, style: CompanionStyle.emphasis);
   }
 }
 
@@ -1044,11 +1447,11 @@ class _PlatformTextField extends StatelessWidget {
         autocorrect: false,
         keyboardType: keyboardType,
         obscureText: obscureText,
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(CompanionStyle.inset),
         placeholder: label,
-        style: _bodyTextStyle,
-        placeholderStyle: _bodyTextStyle.copyWith(
-          color: CupertinoColors.placeholderText.resolveFrom(context),
+        style: CompanionStyle.body,
+        placeholderStyle: CompanionStyle.body.copyWith(
+          color: CompanionStyle.muted,
         ),
       );
     }
@@ -1058,31 +1461,10 @@ class _PlatformTextField extends StatelessWidget {
       autocorrect: false,
       keyboardType: keyboardType,
       obscureText: obscureText,
-      style: _bodyTextStyle,
+      style: CompanionStyle.body,
       decoration: InputDecoration(labelText: label),
     );
   }
-}
-
-class _ConnectionButton extends StatelessWidget {
-  const _ConnectionButton({
-    required this.connected,
-    required this.enabled,
-    required this.onPressed,
-  });
-
-  final bool connected;
-  final bool enabled;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) => _PlatformActionButton(
-    buttonKey: const Key('connection-button'),
-    label: connected ? '接続中は切断する' : '自動検出で接続する',
-    enabled: enabled,
-    emphasized: true,
-    onPressed: onPressed,
-  );
 }
 
 class _PlatformActionButton extends StatelessWidget {
@@ -1104,31 +1486,41 @@ class _PlatformActionButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final action = enabled ? onPressed : null;
     if (_usesCupertino) {
-      final textColor = emphasized
-          ? CupertinoColors.white
-          : CupertinoTheme.of(context).primaryColor;
       final child = SizedBox(
-        height: _controlHeight,
+        height: CompanionStyle.controlHeight,
         child: Center(
           child: Text(
             label,
-            style: _emphasisTextStyle.copyWith(color: textColor),
+            style: CompanionStyle.emphasis.copyWith(
+              color: CompanionStyle.buttonLabel(
+                emphasized: emphasized,
+                enabled: enabled,
+              ),
+            ),
           ),
         ),
       );
-      if (emphasized) {
-        return CupertinoButton.filled(
-          key: buttonKey,
-          padding: EdgeInsets.zero,
-          onPressed: action,
-          child: child,
-        );
-      }
-      return CupertinoButton.tinted(
+      final button = CupertinoButton(
         key: buttonKey,
         padding: EdgeInsets.zero,
+        color: CompanionStyle.buttonFill(
+          emphasized: emphasized,
+          enabled: enabled,
+        ),
+        disabledColor: CompanionStyle.unavailable,
+        borderRadius: BorderRadius.circular(CompanionStyle.radius),
         onPressed: action,
         child: child,
+      );
+      if (emphasized) return button;
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(CompanionStyle.radius),
+          border: Border.all(
+            color: CompanionStyle.buttonBorder(enabled: enabled),
+          ),
+        ),
+        child: button,
       );
     }
     if (emphasized) {
@@ -1158,6 +1550,96 @@ final class _ChoiceOption<T> {
   final bool available;
 }
 
+class _StandardStageToggle<T extends Object> extends StatelessWidget {
+  const _StandardStageToggle({
+    required this.label,
+    required this.keyId,
+    required this.value,
+    required this.desktopValue,
+    required this.deviceValue,
+    required this.deviceAvailable,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String keyId;
+  final T value;
+  final T desktopValue;
+  final T deviceValue;
+  final bool deviceAvailable;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = CompanionL10n.of(context);
+    final deviceLabel = l10n.deviceNoun(kind: _deviceKind(context));
+    final selected = value == desktopValue ? desktopValue : deviceValue;
+    if (_usesCupertino) {
+      return _LabeledControl(
+        label: label,
+        controlKey: keyId,
+        control: SizedBox(
+          width: double.infinity,
+          height: CompanionStyle.controlHeight,
+          child: CupertinoSlidingSegmentedControl<T>(
+            key: Key(keyId),
+            groupValue: selected,
+            onValueChanged: (next) {
+              if (next == null) return;
+              if (next == deviceValue && !deviceAvailable) return;
+              onChanged(next);
+            },
+            children: <T, Widget>{
+              desktopValue: _segmentLabel(
+                '$keyId-$desktopValue',
+                l10n.desktopNoun,
+              ),
+              deviceValue: _segmentLabel(
+                '$keyId-$deviceValue',
+                deviceLabel,
+              ),
+            },
+          ),
+        ),
+      );
+    }
+    return _LabeledControl(
+      label: label,
+      controlKey: keyId,
+      control: SizedBox(
+        width: double.infinity,
+        height: CompanionStyle.controlHeight,
+        child: SegmentedButton<T>(
+          key: Key(keyId),
+          showSelectedIcon: false,
+          selected: <T>{selected},
+          onSelectionChanged: (next) {
+            if (next.length != 1) return;
+            onChanged(next.single);
+          },
+          segments: [
+            ButtonSegment<T>(
+              value: desktopValue,
+              label: _segmentLabel('$keyId-$desktopValue', l10n.desktopNoun),
+            ),
+            ButtonSegment<T>(
+              value: deviceValue,
+              enabled: deviceAvailable,
+              label: _segmentLabel('$keyId-$deviceValue', deviceLabel),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _segmentLabel(String key, String text) => Text(
+    text,
+    key: Key(key),
+    style: CompanionStyle.body,
+  );
+}
+
 class _ChoiceSelector<T> extends StatelessWidget {
   const _ChoiceSelector({
     required this.label,
@@ -1176,14 +1658,23 @@ class _ChoiceSelector<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _LabeledControl(
     label: label,
-    control: ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: Column(
-        key: Key(keyId),
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: options.indexed
-            .map((entry) => _segment(context, entry.$1, entry.$2))
-            .toList(growable: false),
+    controlKey: keyId,
+    control: DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(CompanionStyle.radius),
+        border: Border.all(color: CompanionStyle.primary),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(
+          CompanionStyle.radius - CompanionStyle.borderWidth,
+        ),
+        child: Column(
+          key: Key(keyId),
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: options.indexed
+              .map((entry) => _segment(context, entry.$1, entry.$2))
+              .toList(growable: false),
+        ),
       ),
     ),
   );
@@ -1194,29 +1685,21 @@ class _ChoiceSelector<T> extends StatelessWidget {
     _ChoiceOption<T> option,
   ) {
     final selected = option.value == value;
-    final primary = _usesCupertino
-        ? CupertinoTheme.of(context).primaryColor
-        : Theme.of(context).colorScheme.primary;
-    final unavailableBackground = _usesCupertino
-        ? CupertinoColors.systemGrey5.resolveFrom(context)
-        : Theme.of(context).colorScheme.surfaceContainerHighest;
+    const primary = CompanionStyle.primary;
     final background = !option.available
-        ? unavailableBackground
+        ? CompanionStyle.unavailable
         : selected
         ? primary
-        : (_usesCupertino
-              ? CupertinoColors.systemBackground.resolveFrom(context)
-              : Theme.of(context).colorScheme.surface);
+        : CompanionStyle.surface;
     final foreground = !option.available
-        ? CupertinoColors.inactiveGray
+        ? CompanionStyle.muted
         : selected
-        ? (_usesCupertino
-              ? CupertinoColors.white
-              : Theme.of(context).colorScheme.onPrimary)
-        : _contentColor;
+        ? CompanionStyle.onPrimary
+        : CompanionStyle.content;
+    final l10n = CompanionL10n.of(context);
     final text = option.available
         ? option.label
-        : '${option.label}（この端末では利用不可）';
+        : l10n.unavailableOnThisDevice(option.label);
     return Semantics(
       button: true,
       selected: selected,
@@ -1228,27 +1711,24 @@ class _ChoiceSelector<T> extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: background,
-            border: Border(
-              left: BorderSide(color: primary),
-              right: BorderSide(color: primary),
-              top: BorderSide(color: primary),
-              bottom: index == options.length - 1
-                  ? BorderSide(color: primary)
-                  : BorderSide.none,
-            ),
+            border: index == 0
+                ? null
+                : const Border(top: BorderSide(color: primary)),
           ),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: _controlHeight),
+            constraints: const BoxConstraints(
+              minHeight: CompanionStyle.controlHeight,
+            ),
             child: Padding(
               padding: const EdgeInsets.symmetric(
-                horizontal: _gap,
-                vertical: _gap,
+                horizontal: CompanionStyle.gap,
+                vertical: CompanionStyle.gap,
               ),
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
                   text,
-                  style: _bodyTextStyle.copyWith(
+                  style: CompanionStyle.body.copyWith(
                     color: foreground,
                     fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
                   ),
@@ -1263,32 +1743,37 @@ class _ChoiceSelector<T> extends StatelessWidget {
 }
 
 class _LabeledControl extends StatelessWidget {
-  const _LabeledControl({required this.label, required this.control});
+  const _LabeledControl({
+    required this.label,
+    required this.controlKey,
+    required this.control,
+  });
 
   static const _horizontalBreakpoint = 560.0;
 
   final String label;
+  final String controlKey;
   final Widget control;
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: _gap / 2),
+    padding: const EdgeInsets.symmetric(vertical: CompanionStyle.gap),
     child: LayoutBuilder(
       builder: (context, constraints) =>
           constraints.maxWidth >= _horizontalBreakpoint
           ? Row(
-              key: Key('horizontal-control-$label'),
+              key: Key('horizontal-control-$controlKey'),
               children: [
-                Expanded(child: Text(label, style: _bodyTextStyle)),
+                Expanded(child: Text(label, style: CompanionStyle.body)),
                 Expanded(child: control),
               ],
             )
           : Column(
-              key: Key('vertical-control-$label'),
+              key: Key('vertical-control-$controlKey'),
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(label, style: _emphasisTextStyle),
-                const SizedBox(height: _gap / 2),
+                Text(label, style: CompanionStyle.emphasis),
+                const SizedBox(height: CompanionStyle.gap),
                 control,
               ],
             ),
@@ -1329,30 +1814,31 @@ _AzooKeyChoice _azooKeyChoiceForModel(AzooKeyModel model) => switch (model) {
   AzooKeyModel.xsmall => _AzooKeyChoice.mobileXsmall,
 };
 
-String _asrChoiceLabel(_AsrChoice choice) => switch (choice) {
-  _AsrChoice.desktopNative => 'Desktop Native ASR',
-  _AsrChoice.speechAnalyzer => 'iOS SpeechAnalyzer + SpeechTranscriber（リアルタイム）',
-  _AsrChoice.sfSpeechRecognizer => 'iOS SFSpeechRecognizer（オンデバイス）',
-  _AsrChoice.androidMlKit => 'Android ML Kit GenAI Speech Recognition',
-  _AsrChoice.rustSherpaOnnxReazonSpeech =>
-    'Mobile Rust sherpa-onnx + ReazonSpeech K2 v2 INT8',
-};
+String _asrChoiceLabel(_AsrChoice choice, CompanionL10n l10n) =>
+    switch (choice) {
+      _AsrChoice.desktopNative => l10n.desktopNative,
+      _AsrChoice.speechAnalyzer => l10n.iosSpeechAnalyzer,
+      _AsrChoice.sfSpeechRecognizer => l10n.iosSfSpeechRecognizer,
+      _AsrChoice.androidMlKit => l10n.androidMlKitSpeech,
+      _AsrChoice.rustSherpaOnnxReazonSpeech => l10n.mobileRustReazonSpeech,
+    };
 
-String _azooKeyChoiceLabel(_AzooKeyChoice choice) => switch (choice) {
-  _AzooKeyChoice.desktopNative => 'Desktop Native',
-  _AzooKeyChoice.mobileSmall =>
-    'Mobile Rust AzooKey + zenz-v3.2-small Q5_K_M GGUF',
-  _AzooKeyChoice.mobileXsmall =>
-    'Mobile Rust AzooKey + zenz-v3.2-xsmall Q5_K_M GGUF',
-};
+String _azooKeyChoiceLabel(_AzooKeyChoice choice, CompanionL10n l10n) =>
+    switch (choice) {
+      _AzooKeyChoice.desktopNative => l10n.desktopNative,
+      _AzooKeyChoice.mobileSmall => l10n.mobileRustAzookeySmall,
+      _AzooKeyChoice.mobileXsmall => l10n.mobileRustAzookeyXsmall,
+    };
 
-String _translationChoiceLabel(_TranslationChoice choice) => switch (choice) {
-  _TranslationChoice.desktopNative => 'Desktop Native翻訳',
-  _TranslationChoice.platformTranslationSession =>
-    'iOS TranslationSession lowLatency',
+String _translationChoiceLabel(
+  _TranslationChoice choice,
+  CompanionL10n l10n,
+) => switch (choice) {
+  _TranslationChoice.desktopNative => l10n.desktopNative,
+  _TranslationChoice.platformTranslationSession => l10n.iosTranslationSession,
   _TranslationChoice.platformTranslationSessionHighFidelity =>
-    'iOS TranslationSession.highFidelity',
-  _TranslationChoice.rustQuickMt => 'Mobile Rust QuickMT',
+    l10n.iosTranslationSessionHighFidelity,
+  _TranslationChoice.rustQuickMt => l10n.mobileRustQuickMt,
 };
 
 class _ConnectionStateCard extends StatelessWidget {
@@ -1362,22 +1848,26 @@ class _ConnectionStateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final connection = connected ? '認証済み' : '未接続または同期中';
+    final l10n = CompanionL10n.of(context);
+    final connection = l10n.connectionStateValue(connected);
     if (_usesCupertino) {
       return CupertinoListSection.insetGrouped(
         margin: EdgeInsets.zero,
         children: [
           CupertinoListTile(
-            title: const Text('接続状態', style: _emphasisTextStyle),
-            additionalInfo: Text(connection, style: _bodyTextStyle),
+            title: Text(l10n.connectionState, style: CompanionStyle.emphasis),
+            additionalInfo: Text(connection, style: CompanionStyle.body),
           ),
         ],
       );
     }
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(_sectionGap),
-        child: Text('接続状態: $connection', style: _emphasisTextStyle),
+        padding: const EdgeInsets.all(CompanionStyle.section),
+        child: Text(
+          l10n.connectionStateLine(connected),
+          style: CompanionStyle.emphasis,
+        ),
       ),
     );
   }
@@ -1408,8 +1898,8 @@ class _CollapsibleSectionState extends State<_CollapsibleSection> {
     children: [
       if (_usesCupertino)
         CupertinoButton(
-          minimumSize: const Size(0, _controlHeight),
-          padding: const EdgeInsets.symmetric(horizontal: _gap),
+          minimumSize: const Size(0, CompanionStyle.controlHeight),
+          padding: const EdgeInsets.symmetric(horizontal: CompanionStyle.gap),
           alignment: Alignment.centerLeft,
           onPressed: _toggle,
           child: _heading(),
@@ -1418,7 +1908,7 @@ class _CollapsibleSectionState extends State<_CollapsibleSection> {
         TextButton(
           style: const ButtonStyle(
             minimumSize: WidgetStatePropertyAll(
-              Size.fromHeight(_controlHeight),
+              Size.fromHeight(CompanionStyle.controlHeight),
             ),
             alignment: Alignment.centerLeft,
           ),
@@ -1438,8 +1928,8 @@ class _CollapsibleSectionState extends State<_CollapsibleSection> {
                   ? CupertinoIcons.chevron_down
                   : Icons.expand_more),
       ),
-      const SizedBox(width: _gap),
-      Text(widget.label, style: _emphasisTextStyle),
+      const SizedBox(width: CompanionStyle.gap),
+      Text(widget.label, style: CompanionStyle.emphasis),
     ],
   );
 
@@ -1465,15 +1955,15 @@ class _ConnectionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final items = _detailItems();
+    final items = _detailItems(CompanionL10n.of(context));
     if (_usesCupertino) {
       return CupertinoListSection.insetGrouped(
         margin: EdgeInsets.zero,
         children: items
             .map(
               (item) => CupertinoListTile(
-                title: Text(item.$1, style: _emphasisTextStyle),
-                subtitle: Text(item.$2, style: _bodyTextStyle),
+                title: Text(item.$1, style: CompanionStyle.emphasis),
+                subtitle: Text(item.$2, style: CompanionStyle.body),
               ),
             )
             .toList(growable: false),
@@ -1481,12 +1971,13 @@ class _ConnectionCard extends StatelessWidget {
     }
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(_sectionGap),
+        padding: const EdgeInsets.all(CompanionStyle.section),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: items
               .map(
-                (item) => Text('${item.$1}: ${item.$2}', style: _bodyTextStyle),
+                (item) =>
+                    Text('${item.$1}: ${item.$2}', style: CompanionStyle.body),
               )
               .toList(growable: false),
         ),
@@ -1494,26 +1985,33 @@ class _ConnectionCard extends StatelessWidget {
     );
   }
 
-  List<(String, String)> _detailItems() {
+  List<(String, String)> _detailItems(CompanionL10n l10n) {
     final capabilities = this.capabilities;
     return [
-      ('Desktop endpoint', endpoint),
-      ('同期済み route', pipelineRouteId(route: route)),
-      ('ASR方式', _asrChoiceLabel(asrChoice)),
-      ('AzooKey方式', _azooKeyChoiceLabel(azooKeyChoice)),
-      ('翻訳方式', _translationChoiceLabel(translationChoice)),
+      (l10n.desktopEndpoint, endpoint),
+      (l10n.synchronizedRoute, pipelineRouteId(route: route)),
+      (l10n.asrMethod, _asrChoiceLabel(asrChoice, l10n)),
+      (l10n.azookeyMethod, _azooKeyChoiceLabel(azooKeyChoice, l10n)),
+      (
+        l10n.translationMethod,
+        _translationChoiceLabel(translationChoice, l10n),
+      ),
       if (capabilities != null)
         (
-          'Mobile APIs',
-          'ASR ${_availability(capabilities.asrAvailable)}, '
-              'AzooKey ${_availability(capabilities.azookeyAvailable)}, '
-              '翻訳 ${_availability(capabilities.translationAvailable)}',
+          l10n.mobileApis,
+          '${l10n.asrMethod} '
+              '${_availability(capabilities.asrAvailable, l10n)}, '
+              '${l10n.azookeyMethod} '
+              '${_availability(capabilities.azookeyAvailable, l10n)}, '
+              '${l10n.translationMethod} '
+              '${_availability(capabilities.translationAvailable, l10n)}',
         ),
     ];
   }
 }
 
-String _availability(bool available) => available ? '利用可' : '利用不可';
+String _availability(bool available, CompanionL10n l10n) =>
+    available ? l10n.available : l10n.unavailable;
 
 class _ResultCard extends StatelessWidget {
   const _ResultCard({required this.label, required this.text});
@@ -1523,27 +2021,27 @@ class _ResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final value = text.isEmpty ? '—' : text;
+    final value = text.isEmpty ? CompanionL10n.of(context).emptyResult : text;
     if (_usesCupertino) {
       return CupertinoListSection.insetGrouped(
-        margin: const EdgeInsets.symmetric(vertical: 4),
+        margin: const EdgeInsets.symmetric(vertical: CompanionStyle.gap),
         children: [
           CupertinoListTile(
-            title: Text(label, style: _emphasisTextStyle),
-            subtitle: Text(value, style: _bodyTextStyle),
+            title: Text(label, style: CompanionStyle.emphasis),
+            subtitle: Text(value, style: CompanionStyle.body),
           ),
         ],
       );
     }
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(_sectionGap),
+        padding: const EdgeInsets.all(CompanionStyle.section),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(label, style: _emphasisTextStyle),
-            const SizedBox(height: _gap),
-            Text(value, style: _bodyTextStyle),
+            Text(label, style: CompanionStyle.emphasis),
+            const SizedBox(height: CompanionStyle.gap),
+            Text(value, style: CompanionStyle.body),
           ],
         ),
       ),

@@ -12,10 +12,15 @@ RUST_MANIFEST := rust/Cargo.toml
 COVERAGE_CHECK := ../../scripts/verify-mobile-coverage.mjs
 DART_SOURCES := lib test integration_test
 ANDROID_TARGET := android-arm64
+IOS_DEVICE ?=
+IOS_DEVICE_RUSTFLAGS := -C target-feature=+fp16
+IOS_BUNDLE_ID := com.kotobabeacon.companion
+IOS_DEVICE_APP := build/ios/iphoneos/Runner.app
 
 .PHONY: help doctor setup generate format format-check analyze lint \
 	rust-format rust-lint rust-test rust-build rust-verify test coverage \
-	verify android ios build-android build-ios build-ios-simulator build clean
+	verify android ios ios-device install-ios-device run-ios-device \
+	build-android build-ios build-ios-simulator build-ios-device build clean
 
 help:
 	@printf '%s\n' \
@@ -33,8 +38,12 @@ help:
 		'  make verify              Run every non-packaging Rust and Flutter quality gate' \
 		'  make android             Build the supported ARM64 release APK' \
 		'  make ios                 Build the unsigned debug iOS Simulator app' \
+		'  make ios-device IOS_DEVICE=<udid> Build the signed release app for a physical iPhone' \
+		'  make install-ios-device IOS_DEVICE=<udid> Build and install the release app' \
+		'  make run-ios-device IOS_DEVICE=<udid> Build, install, and launch the release app' \
 		'  make build-android       Explicit alias for make android' \
 		'  make build-ios           Explicit alias for make ios' \
+		'  make build-ios-device    Explicit alias for make ios-device' \
 		'  make build               Build Android ARM64 and iOS Simulator artifacts' \
 		'  make clean               Remove Flutter build, coverage, and generated caches'
 
@@ -108,9 +117,23 @@ build-android: android
 ios:
 	$(FLUTTER) build ios --simulator --debug --no-codesign
 
+ios-device:
+	@test -n "$(IOS_DEVICE)" || { echo 'IOS_DEVICE is required; run flutter devices to find the physical iPhone UDID' >&2; exit 2; }
+	CARGO_TARGET_AARCH64_APPLE_IOS_RUSTFLAGS="$(IOS_DEVICE_RUSTFLAGS)" \
+		$(FLUTTER) build ios --release --device-id "$(IOS_DEVICE)"
+	codesign --verify --deep --strict "$(IOS_DEVICE_APP)"
+
+install-ios-device: ios-device
+	xcrun devicectl device install app --device "$(IOS_DEVICE)" "$(IOS_DEVICE_APP)"
+
+run-ios-device: install-ios-device
+	xcrun devicectl device process launch --terminate-existing --device "$(IOS_DEVICE)" "$(IOS_BUNDLE_ID)"
+
 build-ios: ios
 
 build-ios-simulator: ios
+
+build-ios-device: ios-device
 
 build:
 	$(MAKE) android

@@ -11,6 +11,11 @@ void _ignoreRouteControlState({required bool enabled}) {}
 
 void _ignoreConnectionState({required bool connected}) {}
 
+String _defaultConnectedStatus(String sessionId, String routeId) =>
+    '接続済み: $sessionId / $routeId';
+
+String _defaultSyncedStatus(String routeId) => '設定同期済み: $routeId';
+
 /// Reports whether the authenticated session is idle enough to change routes.
 typedef RouteControlsChanged = void Function({required bool enabled});
 
@@ -36,12 +41,14 @@ final class _TranslationRequest {
     required this.turnId,
     required this.revision,
     required this.text,
+    required this.isFinal,
   });
 
   final String sessionId;
   final BigInt turnId;
   final BigInt revision;
   final String text;
+  final bool isFinal;
 }
 
 /// Routes revision-scoped commands and stage results between Native and Mobile.
@@ -58,6 +65,8 @@ final class CompanionController {
     this.onRouteRequested = _acceptRoute,
     this.onRouteControlsEnabled = _ignoreRouteControlState,
     this.onConnectionChanged = _ignoreConnectionState,
+    this.connectedStatus = _defaultConnectedStatus,
+    this.syncedStatus = _defaultSyncedStatus,
   }) {
     _transportSubscription = transport.messages.listen(
       _handleTransportMessage,
@@ -84,6 +93,12 @@ final class CompanionController {
   /// Enables route changes only while the authenticated session is idle.
   final RouteControlsChanged onRouteControlsEnabled;
 
+  /// Formats the authenticated connection status line.
+  final String Function(String sessionId, String routeId) connectedStatus;
+
+  /// Formats the synchronized-route status line.
+  final String Function(String routeId) syncedStatus;
+
   /// Reports whether Native acknowledged the authenticated session.
   final void Function({required bool connected}) onConnectionChanged;
 
@@ -100,6 +115,7 @@ final class CompanionController {
 
   final Map<BigInt, BigInt> _latestRevisionByTurn = <BigInt, BigInt>{};
   final Map<BigInt, BigInt> _asrBaseRevisionByTurn = <BigInt, BigInt>{};
+  BigInt? _latestTurnId;
   final List<Uint8List> _pendingPcm = <Uint8List>[];
   StreamSubscription<Object>? _transportSubscription;
   StreamSubscription<ProcessingEvent>? _processingSubscription;
@@ -203,11 +219,11 @@ final class CompanionController {
         await _configureRoute(route);
         onConnectionChanged(connected: true);
         onRouteControlsEnabled(enabled: true);
-        onStatus('接続済み: $sessionId / ${pipelineRouteId(route: route)}');
+        onStatus(connectedStatus(sessionId, pipelineRouteId(route: route)));
       case DesktopCommand_ConfigureRoute(:final route):
         await _configureRoute(route);
         onRouteControlsEnabled(enabled: true);
-        onStatus('設定同期済み: ${pipelineRouteId(route: route)}');
+        onStatus(syncedStatus(pipelineRouteId(route: route)));
       case DesktopCommand_StartAudio(
         :final sessionId,
         :final turnId,
@@ -269,6 +285,7 @@ final class CompanionController {
         :final turnId,
         :final revision,
         :final sourceText,
+        :final isFinal,
       ):
         onRouteControlsEnabled(enabled: false);
         if (!_translationEnabled ||
@@ -282,6 +299,7 @@ final class CompanionController {
             turnId: turnId,
             revision: revision,
             text: sourceText,
+            isFinal: isFinal,
           ),
         );
       case DesktopCommand_SetTranslationEnabled(:final enabled):
@@ -295,6 +313,7 @@ final class CompanionController {
         _pendingTranslation = null;
         _latestRevisionByTurn.clear();
         _asrBaseRevisionByTurn.clear();
+        _latestTurnId = null;
         await processing.cancel();
         onRouteControlsEnabled(enabled: true);
         onStatus('デスクトップがセッションを停止しました');
@@ -407,6 +426,7 @@ final class CompanionController {
             turnId: turnId,
             revision: revision,
             text: output.text,
+            isFinal: isFinal,
           ),
         );
       }
@@ -431,6 +451,7 @@ final class CompanionController {
         turnId: request.turnId,
         revision: request.revision,
         text: request.text,
+        isFinal: request.isFinal,
       );
     }
     _translationRunning = false;
@@ -441,6 +462,7 @@ final class CompanionController {
     required BigInt turnId,
     required BigInt revision,
     required String text,
+    required bool isFinal,
   }) async {
     try {
       final translated = await processing.translate(
@@ -457,7 +479,7 @@ final class CompanionController {
           turnId: turnId,
           revision: revision,
           text: translated,
-          isFinal: true,
+          isFinal: isFinal,
         ),
       );
     } on Object catch (error) {
@@ -475,11 +497,19 @@ final class CompanionController {
     _pendingTranslation = null;
     _latestRevisionByTurn.clear();
     _asrBaseRevisionByTurn.clear();
+    _latestTurnId = null;
     await onRouteRequested(nextRoute);
     route = nextRoute;
   }
 
   bool _acceptRevision(BigInt turnId, BigInt revision) {
+    final latestTurn = _latestTurnId;
+    if (latestTurn != null && turnId < latestTurn) return false;
+    if (latestTurn == null || turnId > latestTurn) {
+      _latestTurnId = turnId;
+      _latestRevisionByTurn.removeWhere((key, _) => key < turnId);
+      _asrBaseRevisionByTurn.removeWhere((key, _) => key < turnId);
+    }
     final current = _latestRevisionByTurn[turnId];
     if (current != null && revision < current) return false;
     _latestRevisionByTurn[turnId] = revision;
@@ -487,7 +517,7 @@ final class CompanionController {
   }
 
   bool _isCurrent(BigInt turnId, BigInt revision) =>
-      _latestRevisionByTurn[turnId] == revision;
+      _latestTurnId == turnId && _latestRevisionByTurn[turnId] == revision;
 
   void _handleTransportError(Object error) {
     onConnectionChanged(connected: false);

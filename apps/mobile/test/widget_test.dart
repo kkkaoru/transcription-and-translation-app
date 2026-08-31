@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kotoba_beacon_companion/main.dart' as app;
 import 'package:kotoba_beacon_companion/src/companion_connection.dart';
+import 'package:kotoba_beacon_companion/src/companion_l10n.dart';
 import 'package:kotoba_beacon_companion/src/native_processing.dart';
 import 'package:kotoba_beacon_companion/src/rust/api/simple.dart';
 
@@ -19,6 +20,11 @@ const _testCapabilities = MobileCapabilities(
   asrAvailable: true,
   azookeyAvailable: true,
   translationAvailable: true,
+);
+
+Widget _japaneseShell({required Widget home}) => CompanionL10nScope(
+  l10n: CompanionL10n.japanese,
+  child: MaterialApp(home: home),
 );
 
 void main() {
@@ -46,6 +52,18 @@ void main() {
     _testConnectionFailure,
   );
   testWidgets(
+    'reports a dictionary preparation failure in detailed mode',
+    _testDictionaryPreparationFailure,
+  );
+  testWidgets(
+    'reports a user-requested discovery timeout in detailed mode',
+    _testUserRequestedDiscoveryTimeout,
+  );
+  testWidgets(
+    'handles unavailable and failing system camera actions',
+    _testSystemCameraFailures,
+  );
+  testWidgets(
     'automatically reconnects after an unexpected transport disconnect',
     _testAutomaticReconnect,
   );
@@ -69,13 +87,33 @@ void main() {
     'uses two panes in iPad landscape and one pane in portrait',
     _testIPadResponsiveLayout,
   );
+  testWidgets(
+    'keeps standard mode to Desktop and Mobile Rust',
+    _testStandardModeChoices,
+  );
+  testWidgets(
+    'pairs from a camera QR link and hides connection actions',
+    _testQrPairingLink,
+  );
+  testWidgets(
+    'renders English copy when the locale is English',
+    _testEnglishCopy,
+  );
+  testWidgets(
+    'does not treat a missed desktop as an error in standard mode',
+    _testStandardModeHidesDiscoveryFailure,
+  );
+  testWidgets(
+    'uses tablet copy on a large Android screen',
+    _testAndroidTabletNoun,
+  );
 }
 
 Future<void> _testProductionMain(WidgetTester tester) async {
   await app.startCompanion(
     initializeRust: () async {},
-    root: const MaterialApp(
-      home: app.CompanionHomePage(
+    root: _japaneseShell(
+      home: const app.CompanionHomePage(
         initialRoute: PipelineRoute(
           asr: ExecutionDevice.desktop,
           azookey: ExecutionDevice.desktop,
@@ -87,13 +125,14 @@ Future<void> _testProductionMain(WidgetTester tester) async {
   await tester.pump();
 
   expect(find.byType(app.CompanionHomePage), findsOneWidget);
+  await _showDetailedMode(tester);
   await tester.enterText(
-    find.widgetWithText(TextField, 'Desktop WebSocket endpoint'),
+    find.widgetWithText(TextField, 'デスクトップのWebSocketエンドポイント'),
     'https://invalid.example/companion',
   );
   final connectButton = find.widgetWithText(
     FilledButton,
-    '自動検出で接続する',
+    '接続する',
   );
   await tester.ensureVisible(connectButton);
   tester.widget<FilledButton>(connectButton).onPressed?.call();
@@ -109,40 +148,60 @@ Future<void> _initializeWidgetDictionary() async {
 }
 
 Future<void> _testMobileDefaults(WidgetTester tester) async {
-  await tester.pumpWidget(const app.KotobaBeaconCompanionApp());
+  _setPhoneView(tester);
+  await tester.pumpWidget(
+    const app.KotobaBeaconCompanionApp(locale: Locale('ja')),
+  );
 
   expect(find.byType(MaterialApp), findsOneWidget);
   expect(find.byType(CupertinoApp), findsNothing);
   expect(find.text('Kotoba Beacon Companion'), findsOneWidget);
+  expect(find.byKey(const Key('menu-button')), findsOneWidget);
+  expect(find.text('表示モード'), findsNothing);
   expect(find.text('連携機能'), findsOneWidget);
-  expect(find.text('接続情報'), findsOneWidget);
-  expect(find.text('エンドポイント'), findsOneWidget);
-  expect(find.text('ペアリングトークン'), findsOneWidget);
-  expect(find.text('ASR方式'), findsOneWidget);
-  expect(find.text('AzooKey方式'), findsOneWidget);
-  expect(find.text('翻訳方式'), findsOneWidget);
+  expect(find.text('接続情報'), findsNothing);
+  expect(find.text('エンドポイント'), findsNothing);
+  expect(find.text('ペアリングトークン'), findsNothing);
+  expect(find.text('文字起こし'), findsOneWidget);
+  expect(find.text('日本語変換'), findsOneWidget);
+  expect(find.text('翻訳'), findsOneWidget);
+  expect(find.text('デスクトップ'), findsNWidgets(3));
+  expect(find.text('スマホ'), findsNWidgets(3));
+  expect(find.text('カメラでQRを読み取る'), findsOneWidget);
+  expect(find.text('詳細情報を表示'), findsNothing);
+  expect(find.byKey(const Key('processing-details')), findsNothing);
   expect(
-    tester.getTopLeft(find.text('接続情報')).dy,
+    find.byKey(const Key('asr-provider-_AsrChoice.androidMlKit')),
+    findsNothing,
+  );
+  expect(
+    find.byKey(const Key('azookey-provider-_AzooKeyChoice.mobileXsmall')),
+    findsNothing,
+  );
+  await _showDetailedMode(tester);
+  expect(find.text('エンドポイント'), findsOneWidget);
+  expect(find.text('ペアリングトークン'), findsWidgets);
+  expect(
+    tester.getTopLeft(find.textContaining('接続状態')).dy,
     lessThan(tester.getTopLeft(find.text('連携機能')).dy),
   );
   expect(
     tester.getTopLeft(find.textContaining('接続状態')).dy,
     lessThan(
-      tester.getTopLeft(find.widgetWithText(FilledButton, '自動検出で接続する')).dy,
+      tester.getTopLeft(find.widgetWithText(FilledButton, '接続する')).dy,
     ),
   );
-  expect(find.textContaining('Desktop Native（デスクトップで処理）'), findsNWidgets(3));
-  expect(find.textContaining('Android ML Kit GenAI Speech'), findsOneWidget);
-  expect(find.textContaining('Mobile Rust: QuickMT'), findsOneWidget);
-  expect(find.textContaining('zenz-v3.2-small Q5_K_M GGUF'), findsOneWidget);
-  expect(find.textContaining('zenz-v3.2-xsmall Q5_K_M GGUF'), findsOneWidget);
+  expect(find.text('Android ML Kit Speech'), findsOneWidget);
+  expect(find.text('Mobile Rust（QuickMT）'), findsOneWidget);
+  expect(find.text('Mobile Rust（AzooKey Small）'), findsOneWidget);
+  expect(find.text('Mobile Rust（AzooKey XSmall）'), findsOneWidget);
   expect(find.text('詳細情報を表示'), findsOneWidget);
   expect(find.byKey(const Key('processing-details')), findsOneWidget);
   expect(find.byKey(const Key('connection-details')), findsNothing);
   expect(find.byKey(const Key('asr-details')), findsNothing);
   expect(find.byKey(const Key('azookey-details')), findsNothing);
   expect(find.byKey(const Key('translation-details')), findsNothing);
-  expect(find.text('同期済み route: mmm'), findsNothing);
+  expect(find.text('同期済みルート: mmm'), findsNothing);
   expect(
     tester
         .widget<GestureDetector>(
@@ -160,11 +219,13 @@ Future<void> _testMobileDefaults(WidgetTester tester) async {
     ),
   );
   await tester.pump();
-  expect(find.textContaining('Desktop Native翻訳を選択しました'), findsOneWidget);
+  expect(find.textContaining('を選択しました'), findsNothing);
 }
 
 Future<void> _testVisualVocabulary(WidgetTester tester) async {
-  await tester.pumpWidget(const app.KotobaBeaconCompanionApp());
+  await tester.pumpWidget(
+    const app.KotobaBeaconCompanionApp(locale: Locale('ja')),
+  );
 
   final materialApp = tester.widget<MaterialApp>(find.byType(MaterialApp));
   final theme = materialApp.theme!;
@@ -175,17 +236,17 @@ Future<void> _testVisualVocabulary(WidgetTester tester) async {
   expect(theme.textTheme.titleLarge?.fontSize, 20);
   expect(theme.textTheme.titleLarge?.fontWeight, FontWeight.w600);
   expect(find.byType(FilledButton), findsOneWidget);
-  expect(find.byType(OutlinedButton), findsNothing);
+  expect(find.byType(OutlinedButton), findsOneWidget);
   expect(
     tester.getSize(find.byType(FilledButton)).height,
     greaterThanOrEqualTo(48),
   );
   expect(
-    tester
-        .getSize(
-          find.byKey(const Key('azookey-provider-_AzooKeyChoice.mobileSmall')),
-        )
-        .height,
+    tester.getSize(find.byType(OutlinedButton)).height,
+    greaterThanOrEqualTo(48),
+  );
+  expect(
+    tester.getSize(find.byKey(const Key('azookey-provider'))).height,
     greaterThanOrEqualTo(48),
   );
 }
@@ -196,7 +257,7 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
   var dictionaryCalls = 0;
   final preparedModels = <AzooKeyModel>[];
   await tester.pumpWidget(
-    MaterialApp(
+    _japaneseShell(
       home: app.CompanionHomePage(
         key: UniqueKey(),
         createTransport: () => transport,
@@ -206,9 +267,15 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
       ),
     ),
   );
+  await _showDetailedMode(tester);
+  await _tapVisible(
+    tester,
+    find.byKey(const Key('asr-provider-_AsrChoice.androidMlKit')),
+  );
+  await tester.pump();
   final connectButton = find.widgetWithText(
     FilledButton,
-    '自動検出で接続する',
+    '接続する',
   );
   await tester.ensureVisible(connectButton);
   final connectAction = tester.widget<FilledButton>(connectButton).onPressed;
@@ -234,11 +301,11 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 20));
   expect(find.textContaining('接続済み: widget-session / mmm'), findsOneWidget);
   expect(find.text('接続状態: 認証済み'), findsOneWidget);
-  expect(find.text('同期済み route: mmm'), findsNothing);
+  expect(find.text('同期済みルート: mmm'), findsNothing);
   await _tapVisible(tester, find.text('詳細情報を表示'));
   await tester.pump();
-  expect(find.text('同期済み route: mmm'), findsOneWidget);
-  expect(find.textContaining('Mobile APIs: ASR 利用可'), findsOneWidget);
+  expect(find.text('同期済みルート: mmm'), findsOneWidget);
+  expect(find.textContaining('モバイルAPI'), findsOneWidget);
   final xsmallChoice = find.byKey(
     const Key('azookey-provider-_AzooKeyChoice.mobileXsmall'),
   );
@@ -247,7 +314,7 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
   await tester.tap(xsmallChoice);
   await tester.pumpAndSettle();
   expect(preparedModels, [AzooKeyModel.small, AzooKeyModel.xsmall]);
-  expect(find.textContaining('zenz-v3.2-xsmall Q5_K_M GGUF'), findsWidgets);
+  expect(find.text('Mobile Rust（AzooKey XSmall）'), findsOneWidget);
 
   transport.addText(
     '{"version":1,"type":"audio.start","session_id":"widget-session",'
@@ -265,7 +332,7 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
   );
   await tester.pump();
   expect(transport.sentTexts.length, sentBeforeBusySelection);
-  expect(find.textContaining('現在の認識完了後に反映します'), findsOneWidget);
+  expect(find.textContaining('を選択しました'), findsNothing);
 
   processing.emit(
     AsrProcessingEvent(
@@ -318,14 +385,14 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
     ),
   );
   expect(processing.releaseTranslationCalls, 1);
-  expect(find.text('同期済み route: mmm'), findsOneWidget);
+  expect(find.text('同期済みルート: mmm'), findsOneWidget);
   transport.addText(
     '{"version":1,"type":"route.configure",'
     '"route":{"asr":"mobile","azookey":"mobile",'
     '"translation":"desktop"}}',
   );
   await tester.pump(const Duration(milliseconds: 20));
-  expect(find.text('同期済み route: mmd'), findsOneWidget);
+  expect(find.text('同期済みルート: mmd'), findsOneWidget);
   expect(find.text('設定同期済み: mmd'), findsOneWidget);
 
   var sentCount = transport.sentTexts.length;
@@ -376,12 +443,12 @@ Future<void> _testMobileConnectionLifecycle(WidgetTester tester) async {
     '"translation":"mobile"}}',
   );
   await tester.pump(const Duration(milliseconds: 20));
-  expect(find.text('同期済み route: mmm'), findsOneWidget);
+  expect(find.text('同期済みルート: mmm'), findsOneWidget);
 
-  final disconnectButton = find.widgetWithText(FilledButton, '接続中は切断する');
+  final disconnectButton = find.widgetWithText(OutlinedButton, '切断する');
   await tester.ensureVisible(disconnectButton);
   final disconnectAction = tester
-      .widget<FilledButton>(disconnectButton)
+      .widget<OutlinedButton>(disconnectButton)
       .onPressed;
   expect(disconnectAction, isNotNull);
   disconnectAction?.call();
@@ -404,7 +471,7 @@ Future<void> _testUnsupportedCapabilities(WidgetTester tester) async {
   final transport = _WidgetTransport();
   final processing = _WidgetProcessing(capabilityReport: capabilities);
   await tester.pumpWidget(
-    MaterialApp(
+    _japaneseShell(
       home: app.CompanionHomePage(
         createTransport: () => transport,
         createProcessing: () => processing,
@@ -415,11 +482,12 @@ Future<void> _testUnsupportedCapabilities(WidgetTester tester) async {
   );
   final connectButton = find.widgetWithText(
     FilledButton,
-    '自動検出で接続する',
+    '接続する',
   );
   tester.widget<FilledButton>(connectButton).onPressed?.call();
   await tester.runAsync(() => _waitForConnection(transport));
   await tester.pump();
+  await _showDetailedMode(tester);
 
   expect(find.text('連携機能'), findsOneWidget);
   expect(transport.connectedRoute?.asr, ExecutionDevice.desktop);
@@ -447,7 +515,7 @@ Future<void> _testConnectionFailure(WidgetTester tester) async {
   );
   final processing = _WidgetProcessing();
   await tester.pumpWidget(
-    MaterialApp(
+    _japaneseShell(
       home: app.CompanionHomePage(
         key: UniqueKey(),
         initialRoute: const PipelineRoute(
@@ -463,7 +531,7 @@ Future<void> _testConnectionFailure(WidgetTester tester) async {
 
   final connectButton = find.widgetWithText(
     FilledButton,
-    '自動検出で接続する',
+    '接続する',
   );
   await tester.ensureVisible(connectButton);
   tester.widget<FilledButton>(connectButton).onPressed?.call();
@@ -471,10 +539,97 @@ Future<void> _testConnectionFailure(WidgetTester tester) async {
   await tester.runAsync(() => _waitForConnection(transport));
   await tester.pump();
 
-  expect(find.textContaining('接続失敗: SocketException'), findsOneWidget);
+  expect(find.text('接続できませんでした'), findsOneWidget);
   expect(processing.preparedAsrLocales, isEmpty);
   expect(processing.preparedTranslationPairs, isEmpty);
-  expect(find.widgetWithText(FilledButton, '自動検出で接続する'), findsOneWidget);
+  expect(find.widgetWithText(FilledButton, '接続する'), findsOneWidget);
+}
+
+Future<void> _testDictionaryPreparationFailure(WidgetTester tester) async {
+  final transport = _WidgetTransport();
+  await tester.pumpWidget(
+    _japaneseShell(
+      home: app.CompanionHomePage(
+        key: UniqueKey(),
+        createTransport: () => transport,
+        createProcessing: _WidgetProcessing.new,
+        prepareAzooKeyDictionary: () async {
+          throw StateError('dictionary unavailable');
+        },
+      ),
+    ),
+  );
+  await _showDetailedMode(tester);
+  await _tapVisible(tester, find.widgetWithText(FilledButton, '接続する'));
+  await tester.runAsync(() => _waitForConnection(transport));
+  await tester.pump();
+
+  expect(
+    find.textContaining('接続失敗: Bad state: dictionary unavailable'),
+    findsOneWidget,
+  );
+  expect(find.widgetWithText(FilledButton, '接続する'), findsOneWidget);
+}
+
+Future<void> _testUserRequestedDiscoveryTimeout(WidgetTester tester) async {
+  var discoveryCalls = 0;
+  await tester.pumpWidget(
+    _japaneseShell(
+      home: app.CompanionHomePage(
+        key: UniqueKey(),
+        createProcessing: _WidgetProcessing.new,
+        autoDiscover: true,
+        discoverDesktop: () async {
+          discoveryCalls += 1;
+          throw TimeoutException('Native unavailable');
+        },
+      ),
+    ),
+  );
+  await tester.runAsync(
+    () => Future<void>.delayed(const Duration(milliseconds: 20)),
+  );
+  await tester.pump();
+  await _showDetailedMode(tester);
+  await _tapVisible(tester, find.byKey(const Key('connection-button')));
+  await tester.runAsync(
+    () => Future<void>.delayed(const Duration(milliseconds: 20)),
+  );
+  await tester.pump();
+
+  expect(discoveryCalls, 2);
+  expect(
+    find.textContaining('Nativeを自動検出できません'),
+    findsOneWidget,
+  );
+}
+
+Future<void> _testSystemCameraFailures(WidgetTester tester) async {
+  await tester.pumpWidget(
+    _japaneseShell(
+      home: const app.CompanionHomePage(),
+    ),
+  );
+  await _tapVisible(tester, find.byKey(const Key('camera-button')));
+  await tester.pump();
+  expect(
+    find.text('標準カメラアプリでQRコードを読み取ってください'),
+    findsOneWidget,
+  );
+
+  await tester.pumpWidget(
+    _japaneseShell(
+      home: app.CompanionHomePage(
+        key: UniqueKey(),
+        openSystemCamera: () async {
+          throw StateError('camera unavailable');
+        },
+      ),
+    ),
+  );
+  await _tapVisible(tester, find.byKey(const Key('camera-button')));
+  await tester.pump();
+  expect(find.text('カメラを開けませんでした'), findsOneWidget);
 }
 
 Future<void> _testAutomaticReconnect(WidgetTester tester) async {
@@ -485,6 +640,7 @@ Future<void> _testAutomaticReconnect(WidgetTester tester) async {
   var discoveryCalls = 0;
   await tester.pumpWidget(
     app.KotobaBeaconCompanionApp(
+      locale: const Locale('ja'),
       home: app.CompanionHomePage(
         createTransport: () => transports[transportIndex++],
         createProcessing: _WidgetProcessing.new,
@@ -504,7 +660,7 @@ Future<void> _testAutomaticReconnect(WidgetTester tester) async {
   );
   await tester.runAsync(() => _waitForConfigured(first));
   await tester.pumpAndSettle();
-  expect(find.widgetWithText(FilledButton, '接続中は切断する'), findsOneWidget);
+  expect(find.widgetWithText(OutlinedButton, '切断する'), findsOneWidget);
   first.addText(
     '{"version":1,"type":"session.ready","session_id":"first",'
     '"route":{"asr":"desktop","azookey":"mobile",'
@@ -535,7 +691,7 @@ Future<void> _testAutomaticReconnect(WidgetTester tester) async {
 Future<void> _testManualDisconnectRecovery(WidgetTester tester) async {
   final transport = _WidgetTransport();
   await tester.pumpWidget(
-    MaterialApp(
+    _japaneseShell(
       home: app.CompanionHomePage(
         initialRoute: const PipelineRoute(
           asr: ExecutionDevice.desktop,
@@ -549,7 +705,7 @@ Future<void> _testManualDisconnectRecovery(WidgetTester tester) async {
   );
   tester
       .widget<FilledButton>(
-        find.widgetWithText(FilledButton, '自動検出で接続する'),
+        find.widgetWithText(FilledButton, '接続する'),
       )
       .onPressed
       ?.call();
@@ -563,14 +719,14 @@ Future<void> _testManualDisconnectRecovery(WidgetTester tester) async {
   await tester.runAsync(() => _waitForClose(transport));
   await tester.pump();
 
-  expect(find.widgetWithText(FilledButton, '自動検出で接続する'), findsOneWidget);
+  expect(find.widgetWithText(FilledButton, '接続する'), findsOneWidget);
 }
 
 Future<void> _testPreparedDictionaryRelease(WidgetTester tester) async {
   final transport = _WidgetTransport();
   final processing = _WidgetProcessing();
   await tester.pumpWidget(
-    MaterialApp(
+    _japaneseShell(
       home: app.CompanionHomePage(
         key: UniqueKey(),
         createTransport: () => transport,
@@ -582,7 +738,7 @@ Future<void> _testPreparedDictionaryRelease(WidgetTester tester) async {
   );
   final connectButton = find.widgetWithText(
     FilledButton,
-    '自動検出で接続する',
+    '接続する',
   );
   await tester.ensureVisible(connectButton);
   tester.widget<FilledButton>(connectButton).onPressed?.call();
@@ -598,7 +754,7 @@ Future<void> _testPreparedDictionaryRelease(WidgetTester tester) async {
   final desktopAzooKey = find.byKey(
     const Key('azookey-provider-_AzooKeyChoice.desktopNative'),
   );
-  expect(tester.widget<GestureDetector>(desktopAzooKey).onTap, isNotNull);
+  expect(desktopAzooKey, findsOneWidget);
   await tester.ensureVisible(desktopAzooKey);
   await tester.pump();
   await tester.tap(desktopAzooKey);
@@ -625,6 +781,7 @@ Future<void> _testUnavailableSpeechTranscriber(WidgetTester tester) async {
   );
   await tester.pumpWidget(
     app.KotobaBeaconCompanionApp(
+      locale: const Locale('ja'),
       home: app.CompanionHomePage(
         createTransport: () => transport,
         createProcessing: () => processing,
@@ -634,6 +791,7 @@ Future<void> _testUnavailableSpeechTranscriber(WidgetTester tester) async {
     ),
   );
   await tester.pump();
+  await _showDetailedMode(tester);
   expect(
     tester
         .widget<GestureDetector>(
@@ -662,7 +820,7 @@ Future<void> _testUnavailableSpeechTranscriber(WidgetTester tester) async {
   );
   final connectButton = find.widgetWithText(
     CupertinoButton,
-    '自動検出で接続する',
+    '接続する',
   );
   await tester.ensureVisible(connectButton);
   tester.widget<CupertinoButton>(connectButton).onPressed?.call();
@@ -700,6 +858,7 @@ Future<void> _testCupertinoInterface(WidgetTester tester) async {
   final processing = _WidgetProcessing();
   await tester.pumpWidget(
     app.KotobaBeaconCompanionApp(
+      locale: const Locale('ja'),
       key: UniqueKey(),
       home: app.CompanionHomePage(
         createTransport: () => transport,
@@ -725,20 +884,16 @@ Future<void> _testCupertinoInterface(WidgetTester tester) async {
     cupertinoApp.theme?.textTheme.navTitleTextStyle.fontWeight,
     FontWeight.w600,
   );
+  expect(find.byType(CupertinoTextField), findsNothing);
+  await _showDetailedMode(tester);
   expect(find.byType(CupertinoTextField), findsNWidgets(2));
   expect(find.byKey(const Key('asr-provider')), findsOneWidget);
   expect(find.byKey(const Key('azookey-provider')), findsOneWidget);
   expect(find.byKey(const Key('translation-provider')), findsOneWidget);
-  expect(
-    find.textContaining('SpeechAnalyzer + SpeechTranscriber'),
-    findsOneWidget,
-  );
+  expect(find.text('iOS SpeechAnalyzer（リアルタイム）'), findsOneWidget);
   expect(find.textContaining('SFSpeechRecognizer'), findsOneWidget);
-  expect(
-    find.textContaining('TranslationSession（標準 / lowLatency）'),
-    findsOneWidget,
-  );
-  expect(find.text('iOS TranslationSession.highFidelity'), findsOneWidget);
+  expect(find.text('iOS TranslationSession'), findsOneWidget);
+  expect(find.text('iOS TranslationSession（高精度）'), findsOneWidget);
   expect(find.byType(SegmentedButton<ExecutionDevice>), findsNothing);
 
   await tester.runAsync(() => _waitForConnection(transport));
@@ -786,7 +941,11 @@ Future<void> _testIPadResponsiveLayout(WidgetTester tester) async {
   });
 
   await tester.binding.setSurfaceSize(const Size(1194, 834));
-  await tester.pumpWidget(const app.KotobaBeaconCompanionApp());
+  await tester.pumpWidget(
+    const app.KotobaBeaconCompanionApp(locale: Locale('ja')),
+  );
+  expect(find.byKey(const Key('phone-single-pane')), findsOneWidget);
+  await _showDetailedMode(tester);
   expect(find.byKey(const Key('tablet-two-pane')), findsOneWidget);
 
   await tester.binding.setSurfaceSize(const Size(834, 1194));
@@ -795,8 +954,159 @@ Future<void> _testIPadResponsiveLayout(WidgetTester tester) async {
 
   await tester.binding.setSurfaceSize(const Size(390, 844));
   await tester.pump();
-  expect(find.byKey(const Key('vertical-control-ASR方式')), findsOneWidget);
+  expect(
+    find.byKey(const Key('vertical-control-asr-provider')),
+    findsOneWidget,
+  );
   debugDefaultTargetPlatformOverride = null;
+}
+
+void _setPhoneView(WidgetTester tester) {
+  tester.view.physicalSize = const Size(390, 844);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
+
+void _setTabletView(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1280, 800);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
+
+Future<void> _showDetailedMode(WidgetTester tester) async {
+  await _tapVisible(tester, find.byKey(const Key('menu-button')));
+  await tester.pumpAndSettle();
+  await _tapVisible(tester, find.byKey(const Key('menu-detailed')));
+  await tester.pumpAndSettle();
+}
+
+Future<void> _testStandardModeChoices(WidgetTester tester) async {
+  _setPhoneView(tester);
+  await tester.pumpWidget(
+    const app.KotobaBeaconCompanionApp(locale: Locale('ja')),
+  );
+
+  expect(find.text('デスクトップ'), findsNWidgets(3));
+  expect(find.text('スマホ'), findsNWidgets(3));
+  expect(find.byKey(const Key('connection-button')), findsOneWidget);
+  expect(find.byKey(const Key('camera-button')), findsOneWidget);
+  expect(find.byKey(const Key('endpoint-field')), findsNothing);
+
+  await _showDetailedMode(tester);
+  await _tapVisible(
+    tester,
+    find.byKey(const Key('azookey-provider-_AzooKeyChoice.mobileXsmall')),
+  );
+  await _tapVisible(tester, find.byKey(const Key('menu-button')));
+  await tester.pumpAndSettle();
+  await _tapVisible(tester, find.byKey(const Key('menu-standard')));
+  await tester.pumpAndSettle();
+  expect(find.byKey(const Key('endpoint-field')), findsNothing);
+
+  await tester.tap(
+    find.byKey(
+      const Key('azookey-provider-_AzooKeyChoice.desktopNative'),
+    ),
+  );
+  await tester.pump();
+  expect(find.textContaining('を選択しました'), findsNothing);
+}
+
+Future<void> _testStandardModeHidesDiscoveryFailure(
+  WidgetTester tester,
+) async {
+  await tester.pumpWidget(
+    app.KotobaBeaconCompanionApp(
+      locale: const Locale('ja'),
+      home: app.CompanionHomePage(
+        autoDiscover: true,
+        createProcessing: _WidgetProcessing.new,
+        prepareAzooKeyDictionary: () async {},
+        prepareAzooKeyModel: (_) async {},
+        discoverDesktop: () async {
+          throw TimeoutException('missing');
+        },
+      ),
+    ),
+  );
+  await tester.pump();
+  await tester.runAsync(
+    () => Future<void>.delayed(const Duration(milliseconds: 20)),
+  );
+  await tester.pump();
+  expect(find.textContaining('自動検出'), findsNothing);
+  expect(find.textContaining('TimeoutException'), findsNothing);
+  expect(find.textContaining('接続できませんでした'), findsNothing);
+  expect(find.textContaining('未接続または同期中'), findsOneWidget);
+}
+
+Future<void> _testAndroidTabletNoun(WidgetTester tester) async {
+  _setTabletView(tester);
+  await tester.pumpWidget(
+    const app.KotobaBeaconCompanionApp(locale: Locale('ja')),
+  );
+  expect(find.text('タブレット'), findsNWidgets(3));
+}
+
+Future<void> _testEnglishCopy(WidgetTester tester) async {
+  await tester.pumpWidget(
+    const app.KotobaBeaconCompanionApp(locale: Locale('en')),
+  );
+
+  expect(find.text('Connect'), findsOneWidget);
+  expect(find.text('Scan QR with camera'), findsOneWidget);
+  expect(find.text('Desktop'), findsNWidgets(3));
+  expect(find.text('Device'), findsNWidgets(3));
+  expect(find.text('Speech recognition'), findsOneWidget);
+  await _tapVisible(tester, find.byKey(const Key('menu-button')));
+  await tester.pumpAndSettle();
+  expect(find.text('Standard mode'), findsOneWidget);
+  expect(find.text('Detailed mode'), findsOneWidget);
+}
+
+Future<void> _testQrPairingLink(WidgetTester tester) async {
+  final transport = _WidgetTransport();
+  final pairing = StreamController<Uri>.broadcast();
+  addTearDown(() async {
+    await pairing.close();
+  });
+  var cameraOpens = 0;
+  await tester.pumpWidget(
+    _japaneseShell(
+      home: app.CompanionHomePage(
+        createTransport: () => transport,
+        createProcessing: _WidgetProcessing.new,
+        prepareAzooKeyDictionary: () async {},
+        prepareAzooKeyModel: (_) async {},
+        pairingLinks: pairing.stream,
+        openSystemCamera: () async => cameraOpens += 1,
+      ),
+    ),
+  );
+  await _tapVisible(tester, find.byKey(const Key('camera-button')));
+  await tester.pump();
+  expect(cameraOpens, 1);
+  pairing.add(
+    Uri.parse(
+      'kotobabeacon://pair?endpoint=ws%3A%2F%2F192.168.1.8%3A18183%2Fcompanion&token=qr-token-1',
+    ),
+  );
+  await tester.pump();
+  await tester.runAsync(() => _waitForConnection(transport));
+  await tester.pump();
+  expect(transport.openCalls, 1);
+  expect(transport.tokens, ['qr-token-1']);
+  transport.addText(
+    '{"version":1,"type":"session.ready","session_id":"qr-session",'
+    '"route":{"asr":"desktop","azookey":"mobile",'
+    '"translation":"mobile"}}',
+  );
+  await tester.pump(const Duration(milliseconds: 20));
+  expect(find.byKey(const Key('camera-button')), findsNothing);
+  expect(find.widgetWithText(FilledButton, '接続する'), findsNothing);
+  expect(find.widgetWithText(OutlinedButton, '切断する'), findsOneWidget);
 }
 
 Future<void> _tapVisible(WidgetTester tester, Finder finder) async {
@@ -874,6 +1184,7 @@ final class _WidgetTransport implements CompanionTransport {
   int closeCalls = 0;
   PipelineRoute? connectedRoute;
   final sentTexts = <String>[];
+  final tokens = <String>[];
 
   @override
   Stream<Object> get messages => _messages.stream;
@@ -893,7 +1204,9 @@ final class _WidgetTransport implements CompanionTransport {
   void authenticate({
     required String token,
     required MobileCapabilities capabilities,
-  }) {}
+  }) {
+    tokens.add(token);
+  }
 
   @override
   void configure({

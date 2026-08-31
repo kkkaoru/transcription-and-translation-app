@@ -5,13 +5,55 @@ import SwiftUI
 import Translation
 import UIKit
 
+enum PairingLinkStore {
+  static var pending: String?
+  static var sink: FlutterEventSink?
+
+  static func emit(_ url: URL) {
+    let value = url.absoluteString
+    if let sink {
+      sink(value)
+    } else {
+      pending = value
+    }
+  }
+}
+
+final class PairingStreamHandler: NSObject, FlutterStreamHandler {
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    PairingLinkStore.sink = events
+    if let pending = PairingLinkStore.pending {
+      events(pending)
+      PairingLinkStore.pending = nil
+    }
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    PairingLinkStore.sink = nil
+    return nil
+  }
+}
+
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    if let url = launchOptions?[.url] as? URL {
+      PairingLinkStore.emit(url)
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+  ) -> Bool {
+    PairingLinkStore.emit(url)
+    return super.application(app, open: url, options: options)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
@@ -22,6 +64,10 @@ import UIKit
       )
     else { return }
     CompanionProcessingPlugin.register(with: registrar)
+    FlutterEventChannel(
+      name: "kotoba_beacon/pairing",
+      binaryMessenger: registrar.messenger()
+    ).setStreamHandler(PairingStreamHandler())
   }
 }
 
@@ -67,6 +113,8 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
 
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
+    case "openSystemCamera":
+      openSystemCamera(result: result)
     case "discoverCompanion":
       discoverCompanion(call.arguments, result: result)
     case "capabilities":
@@ -133,6 +181,32 @@ final class CompanionProcessingPlugin: NSObject, @preconcurrency FlutterStreamHa
       }
     default:
       result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func openSystemCamera(result: @escaping FlutterResult) {
+    guard let url = URL(string: "camera://") else {
+      result(
+        FlutterError(
+          code: "camera_unavailable",
+          message: "The system camera app is unavailable",
+          details: nil
+        )
+      )
+      return
+    }
+    UIApplication.shared.open(url, options: [:]) { success in
+      if success {
+        result(nil)
+        return
+      }
+      result(
+        FlutterError(
+          code: "camera_unavailable",
+          message: "The system camera app could not be opened",
+          details: nil
+        )
+      )
     }
   }
 

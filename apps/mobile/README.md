@@ -4,13 +4,13 @@ Flutter companion for Kotoba Beacon Native on the same local network.
 
 ## Processing routes
 
-ASR, AzooKey, and translation each select `Desktop` or `Mobile`, yielding eight synchronized execution routes. The Mobile UI additionally selects the concrete implementation within each Mobile stage. The preferred default is `mmm`: iOS SpeechAnalyzer/SpeechTranscriber (or Android ML Kit GenAI Speech), bundled AzooKey Small GGUF, and bundled QuickMT. Capability detection runs before pairing, visibly disables only unavailable implementations, and constrains only an unavailable Mobile stage to Desktop. Available providers remain selectable before connection and during recognition; changes made during an active recognition session are retained and applied safely after that session stops. Rust owns the route/protocol types, Desktop-equivalent Mobile ASR, AzooKey, and QuickMT; Flutter Rust Bridge generates the Dart declarations under `lib/src/rust/`.
+ASR, AzooKey, and translation each select `Desktop` or `Mobile`, yielding eight synchronized execution routes. The Mobile UI additionally selects the concrete implementation within each Mobile stage. The preferred default is `mmm`. Standard display mode switches each stage between Desktop Native and Mobile Rust, and Mobile Rust AzooKey uses the Small dictionary. Detailed display mode keeps the current per-provider list, including SpeechAnalyzer, SFSpeechRecognizer, ML Kit, AzooKey XSmall, and TranslationSession. Visual tokens for color, type, weight, and spacing live in `lib/src/companion_style.dart`. Capability detection runs before pairing, visibly disables only unavailable implementations, and constrains only an unavailable Mobile stage to Desktop. Available providers remain selectable before connection and during recognition; changes made during an active recognition session are retained and applied safely after that session stops. Rust owns the route/protocol types, Desktop-equivalent Mobile ASR, AzooKey, and QuickMT; Flutter Rust Bridge generates the Dart declarations under `lib/src/rust/`.
 
 Route controls stay disabled until the LAN WebSocket is open and Android/iOS reports the actual ASR and translation API availability. Unsupported Mobile choices are disabled and constrained to Desktop. Native stores the accepted route by the platform's stable device ID and restores it when that phone reconnects. Every Mobile route change remains pending until Native returns `route.configure`; that acknowledgement is the authoritative synchronized setting. Native-originated changes use the same message, so either app can change the route without leaving the two UIs in different states.
 
 Both apps show the authenticated connection state and synchronized three-letter route. Mobile also shows the Desktop endpoint and detected Mobile API availability. Native shows the connected device, platform, session, endpoint, capabilities, and saved per-device route count.
 
-Native advertises `_kotobabeacon._tcp` with Bonjour and also provides a bounded UDP discovery fallback on port `18184`. iOS/iPadOS use the platform `NetServiceBrowser`, avoiding multicast/broadcast entitlements; other platforms use a nonce-scoped UDP request and unicast response. Discovery returns the current endpoint and high-entropy pairing token, then the app performs the normal authenticated WebSocket first frame on port `18183`. Manual endpoint/token fields remain available as a fallback. Discovery is restricted to the trusted LAN and never accepts PCM or route configuration.
+Native advertises `_kotobabeacon._tcp` with Bonjour and also provides a bounded UDP discovery fallback on port `18184`. iOS/iPadOS use the platform `NetServiceBrowser`, avoiding multicast/broadcast entitlements; other platforms use a nonce-scoped UDP request and unicast response. Discovery returns the current endpoint and high-entropy pairing token, then the app performs the normal authenticated WebSocket first frame on port `18183`. When Mobile companion is enabled, Native shows a camera-readable `kotobabeacon://pair` QR code under the toggle, with copy actions side by side below the QR and the current connection status in that section. Scanning the QR with the device camera opens the installed companion app and completes pairing. Unpaired Mobile screens show Connect and Open Camera; both hide after authentication. Manual endpoint/token fields remain available in detailed display mode. Discovery is restricted to the trusted LAN and never accepts PCM or route configuration.
 
 - Android ASR: ML Kit GenAI Speech Recognition Basic mode (`ja-JP`, API 31+), fed with raw PCM16/16 kHz/mono through a `ParcelFileDescriptor` pipe.
 - Android translation: the same bundled QuickMT Japanese-to-English CTranslate2 INT8 model and beam-two configuration used by Desktop Native.
@@ -51,6 +51,9 @@ make test
 make coverage
 make android
 make ios
+make ios-device IOS_DEVICE=<physical-iphone-udid>
+make install-ios-device IOS_DEVICE=<physical-iphone-udid>
+make run-ios-device IOS_DEVICE=<physical-iphone-udid>
 make build
 make clean
 
@@ -62,15 +65,22 @@ make mobile-test
 make mobile-coverage
 make mobile-build-android
 make mobile-build-ios
+make mobile-build-ios-device IOS_DEVICE=<physical-iphone-udid>
+make mobile-install-ios-device IOS_DEVICE=<physical-iphone-udid>
+make mobile-run-ios-device IOS_DEVICE=<physical-iphone-udid>
 make mobile-build
 make mobile-clean
 ```
 
 `make android` builds only the supported ARM64 release APK. `make ios` builds
-only the unsigned debug iOS Simulator app. `make build` runs both explicitly
-and sequentially. Run `make help` or `make mobile-help` for the complete target
-list. Generated Dart definitions produced by `make generate` must not be edited
-manually.
+only the unsigned debug iOS Simulator app. Physical-iPhone targets build the
+signed **release** app with the same bundle ID, display name, and app icon as the
+product: `make ios-device IOS_DEVICE=<udid>` builds it, while
+`install-ios-device` and `run-ios-device` also install and launch it. They never
+install a Flutter debug app. `make build` keeps its CI-safe Android plus
+Simulator behavior and never deploys to a connected phone. Run `make help` or
+`make mobile-help` for the complete target list. Generated Dart definitions
+produced by `make generate` must not be edited manually.
 
 ## Verify
 
@@ -83,7 +93,8 @@ Android and iOS can be selected independently:
 make verify
 make android # Android ARM64 release only
 make ios     # iOS Simulator debug only
-make build   # both platforms
+make run-ios-device IOS_DEVICE=<udid> # signed physical-device release app
+make build   # Android ARM64 plus iOS Simulator
 ```
 
 Host Flutter tests load `rust/target/debug/librust_lib_kotoba_beacon_companion.dylib`; the `test`, `coverage`, and `verify` Make targets build it automatically. Every hand-written Dart source uses strict casts, strict inference, strict raw types, Very Good Analysis, an 80-column formatter, and a maximum control-flow nesting depth of three. Generated Flutter Rust Bridge sources retain their generator-owned analyzer contract. CI enforces at least 95% line coverage for every hand-written file under `lib/`. The suite includes protocol validation, all route handoff boundaries, stale-revision rejection, bounded PCM buffering, mocked platform-channel contracts, and a real loopback WebSocket pipeline through ASR, AzooKey, and translation. CI additionally builds an iOS 26 simulator app on the pinned macOS 26/Xcode 26.6 runner without launching it.

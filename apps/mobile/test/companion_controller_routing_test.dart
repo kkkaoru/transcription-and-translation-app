@@ -70,6 +70,36 @@ void main() {
     },
   );
 
+  test('partial translation preserves its non-final marker', () async {
+    final transport = _RoutingTransport();
+    final processing = _RoutingProcessing();
+    final controller = CompanionController(
+      route: const PipelineRoute(
+        asr: ExecutionDevice.desktop,
+        azookey: ExecutionDevice.desktop,
+        translation: ExecutionDevice.mobile,
+      ),
+      transport: transport,
+      processing: processing,
+      onStatus: (_) {},
+      onSource: (_) {},
+      onAzooKey: (_) {},
+      onTranslation: (_) {},
+    );
+
+    transport.addText(
+      '{"version":1,"type":"translation.request","session_id":"s",'
+      '"turn_id":2,"revision":6,"source_text":"今日は","is_final":false}',
+    );
+    await _waitForSentMessages(transport, count: 1);
+
+    expect(transport.sent, hasLength(1));
+    expect(transport.sent.single, contains('"type":"translation.result"'));
+    expect(transport.sent.single, contains('"revision":6'));
+    expect(transport.sent.single, contains('"is_final":false'));
+    await controller.dispose();
+  });
+
   test(
     'desktop canonical reading converts correctly on mobile AzooKey',
     () async {
@@ -191,6 +221,46 @@ void main() {
     expect(transport.sent.length, 1);
     expect(transport.sent[0], contains('"revision":31'));
     expect(transport.sent[0], contains('"text":"New"'));
+    await controller.dispose();
+  });
+
+  test('a newer turn suppresses delayed work from the previous turn', () async {
+    final transport = _RoutingTransport();
+    final processing = _RoutingProcessing(blockTranslations: true);
+    final controller = CompanionController(
+      route: const PipelineRoute(
+        asr: ExecutionDevice.desktop,
+        azookey: ExecutionDevice.desktop,
+        translation: ExecutionDevice.mobile,
+      ),
+      transport: transport,
+      processing: processing,
+      onStatus: (_) {},
+      onSource: (_) {},
+      onAzooKey: (_) {},
+      onTranslation: (_) {},
+    );
+
+    transport.addText(
+      '{"version":1,"type":"translation.request","session_id":"s",'
+      '"turn_id":5,"revision":30,"source_text":"古い発話"}',
+    );
+    expect(await processing.translationStarted.stream.first, '古い発話');
+    transport.addText(
+      '{"version":1,"type":"translation.request","session_id":"s",'
+      '"turn_id":6,"revision":31,"source_text":"新しい発話"}',
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final nextTranslation = processing.translationStarted.stream.first;
+    processing.translationCompletions[0].complete('Old turn');
+    expect(await nextTranslation, '新しい発話');
+    expect(transport.sent, isEmpty);
+
+    processing.translationCompletions[1].complete('New turn');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(transport.sent, hasLength(1));
+    expect(transport.sent.single, contains('"turn_id":6'));
+    expect(transport.sent.single, contains('"text":"New turn"'));
     await controller.dispose();
   });
 

@@ -180,15 +180,46 @@ pub struct MobileStageResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopCommand {
-    SessionReady { session_id: String, route: PipelineRoute },
-    ConfigureRoute { route: PipelineRoute },
-    StartAudio { session_id: String, turn_id: u64, revision: u64 },
-    EndAudio { session_id: String, turn_id: u64, revision: u64 },
-    RunAzookey { session_id: String, turn_id: u64, revision: u64, text: String, is_final: bool },
-    RunTranslation { session_id: String, turn_id: u64, revision: u64, source_text: String },
-    StopSession { session_id: String },
-    SetTranslationEnabled { enabled: bool },
-    Ping { nonce: u64 },
+    SessionReady {
+        session_id: String,
+        route: PipelineRoute,
+    },
+    ConfigureRoute {
+        route: PipelineRoute,
+    },
+    StartAudio {
+        session_id: String,
+        turn_id: u64,
+        revision: u64,
+    },
+    EndAudio {
+        session_id: String,
+        turn_id: u64,
+        revision: u64,
+    },
+    RunAzookey {
+        session_id: String,
+        turn_id: u64,
+        revision: u64,
+        text: String,
+        is_final: bool,
+    },
+    RunTranslation {
+        session_id: String,
+        turn_id: u64,
+        revision: u64,
+        source_text: String,
+        is_final: bool,
+    },
+    StopSession {
+        session_id: String,
+    },
+    SetTranslationEnabled {
+        enabled: bool,
+    },
+    Ping {
+        nonce: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,8 +518,8 @@ pub fn encode_stage_request(
         envelope.source_text = Some(text);
     } else {
         envelope.text = Some(text);
-        envelope.is_final = Some(is_final);
     }
+    envelope.is_final = Some(is_final);
     encode(envelope)
 }
 
@@ -561,6 +592,9 @@ pub fn decode_desktop_command(json: String) -> Result<DesktopCommand, String> {
                 MAX_TEXT_CHARACTERS,
                 "translation source",
             )?,
+            // Older Native builds only emitted finalized translation requests
+            // and therefore omitted this marker.
+            is_final: envelope.is_final.unwrap_or(true),
         }),
         "session.stop" => Ok(DesktopCommand::StopSession {
             session_id: required(envelope.session_id, "session ID")?,
@@ -1417,7 +1451,7 @@ mod tests {
                 true,
             )
             .expect("translation request"),
-            r#"{"version":1,"type":"translation.request","session_id":"s","turn_id":2,"revision":3,"source_text":"今日は晴れ"}"#
+            r#"{"version":1,"type":"translation.request","session_id":"s","turn_id":2,"revision":3,"source_text":"今日は晴れ","is_final":true}"#
         );
         assert_eq!(
             decode_mobile_stage_result(
@@ -1460,14 +1494,28 @@ mod tests {
         );
         assert_eq!(
             decode_desktop_command(
-                r#"{"version":1,"type":"translation.request","session_id":"s","turn_id":3,"revision":10,"source_text":"今日は晴れ"}"#.to_string()
+                r#"{"version":1,"type":"translation.request","session_id":"s","turn_id":3,"revision":10,"source_text":"今日は晴れ","is_final":false}"#.to_string()
             )
-            .expect("valid translation request"),
+            .expect("valid partial translation request"),
             DesktopCommand::RunTranslation {
                 session_id: "s".to_string(),
                 turn_id: 3,
                 revision: 10,
                 source_text: "今日は晴れ".to_string(),
+                is_final: false,
+            }
+        );
+        assert_eq!(
+            decode_desktop_command(
+                r#"{"version":1,"type":"translation.request","session_id":"s","turn_id":3,"revision":11,"source_text":"旧Native互換"}"#.to_string()
+            )
+            .expect("legacy finalized translation request"),
+            DesktopCommand::RunTranslation {
+                session_id: "s".to_string(),
+                turn_id: 3,
+                revision: 11,
+                source_text: "旧Native互換".to_string(),
+                is_final: true,
             }
         );
     }

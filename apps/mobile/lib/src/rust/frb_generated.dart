@@ -1514,6 +1514,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           turnId: dco_decode_u_64(raw[2]),
           revision: dco_decode_u_64(raw[3]),
           sourceText: dco_decode_String(raw[4]),
+          isFinal: dco_decode_bool(raw[5]),
         );
       case 6:
         return DesktopCommand_StopSession(
@@ -1771,11 +1772,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_turnId = sse_decode_u_64(deserializer);
         var var_revision = sse_decode_u_64(deserializer);
         var var_sourceText = sse_decode_String(deserializer);
+        var var_isFinal = sse_decode_bool(deserializer);
         return DesktopCommand_RunTranslation(
           sessionId: var_sessionId,
           turnId: var_turnId,
           revision: var_revision,
           sourceText: var_sourceText,
+          isFinal: var_isFinal,
         );
       case 6:
         var var_sessionId = sse_decode_String(deserializer);
@@ -2066,12 +2069,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         turnId: final turnId,
         revision: final revision,
         sourceText: final sourceText,
+        isFinal: final isFinal,
       ):
         sse_encode_i_32(5, serializer);
         sse_encode_String(sessionId, serializer);
         sse_encode_u_64(turnId, serializer);
         sse_encode_u_64(revision, serializer);
         sse_encode_String(sourceText, serializer);
+        sse_encode_bool(isFinal, serializer);
       case DesktopCommand_StopSession(sessionId: final sessionId):
         sse_encode_i_32(6, serializer);
         sse_encode_String(sessionId, serializer);

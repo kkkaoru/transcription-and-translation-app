@@ -141,7 +141,7 @@ return ping(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String sessionId,  PipelineRoute route)?  sessionReady,TResult Function( PipelineRoute route)?  configureRoute,TResult Function( String sessionId,  BigInt turnId,  BigInt revision)?  startAudio,TResult Function( String sessionId,  BigInt turnId,  BigInt revision)?  endAudio,TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)?  runAzookey,TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText)?  runTranslation,TResult Function( String sessionId)?  stopSession,TResult Function( bool enabled)?  setTranslationEnabled,TResult Function( BigInt nonce)?  ping,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String sessionId,  PipelineRoute route)?  sessionReady,TResult Function( PipelineRoute route)?  configureRoute,TResult Function( String sessionId,  BigInt turnId,  BigInt revision)?  startAudio,TResult Function( String sessionId,  BigInt turnId,  BigInt revision)?  endAudio,TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)?  runAzookey,TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)?  runTranslation,TResult Function( String sessionId)?  stopSession,TResult Function( bool enabled)?  setTranslationEnabled,TResult Function( BigInt nonce)?  ping,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady() when sessionReady != null:
 return sessionReady(_that.sessionId,_that.route);case DesktopCommand_ConfigureRoute() when configureRoute != null:
@@ -149,7 +149,7 @@ return configureRoute(_that.route);case DesktopCommand_StartAudio() when startAu
 return startAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand_EndAudio() when endAudio != null:
 return endAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand_RunAzookey() when runAzookey != null:
 return runAzookey(_that.sessionId,_that.turnId,_that.revision,_that.text,_that.isFinal);case DesktopCommand_RunTranslation() when runTranslation != null:
-return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText);case DesktopCommand_StopSession() when stopSession != null:
+return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText,_that.isFinal);case DesktopCommand_StopSession() when stopSession != null:
 return stopSession(_that.sessionId);case DesktopCommand_SetTranslationEnabled() when setTranslationEnabled != null:
 return setTranslationEnabled(_that.enabled);case DesktopCommand_Ping() when ping != null:
 return ping(_that.nonce);case _:
@@ -170,7 +170,7 @@ return ping(_that.nonce);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String sessionId,  PipelineRoute route)  sessionReady,required TResult Function( PipelineRoute route)  configureRoute,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision)  startAudio,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision)  endAudio,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)  runAzookey,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText)  runTranslation,required TResult Function( String sessionId)  stopSession,required TResult Function( bool enabled)  setTranslationEnabled,required TResult Function( BigInt nonce)  ping,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String sessionId,  PipelineRoute route)  sessionReady,required TResult Function( PipelineRoute route)  configureRoute,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision)  startAudio,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision)  endAudio,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)  runAzookey,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)  runTranslation,required TResult Function( String sessionId)  stopSession,required TResult Function( bool enabled)  setTranslationEnabled,required TResult Function( BigInt nonce)  ping,}) {final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady():
 return sessionReady(_that.sessionId,_that.route);case DesktopCommand_ConfigureRoute():
@@ -178,7 +178,7 @@ return configureRoute(_that.route);case DesktopCommand_StartAudio():
 return startAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand_EndAudio():
 return endAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand_RunAzookey():
 return runAzookey(_that.sessionId,_that.turnId,_that.revision,_that.text,_that.isFinal);case DesktopCommand_RunTranslation():
-return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText);case DesktopCommand_StopSession():
+return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText,_that.isFinal);case DesktopCommand_StopSession():
 return stopSession(_that.sessionId);case DesktopCommand_SetTranslationEnabled():
 return setTranslationEnabled(_that.enabled);case DesktopCommand_Ping():
 return ping(_that.nonce);}
@@ -195,7 +195,7 @@ return ping(_that.nonce);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String sessionId,  PipelineRoute route)?  sessionReady,TResult? Function( PipelineRoute route)?  configureRoute,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision)?  startAudio,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision)?  endAudio,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)?  runAzookey,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText)?  runTranslation,TResult? Function( String sessionId)?  stopSession,TResult? Function( bool enabled)?  setTranslationEnabled,TResult? Function( BigInt nonce)?  ping,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String sessionId,  PipelineRoute route)?  sessionReady,TResult? Function( PipelineRoute route)?  configureRoute,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision)?  startAudio,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision)?  endAudio,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)?  runAzookey,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)?  runTranslation,TResult? Function( String sessionId)?  stopSession,TResult? Function( bool enabled)?  setTranslationEnabled,TResult? Function( BigInt nonce)?  ping,}) {final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady() when sessionReady != null:
 return sessionReady(_that.sessionId,_that.route);case DesktopCommand_ConfigureRoute() when configureRoute != null:
@@ -203,7 +203,7 @@ return configureRoute(_that.route);case DesktopCommand_StartAudio() when startAu
 return startAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand_EndAudio() when endAudio != null:
 return endAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand_RunAzookey() when runAzookey != null:
 return runAzookey(_that.sessionId,_that.turnId,_that.revision,_that.text,_that.isFinal);case DesktopCommand_RunTranslation() when runTranslation != null:
-return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText);case DesktopCommand_StopSession() when stopSession != null:
+return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText,_that.isFinal);case DesktopCommand_StopSession() when stopSession != null:
 return stopSession(_that.sessionId);case DesktopCommand_SetTranslationEnabled() when setTranslationEnabled != null:
 return setTranslationEnabled(_that.enabled);case DesktopCommand_Ping() when ping != null:
 return ping(_that.nonce);case _:
@@ -566,13 +566,14 @@ as bool,
 
 
 class DesktopCommand_RunTranslation extends DesktopCommand {
-  const DesktopCommand_RunTranslation({required this.sessionId, required this.turnId, required this.revision, required this.sourceText}): super._();
+  const DesktopCommand_RunTranslation({required this.sessionId, required this.turnId, required this.revision, required this.sourceText, required this.isFinal}): super._();
   
 
  final  String sessionId;
  final  BigInt turnId;
  final  BigInt revision;
  final  String sourceText;
+ final  bool isFinal;
 
 /// Create a copy of DesktopCommand
 /// with the given fields replaced by the non-null parameter values.
@@ -584,16 +585,16 @@ $DesktopCommand_RunTranslationCopyWith<DesktopCommand_RunTranslation> get copyWi
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DesktopCommand_RunTranslation&&(identical(other.sessionId, sessionId) || other.sessionId == sessionId)&&(identical(other.turnId, turnId) || other.turnId == turnId)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.sourceText, sourceText) || other.sourceText == sourceText));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DesktopCommand_RunTranslation&&(identical(other.sessionId, sessionId) || other.sessionId == sessionId)&&(identical(other.turnId, turnId) || other.turnId == turnId)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.sourceText, sourceText) || other.sourceText == sourceText)&&(identical(other.isFinal, isFinal) || other.isFinal == isFinal));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,sessionId,turnId,revision,sourceText);
+int get hashCode => Object.hash(runtimeType,sessionId,turnId,revision,sourceText,isFinal);
 
 @override
 String toString() {
-  return 'DesktopCommand.runTranslation(sessionId: $sessionId, turnId: $turnId, revision: $revision, sourceText: $sourceText)';
+  return 'DesktopCommand.runTranslation(sessionId: $sessionId, turnId: $turnId, revision: $revision, sourceText: $sourceText, isFinal: $isFinal)';
 }
 
 
@@ -604,7 +605,7 @@ abstract mixin class $DesktopCommand_RunTranslationCopyWith<$Res> implements $De
   factory $DesktopCommand_RunTranslationCopyWith(DesktopCommand_RunTranslation value, $Res Function(DesktopCommand_RunTranslation) _then) = _$DesktopCommand_RunTranslationCopyWithImpl;
 @useResult
 $Res call({
- String sessionId, BigInt turnId, BigInt revision, String sourceText
+ String sessionId, BigInt turnId, BigInt revision, String sourceText, bool isFinal
 });
 
 
@@ -621,13 +622,14 @@ class _$DesktopCommand_RunTranslationCopyWithImpl<$Res>
 
 /// Create a copy of DesktopCommand
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? sessionId = null,Object? turnId = null,Object? revision = null,Object? sourceText = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? sessionId = null,Object? turnId = null,Object? revision = null,Object? sourceText = null,Object? isFinal = null,}) {
   return _then(DesktopCommand_RunTranslation(
 sessionId: null == sessionId ? _self.sessionId : sessionId // ignore: cast_nullable_to_non_nullable
 as String,turnId: null == turnId ? _self.turnId : turnId // ignore: cast_nullable_to_non_nullable
 as BigInt,revision: null == revision ? _self.revision : revision // ignore: cast_nullable_to_non_nullable
 as BigInt,sourceText: null == sourceText ? _self.sourceText : sourceText // ignore: cast_nullable_to_non_nullable
-as String,
+as String,isFinal: null == isFinal ? _self.isFinal : isFinal // ignore: cast_nullable_to_non_nullable
+as bool,
   ));
 }
 

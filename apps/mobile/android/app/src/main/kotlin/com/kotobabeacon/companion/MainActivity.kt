@@ -1,7 +1,10 @@
 package com.kotobabeacon.companion
 
+import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
 import android.provider.Settings
 import com.google.mlkit.genai.common.DownloadStatus
 import com.google.mlkit.genai.common.FeatureStatus
@@ -32,11 +35,24 @@ import kotlinx.coroutines.withContext
 class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var eventSink: EventChannel.EventSink? = null
+    private var pairingSink: EventChannel.EventSink? = null
+    private var pendingPairingLink: String? = null
     private var recognizer: SpeechRecognizer? = null
     private var recognitionJob: Job? = null
     private var pipe: Array<ParcelFileDescriptor>? = null
     private var pipeOutput: FileOutputStream? = null
     private var session: RecognitionSession? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        capturePairingLink(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        capturePairingLink(intent)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -44,6 +60,22 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
             .setMethodCallHandler(::handleMethodCall)
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
             .setStreamHandler(this)
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, PAIRING_EVENT_CHANNEL)
+            .setStreamHandler(
+                object : EventChannel.StreamHandler {
+                    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                        pairingSink = events
+                        pendingPairingLink?.let { link ->
+                            events?.success(link)
+                            pendingPairingLink = null
+                        }
+                    }
+
+                    override fun onCancel(arguments: Any?) {
+                        pairingSink = null
+                    }
+                },
+            )
     }
 
     override fun onDestroy() {
@@ -76,6 +108,7 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
                 null,
             )
             "releaseTranslation" -> result.success(null)
+            "openSystemCamera" -> openSystemCamera(result)
             "cancel" -> {
                 cancelProcessing()
                 result.success(null)
@@ -287,6 +320,32 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
         eventSink?.success(mapOf("type" to "error", "stage" to stage, "message" to message))
     }
 
+    private fun openSystemCamera(result: MethodChannel.Result) {
+        val camera = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+        if (camera.resolveActivity(packageManager) == null) {
+            result.error(
+                "camera_unavailable",
+                "The system camera app is unavailable",
+                null,
+            )
+            return
+        }
+        startActivity(camera)
+        result.success(null)
+    }
+
+    private fun capturePairingLink(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme != "kotobabeacon") return
+        val link = uri.toString()
+        val sink = pairingSink
+        if (sink == null) {
+            pendingPairingLink = link
+            return
+        }
+        sink.success(link)
+    }
+
     private data class RecognitionSession(
         val sessionId: String,
         val turnId: String,
@@ -296,5 +355,6 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler {
     companion object {
         private const val METHOD_CHANNEL = "kotoba_beacon/processing"
         private const val EVENT_CHANNEL = "kotoba_beacon/processing_events"
+        private const val PAIRING_EVENT_CHANNEL = "kotoba_beacon/pairing"
     }
 }

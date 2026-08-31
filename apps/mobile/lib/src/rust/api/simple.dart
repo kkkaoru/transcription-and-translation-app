@@ -264,6 +264,7 @@ sealed class DesktopCommand with _$DesktopCommand {
     required BigInt turnId,
     required BigInt revision,
     required String sourceText,
+    required bool isFinal,
   }) = DesktopCommand_RunTranslation;
   const factory DesktopCommand.stopSession({
     required String sessionId,

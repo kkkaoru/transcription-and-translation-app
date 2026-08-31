@@ -1435,11 +1435,13 @@ impl SseDecode for crate::api::simple::DesktopCommand {
                 let mut var_turnId = <u64>::sse_decode(deserializer);
                 let mut var_revision = <u64>::sse_decode(deserializer);
                 let mut var_sourceText = <String>::sse_decode(deserializer);
+                let mut var_isFinal = <bool>::sse_decode(deserializer);
                 return crate::api::simple::DesktopCommand::RunTranslation {
                     session_id: var_sessionId,
                     turn_id: var_turnId,
                     revision: var_revision,
                     source_text: var_sourceText,
+                    is_final: var_isFinal,
                 };
             }
             6 => {
@@ -1867,12 +1869,14 @@ impl flutter_rust_bridge::IntoDart for crate::api::simple::DesktopCommand {
                 turn_id,
                 revision,
                 source_text,
+                is_final,
             } => [
                 5.into_dart(),
                 session_id.into_into_dart().into_dart(),
                 turn_id.into_into_dart().into_dart(),
                 revision.into_into_dart().into_dart(),
                 source_text.into_into_dart().into_dart(),
+                is_final.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::simple::DesktopCommand::StopSession { session_id } => {
@@ -2164,12 +2168,14 @@ impl SseEncode for crate::api::simple::DesktopCommand {
                 turn_id,
                 revision,
                 source_text,
+                is_final,
             } => {
                 <i32>::sse_encode(5, serializer);
                 <String>::sse_encode(session_id, serializer);
                 <u64>::sse_encode(turn_id, serializer);
                 <u64>::sse_encode(revision, serializer);
                 <String>::sse_encode(source_text, serializer);
+                <bool>::sse_encode(is_final, serializer);
             }
             crate::api::simple::DesktopCommand::StopSession { session_id } => {
                 <i32>::sse_encode(6, serializer);

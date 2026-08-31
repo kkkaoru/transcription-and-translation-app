@@ -16,6 +16,9 @@ export const MOBILE_COVERAGE_THRESHOLDS = new Map([
   ["lib/main.dart", 95],
   ["lib/src/companion_connection.dart", 95],
   ["lib/src/companion_controller.dart", 95],
+  ["lib/src/companion_l10n.dart", 95],
+  ["lib/src/companion_pairing.dart", 95],
+  ["lib/src/companion_style.dart", 95],
   ["lib/src/native_processing.dart", 95],
 ]);
 
