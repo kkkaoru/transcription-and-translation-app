@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use language_harness_core::{Language, LanguageTracker, Observation, TrackerConfig};
+use language_harness_core::{
+    Language, LanguageTracker, Observation, PushObservationResult, TrackerConfig,
+};
 
 fn observation(at_ms: u64, ja: f32, en: f32) -> Observation {
     Observation::from_probabilities(at_ms, [ja, en, 0.005, 0.005], 1.0, true)
@@ -72,6 +74,36 @@ fn switches_ja_to_en_and_back_to_ja_without_flapping() {
 }
 
 #[test]
+fn burst_input_is_coalesced_and_backpressure_is_explicit() {
+    let mut tracker = LanguageTracker::new(TrackerConfig {
+        max_pending_ticks: 2,
+        ..TrackerConfig::default()
+    })
+    .expect("valid tracker config");
+
+    assert_eq!(
+        tracker.push_observation_detailed(observation(0, 0.99, 0.001)),
+        PushObservationResult::Enqueued
+    );
+    tracker.advance_to(0);
+
+    for at_ms in 1..500 {
+        assert!(tracker.push_observation(observation(at_ms, 0.90, 0.09)));
+    }
+    assert_eq!(tracker.pending_observation_count(), 1);
+
+    assert_eq!(
+        tracker.push_observation_detailed(observation(1_000, 0.90, 0.09)),
+        PushObservationResult::Enqueued
+    );
+    assert_eq!(tracker.pending_observation_count(), 2);
+    assert_eq!(
+        tracker.push_observation_detailed(observation(1_500, 0.90, 0.09)),
+        PushObservationResult::Backpressure
+    );
+}
+
+#[test]
 fn tracker_hot_path_is_far_below_realtime_budget() {
     const TICKS: u64 = 10_000;
     const STEP_MS: u64 = 500;
@@ -81,6 +113,8 @@ fn tracker_hot_path_is_far_below_realtime_budget() {
     const MAX_ELAPSED: Duration = Duration::from_secs(1);
 
     let mut tracker = tracker();
+    let mut events = Vec::with_capacity(2);
+    let event_capacity = events.capacity();
     let started = Instant::now();
 
     for tick in 0..TICKS {
@@ -91,7 +125,7 @@ fn tracker_hot_path_is_far_below_realtime_budget() {
             observation(at_ms, 0.07, 0.92)
         };
         assert!(tracker.push_observation(input));
-        tracker.advance_to(at_ms);
+        tracker.advance_to_into(at_ms, &mut events);
     }
 
     let elapsed = started.elapsed();
@@ -99,5 +133,6 @@ fn tracker_hot_path_is_far_below_realtime_budget() {
         elapsed < MAX_ELAPSED,
         "10,000 tracker ticks took {elapsed:?}, exceeding {MAX_ELAPSED:?}"
     );
+    assert_eq!(events.capacity(), event_capacity);
     assert_eq!(tracker.state().tick_at_ms, (TICKS - 1) * STEP_MS);
 }
