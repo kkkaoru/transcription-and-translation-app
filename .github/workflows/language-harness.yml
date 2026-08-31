@@ -32,7 +32,6 @@ jobs:
           cargo llvm-cov \
             --manifest-path crates/language-harness-core/Cargo.toml \
             --all-targets \
-            --branch \
             --fail-under-lines 95 \
             --fail-under-functions 95 \
             --fail-under-regions 95
