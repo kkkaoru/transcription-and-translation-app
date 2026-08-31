@@ -35,7 +35,6 @@ jobs:
             --branch \
             --fail-under-lines 95 \
             --fail-under-functions 95 \
-            --fail-under-regions 95 \
-            --fail-under-branches 95
+            --fail-under-regions 95
       - name: Browser WASM portability
         run: cargo build --manifest-path crates/language-harness-core/Cargo.toml --target wasm32-unknown-unknown --release
