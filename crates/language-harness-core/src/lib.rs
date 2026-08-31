@@ -3,10 +3,12 @@
 use std::collections::VecDeque;
 
 pub const LANGUAGE_COUNT: usize = 4;
+pub const DEFAULT_MAX_PENDING_TICKS: usize = 16;
 const EPSILON: f32 = 1.0e-6;
+type Backpointer = [u8; LANGUAGE_COUNT];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(usize)]
+#[repr(u8)]
 pub enum Language {
     Ja = 0,
     En = 1,
@@ -62,6 +64,7 @@ pub struct TrackerConfig {
     pub retain_posterior_threshold: f32,
     pub max_switch_silence_ms: u64,
     pub min_observation_quality: f32,
+    pub max_pending_ticks: usize,
 }
 
 impl Default for TrackerConfig {
@@ -75,6 +78,7 @@ impl Default for TrackerConfig {
             retain_posterior_threshold: 0.42,
             max_switch_silence_ms: 1_500,
             min_observation_quality: 0.2,
+            max_pending_ticks: DEFAULT_MAX_PENDING_TICKS,
         }
     }
 }
@@ -102,11 +106,15 @@ impl TrackerConfig {
         if !(0.0..=1.0).contains(&self.min_observation_quality) {
             return Err(ConfigError::InvalidMinimumQuality);
         }
+        if self.max_pending_ticks == 0 {
+            return Err(ConfigError::InvalidPendingCapacity);
+        }
         Ok(self)
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum ConfigError {
     TrackerStepZero,
     InvalidSelfProbability,
@@ -114,6 +122,22 @@ pub enum ConfigError {
     InvalidLlrIncrement,
     InvalidHysteresis,
     InvalidMinimumQuality,
+    InvalidPendingCapacity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum PushObservationResult {
+    Enqueued,
+    Coalesced,
+    OutOfOrder,
+    Backpressure,
+}
+
+impl PushObservationResult {
+    pub const fn is_accepted(self) -> bool {
+        matches!(self, Self::Enqueued | Self::Coalesced)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -170,22 +194,63 @@ impl LanguageTracker {
         })
     }
 
-    /// Returns false when an out-of-order observation is rejected.
+    /// Compatibility helper. Returns false for out-of-order input or when the bounded
+    /// pending queue applies backpressure. Use `push_observation_detailed` when the
+    /// caller needs to distinguish those conditions.
     pub fn push_observation(&mut self, observation: Observation) -> bool {
+        self.push_observation_detailed(observation).is_accepted()
+    }
+
+    /// Enqueues one fused observation without allowing unbounded RAM growth.
+    /// Observations mapped to the same logical tracker tick are coalesced latest-first.
+    /// Different logical ticks are never silently dropped: once `max_pending_ticks` is
+    /// reached, callers receive `Backpressure` and can pause upstream reads or reset.
+    pub fn push_observation_detailed(
+        &mut self,
+        observation: Observation,
+    ) -> PushObservationResult {
         if self
             .last_enqueued_at_ms
             .is_some_and(|last| observation.at_ms < last)
         {
-            return false;
+            return PushObservationResult::OutOfOrder;
         }
-        self.last_enqueued_at_ms = Some(observation.at_ms);
+
         self.next_tick_ms.get_or_insert(observation.at_ms);
+        let scheduled_tick = self.scheduled_tick_for(observation.at_ms);
+        if self.pending.back().is_some_and(|previous| {
+            self.scheduled_tick_for(previous.at_ms) == scheduled_tick
+        }) {
+            if let Some(previous) = self.pending.back_mut() {
+                *previous = observation;
+            }
+            self.last_enqueued_at_ms = Some(observation.at_ms);
+            return PushObservationResult::Coalesced;
+        }
+
+        if self.pending.len() >= self.config.max_pending_ticks {
+            return PushObservationResult::Backpressure;
+        }
+
         self.pending.push_back(observation);
-        true
+        self.last_enqueued_at_ms = Some(observation.at_ms);
+        PushObservationResult::Enqueued
+    }
+
+    pub fn pending_observation_count(&self) -> usize {
+        self.pending.len()
     }
 
     pub fn advance_to(&mut self, target_ms: u64) -> Vec<SwitchEvent> {
         let mut events = Vec::new();
+        self.advance_to_into(target_ms, &mut events);
+        events
+    }
+
+    /// Allocation-reusing realtime entry point. The caller can retain a small event
+    /// buffer across ticks instead of creating a fresh result vector each time.
+    pub fn advance_to_into(&mut self, target_ms: u64, events: &mut Vec<SwitchEvent>) {
+        events.clear();
         while let Some(tick_ms) = self.next_tick_ms {
             if tick_ms > target_ms {
                 break;
@@ -200,7 +265,6 @@ impl LanguageTracker {
             self.last_tick_ms = tick_ms;
             self.next_tick_ms = Some(tick_ms.saturating_add(self.config.tracker_step_ms));
         }
-        events
     }
 
     pub fn state(&self) -> TrackerState {
@@ -219,10 +283,21 @@ impl LanguageTracker {
         self.posterior[Language::Unknown.index()] = 1.0;
         self.stable_language = Language::Unknown;
         self.pending.clear();
+        self.pending.shrink_to_fit();
         self.last_enqueued_at_ms = None;
         self.next_tick_ms = None;
         self.last_tick_ms = 0;
         self.switch_episode = None;
+    }
+
+    fn scheduled_tick_for(&self, at_ms: u64) -> u64 {
+        let next_tick = self.next_tick_ms.unwrap_or(at_ms);
+        if at_ms <= next_tick {
+            return next_tick;
+        }
+        let delta = at_ms - next_tick;
+        let steps = delta.div_ceil(self.config.tracker_step_ms);
+        next_tick.saturating_add(steps.saturating_mul(self.config.tracker_step_ms))
     }
 
     fn take_latest_observation_for_tick(&mut self, tick_ms: u64) -> Option<Observation> {
@@ -357,7 +432,7 @@ pub fn fixed_lag_viterbi(
     }
     let cross_probability = (1.0 - self_probability) / (LANGUAGE_COUNT as f32 - 1.0);
     let mut scores = [-(LANGUAGE_COUNT as f32).ln(); LANGUAGE_COUNT];
-    let mut backpointers = vec![[0usize; LANGUAGE_COUNT]; observations.len()];
+    let mut backpointers = vec![[0u8; LANGUAGE_COUNT]; observations.len()];
 
     for (time, observation) in observations.iter().enumerate() {
         let mut next = [f32::NEG_INFINITY; LANGUAGE_COUNT];
@@ -378,7 +453,7 @@ pub fn fixed_lag_viterbi(
                 }
             }
             next[destination] = best_score;
-            backpointers[time][destination] = best_source;
+            backpointers[time][destination] = best_source as u8;
         }
         scores = next;
     }
@@ -387,7 +462,7 @@ pub fn fixed_lag_viterbi(
     let mut path = vec![Language::Unknown; observations.len()];
     for time in (0..observations.len()).rev() {
         path[time] = Language::ALL[state];
-        state = backpointers[time][state];
+        state = usize::from(backpointers[time][state]);
     }
     path
 }
@@ -423,6 +498,8 @@ fn normalize_probabilities(mut values: [f32; LANGUAGE_COUNT]) -> [f32; LANGUAGE_
 
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of;
+
     use super::*;
 
     fn obs(at_ms: u64, ja: f32, en: f32, unknown: f32, unsupported: f32) -> Observation {
@@ -449,6 +526,14 @@ mod tests {
         assert_eq!(Language::Ja.index(), 0);
         assert_eq!(Language::Unsupported.index(), 3);
         assert_eq!(Language::ALL[Language::En.index()], Language::En);
+    }
+
+    #[test]
+    fn compact_state_layouts_reduce_ram_per_frame() {
+        assert_eq!(size_of::<Language>(), 1);
+        assert_eq!(size_of::<Backpointer>(), LANGUAGE_COUNT);
+        assert!(size_of::<Observation>() <= 32);
+        assert!(size_of::<SwitchEvent>() <= 16);
     }
 
     #[test]
@@ -527,6 +612,14 @@ mod tests {
             .validate(),
             Err(ConfigError::InvalidMinimumQuality)
         );
+        assert_eq!(
+            TrackerConfig {
+                max_pending_ticks: 0,
+                ..default
+            }
+            .validate(),
+            Err(ConfigError::InvalidPendingCapacity)
+        );
         assert_eq!(default.validate(), Ok(default));
     }
 
@@ -597,12 +690,13 @@ mod tests {
     }
 
     #[test]
-    fn multiple_events_in_one_tick_are_coalesced() {
+    fn multiple_events_in_one_tick_are_coalesced_before_queue_growth() {
         let mut dense = tracker();
         lock_ja(&mut dense);
         for at in [100, 200, 300, 400, 500] {
-            dense.push_observation(obs(at, 0.01, 0.98, 0.005, 0.005));
+            assert!(dense.push_observation(obs(at, 0.01, 0.98, 0.005, 0.005)));
         }
+        assert_eq!(dense.pending_observation_count(), 1);
         dense.advance_to(500);
 
         let mut sparse = tracker();
@@ -619,6 +713,35 @@ mod tests {
         {
             assert!((a - b).abs() < 1.0e-6);
         }
+    }
+
+    #[test]
+    fn pending_queue_is_bounded_and_backpressure_is_explicit() {
+        let mut tracker = LanguageTracker::new(TrackerConfig {
+            max_pending_ticks: 2,
+            ..TrackerConfig::default()
+        })
+        .unwrap();
+        assert_eq!(
+            tracker.push_observation_detailed(obs(0, 0.99, 0.005, 0.004, 0.001)),
+            PushObservationResult::Enqueued
+        );
+        assert_eq!(
+            tracker.push_observation_detailed(obs(500, 0.98, 0.01, 0.005, 0.005)),
+            PushObservationResult::Enqueued
+        );
+        assert_eq!(
+            tracker.push_observation_detailed(obs(1000, 0.98, 0.01, 0.005, 0.005)),
+            PushObservationResult::Backpressure
+        );
+        assert_eq!(tracker.pending_observation_count(), 2);
+
+        tracker.advance_to(500);
+        assert_eq!(tracker.pending_observation_count(), 0);
+        assert_eq!(
+            tracker.push_observation_detailed(obs(1000, 0.98, 0.01, 0.005, 0.005)),
+            PushObservationResult::Enqueued
+        );
     }
 
     #[test]
@@ -649,8 +772,14 @@ mod tests {
     #[test]
     fn out_of_order_observation_is_rejected() {
         let mut tracker = tracker();
-        assert!(tracker.push_observation(obs(500, 0.01, 0.98, 0.005, 0.005)));
-        assert!(!tracker.push_observation(obs(100, 0.99, 0.005, 0.004, 0.001)));
+        assert_eq!(
+            tracker.push_observation_detailed(obs(500, 0.01, 0.98, 0.005, 0.005)),
+            PushObservationResult::Enqueued
+        );
+        assert_eq!(
+            tracker.push_observation_detailed(obs(100, 0.99, 0.005, 0.004, 0.001)),
+            PushObservationResult::OutOfOrder
+        );
     }
 
     #[test]
@@ -694,14 +823,33 @@ mod tests {
     }
 
     #[test]
-    fn reset_restores_unknown_state() {
+    fn reset_restores_unknown_state_and_releases_queue_capacity() {
         let mut tracker = tracker();
         lock_ja(&mut tracker);
+        for tick in (500..=4_000).step_by(500) {
+            tracker.push_observation(obs(tick, 0.42, 0.4, 0.17, 0.01));
+        }
+        assert!(tracker.pending.capacity() > 0);
         tracker.reset();
         assert_eq!(tracker.state().stable_language, Language::Unknown);
         assert_eq!(tracker.state().posterior, [0.0, 0.0, 1.0, 0.0]);
         assert_eq!(tracker.state().tick_at_ms, 0);
+        assert_eq!(tracker.pending.capacity(), 0);
         assert!(tracker.advance_to(10_000).is_empty());
+    }
+
+    #[test]
+    fn advance_to_into_reuses_caller_event_buffer() {
+        let mut tracker = tracker();
+        let mut events = Vec::with_capacity(2);
+        let original_capacity = events.capacity();
+        tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
+        tracker.advance_to_into(0, &mut events);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events.capacity(), original_capacity);
+        tracker.advance_to_into(500, &mut events);
+        assert!(events.is_empty());
+        assert_eq!(events.capacity(), original_capacity);
     }
 
     #[test]
