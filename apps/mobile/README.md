@@ -40,9 +40,15 @@ Mobile translation bundles the published `quickmt/quickmt-ja-en` CTranslate2 mod
 
 The Mobile `Makefile` is the command source of truth. Run targets inside
 `apps/mobile`, or use the `mobile-*` forwarding targets from the repository
-root.
+root. Before the first packaging build, prepare the ignored model weights with
+the repository script. It downloads revision-pinned Hugging Face artifacts and
+rejects every file that does not match its recorded SHA-256. CI caches only
+files that pass the same verification.
 
 ```sh
+# repository root; required once before a packaging build
+node scripts/prepare-mobile-model-assets.mjs
+
 # apps/mobile
 make setup
 make generate
