@@ -21,6 +21,8 @@
       "!**/vibrato_wasm_bg.js",
       "!**/vibrato_wasm_bg.wasm",
       "!**/vibrato_wasm_bg.wasm.d.ts",
+      "!apps/language-id-lab/src/routeTree.gen.ts",
+      "!apps/language-id-lab/worker-configuration.d.ts",
       "!.tools",
       "!.claude",
       "!.codex",
