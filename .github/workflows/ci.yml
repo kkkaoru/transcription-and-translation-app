@@ -57,6 +57,7 @@ jobs:
       - run: bun run sentence-boundary:typecheck
       - run: bun run azookey-compare:typecheck
       - run: bun run vad-lab:typecheck
+      - run: bun run language-id-lab:typecheck
       - run: bun run test:coverage
       - run: bun run core:test:coverage
       - run: bun run azookey-reading:test:coverage
@@ -64,6 +65,8 @@ jobs:
       - run: bun run sentence-boundary:test:coverage
       - run: bun run parapper:test:coverage
       - run: bun run azookey-compare:test:coverage
+      - run: bun run language-id-lab:test:coverage
+      - run: bun run language-id-lab:build
       - run: bun run native:diagnostics:test:coverage
       - run: bun run gateway:build
       - run: bun run gateway:test:coverage
