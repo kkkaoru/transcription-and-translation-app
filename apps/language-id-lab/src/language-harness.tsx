@@ -1,11 +1,11 @@
 // Runs with Bun during build and test.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isUiLocale, messagesFor, preferredUiLocale, type UiLocale } from "./i18n";
 import {
   frameForElapsed,
   HARNESS_SCENARIOS,
   type HarnessScenario,
   type LanguageCode,
-  languageLabel,
   type PosteriorDistribution,
   posteriorData,
   scenarioById,
@@ -17,10 +17,12 @@ interface PosteriorPanelProps {
   title: string;
   eyebrow: string;
   distribution: PosteriorDistribution;
+  statusLabel: string;
 }
 
 interface LanguageBadgeProps {
   language: LanguageCode;
+  label: string;
   compact: boolean;
 }
 
@@ -31,23 +33,23 @@ interface MetricProps {
 }
 
 const SIMULATION_INTERVAL_MS: number = 200;
-const EMPTY_DEVICE_LABEL: string = "Default microphone";
+const LOCALE_STORAGE_KEY: string = "kotoba-language-id-lab-locale";
 
-const LanguageBadge = ({ language, compact }: LanguageBadgeProps) => (
+const LanguageBadge = ({ language, label, compact }: LanguageBadgeProps) => (
   <span className={`language-badge language-${language}${compact ? " compact" : ""}`}>
     <span className="language-code">{language}</span>
-    <span>{languageLabel(language)}</span>
+    <span>{label}</span>
   </span>
 );
 
-const PosteriorPanel = ({ title, eyebrow, distribution }: PosteriorPanelProps) => (
+const PosteriorPanel = ({ title, eyebrow, distribution, statusLabel }: PosteriorPanelProps) => (
   <article className="posterior-card panel">
     <div className="panel-heading">
       <div>
         <p className="eyebrow">{eyebrow}</p>
         <h3>{title}</h3>
       </div>
-      <span className="live-dot">live</span>
+      <span className="live-dot">{statusLabel}</span>
     </div>
     <div className="posterior-list">
       {posteriorData(distribution).map((datum) => (
@@ -74,8 +76,9 @@ const Metric = ({ label, value, detail }: MetricProps) => (
 const scenarioDuration = (scenario: HarnessScenario): number => scenario.frames.at(-1)?.atMs ?? 0;
 
 export function LanguageHarness() {
+  const [locale, setLocale] = useState<UiLocale>("en");
   const [scenarioId, setScenarioId] = useState<string>(HARNESS_SCENARIOS[0]?.id ?? "ja-ambiguous");
-  const [simulationRunning, setSimulationRunning] = useState<boolean>(true);
+  const [simulationRunning, setSimulationRunning] = useState<boolean>(false);
   const [elapsedMs, setElapsedMs] = useState<number>(0);
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus>("idle");
   const [captureError, setCaptureError] = useState<string>("");
@@ -83,8 +86,10 @@ export function LanguageHarness() {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const streamRef = useRef<MediaStream | null>(null);
   const simulationStartedAtRef = useRef<number>(Date.now());
+  const messages = useMemo(() => messagesFor(locale), [locale]);
   const scenario = useMemo(() => scenarioById(scenarioId), [scenarioId]);
   const frame = useMemo(() => frameForElapsed(scenario, elapsedMs), [elapsedMs, scenario]);
+  const scenarioCopy = messages.scenarios[scenario.id] ?? scenario;
 
   const refreshDevices = useCallback(async () => {
     if (!navigator.mediaDevices) return;
@@ -103,7 +108,7 @@ export function LanguageHarness() {
   const startCapture = useCallback(async () => {
     if (!navigator.mediaDevices) {
       setCaptureStatus("error");
-      setCaptureError("This browser does not expose microphone capture.");
+      setCaptureError(messages.microphoneUnavailable);
       return;
     }
     setCaptureStatus("requesting");
@@ -121,9 +126,21 @@ export function LanguageHarness() {
       await refreshDevices();
     } catch (error) {
       setCaptureStatus("error");
-      setCaptureError(error instanceof Error ? error.message : "Microphone access failed.");
+      setCaptureError(error instanceof Error ? error.message : messages.microphoneFailed);
     }
-  }, [refreshDevices, selectedDeviceId]);
+  }, [messages, refreshDevices, selectedDeviceId]);
+
+  useEffect(() => {
+    let preferred = preferredUiLocale(navigator.language);
+    try {
+      const stored = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+      if (isUiLocale(stored)) preferred = stored;
+    } catch {
+      // Browser privacy settings can disable persistent storage.
+    }
+    setLocale(preferred);
+    document.documentElement.lang = preferred;
+  }, []);
 
   useEffect(() => {
     void refreshDevices();
@@ -132,96 +149,135 @@ export function LanguageHarness() {
 
   useEffect(() => {
     if (!simulationRunning) return;
-    simulationStartedAtRef.current = Date.now() - elapsedMs;
-    const timer = window.setInterval(
-      () => setElapsedMs(Date.now() - simulationStartedAtRef.current),
-      SIMULATION_INTERVAL_MS,
-    );
+    const duration = scenarioDuration(scenario);
+    const timer = window.setInterval(() => {
+      const nextElapsedMs = Math.min(Date.now() - simulationStartedAtRef.current, duration);
+      setElapsedMs(nextElapsedMs);
+      if (nextElapsedMs >= duration) setSimulationRunning(false);
+    }, SIMULATION_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [elapsedMs, simulationRunning]);
+  }, [scenario, simulationRunning]);
+
+  const selectLocale = (nextLocale: UiLocale) => {
+    setLocale(nextLocale);
+    document.documentElement.lang = nextLocale;
+    try {
+      window.localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale);
+    } catch {
+      // The in-memory selection still works when storage is unavailable.
+    }
+  };
 
   const selectScenario = (nextScenarioId: string) => {
     setScenarioId(nextScenarioId);
     setElapsedMs(0);
-    simulationStartedAtRef.current = Date.now();
-    setSimulationRunning(true);
+    setSimulationRunning(false);
   };
 
   const toggleSimulation = () => {
-    simulationStartedAtRef.current = Date.now() - elapsedMs;
+    const duration = scenarioDuration(scenario);
+    const restarting = elapsedMs >= duration;
+    const nextElapsedMs = restarting ? 0 : elapsedMs;
+    if (restarting) setElapsedMs(0);
+    simulationStartedAtRef.current = Date.now() - nextElapsedMs;
     setSimulationRunning((running) => !running);
   };
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Kotoba Beacon Language Lab home">
+        <a className="brand" href="/" aria-label="Kotoba Beacon Language ID Lab">
           <span className="brand-mark" aria-hidden="true">
             KB
           </span>
           <span>
             <strong>Kotoba Beacon</strong>
-            <small>Language Harness</small>
+            <small>{messages.brandSubtitle}</small>
           </span>
         </a>
         <div className="topbar-status">
           <span className="edge-status">
-            <span aria-hidden="true">◆</span> Cloudflare edge
+            <span aria-hidden="true">◆</span> {messages.edgeStatus}
           </span>
-          <span className="mode-pill">Synthetic evidence</span>
+          <span className="mode-pill">{messages.syntheticEvidence}</span>
+          <fieldset className="language-switcher">
+            <legend>{messages.localeSwitcherLabel}</legend>
+            <button
+              type="button"
+              className={locale === "ja" ? "active" : ""}
+              aria-pressed={locale === "ja"}
+              onClick={() => selectLocale("ja")}
+            >
+              日本語
+            </button>
+            <button
+              type="button"
+              className={locale === "en" ? "active" : ""}
+              aria-pressed={locale === "en"}
+              onClick={() => selectLocale("en")}
+            >
+              English
+            </button>
+          </fieldset>
         </div>
       </header>
 
       <section className="hero-grid">
         <div className="hero-copy">
-          <p className="eyebrow">Realtime multilingual state</p>
+          <p className="eyebrow">{messages.heroEyebrow}</p>
           <h1>
-            Track the language.
+            {messages.heroTitleFirst}
             <br />
-            Keep the context.
+            {messages.heroTitleSecond}
           </h1>
-          <p className="hero-description">
-            A live observability surface for the Rust language harness. Inspect stable state,
-            switching evidence, posterior layers, and transport health without turning a borrowed
-            word into a false language switch.
-          </p>
+          <p className="hero-description">{messages.heroDescription}</p>
         </div>
         <div className="stable-card panel">
           <div className="stable-header">
-            <span>Current stable language</span>
+            <span>{messages.stableHeading}</span>
             <span className="pulse">
-              <i /> tracking
+              <i /> {simulationRunning ? messages.syntheticRunning : messages.syntheticPaused}
             </span>
           </div>
           <div className="stable-language">
-            <LanguageBadge language={frame.stableLanguage} compact={false} />
+            <LanguageBadge
+              language={frame.stableLanguage}
+              label={messages.languageNames[frame.stableLanguage]}
+              compact={false}
+            />
             <strong>{Math.round(frame.hmm[frame.stableLanguage] * 100)}%</strong>
           </div>
           <div className="candidate-row">
-            <span>Switch candidate</span>
+            <span>{messages.switchCandidate}</span>
             {frame.candidateLanguage ? (
-              <LanguageBadge language={frame.candidateLanguage} compact={true} />
+              <LanguageBadge
+                language={frame.candidateLanguage}
+                label={messages.languageNames[frame.candidateLanguage]}
+                compact={true}
+              />
             ) : (
-              <span className="candidate-clear">No active candidate</span>
+              <span className="candidate-clear">{messages.noActiveCandidate}</span>
             )}
-            <span className="llr">LLR {frame.candidateEvidence.toFixed(2)}</span>
+            <span className="llr">
+              {messages.llrLabel} {frame.candidateEvidence.toFixed(2)}
+            </span>
           </div>
         </div>
       </section>
 
       <section className="control-strip panel">
         <div className="control-group microphone-control">
-          <label htmlFor="microphone">Microphone input</label>
+          <label htmlFor="microphone">{messages.microphoneInput}</label>
           <select
             id="microphone"
             value={selectedDeviceId}
             onChange={(event) => setSelectedDeviceId(event.currentTarget.value)}
             disabled={captureStatus === "live"}
           >
-            <option value="">{EMPTY_DEVICE_LABEL}</option>
+            <option value="">{messages.defaultMicrophone}</option>
             {devices.map((device, index) => (
               <option key={device.deviceId || `microphone-${index}`} value={device.deviceId}>
-                {device.label || `Microphone ${index + 1}`}
+                {device.label || messages.microphoneName(index + 1)}
               </option>
             ))}
           </select>
@@ -234,14 +290,14 @@ export function LanguageHarness() {
         >
           <span aria-hidden="true">{captureStatus === "live" ? "■" : "●"}</span>
           {captureStatus === "requesting"
-            ? "Requesting…"
+            ? messages.requestingMicrophone
             : captureStatus === "live"
-              ? "Stop microphone"
-              : "Enable microphone"}
+              ? messages.stopMicrophone
+              : messages.enableMicrophone}
         </button>
         <div className="privacy-note">
-          <strong>Private by default</strong>
-          <span>Audio is not uploaded in this UI milestone.</span>
+          <strong>{messages.privateByDefault}</strong>
+          <span>{messages.audioNotUploaded}</span>
         </div>
         {captureError ? <p className="control-error">{captureError}</p> : null}
       </section>
@@ -249,32 +305,43 @@ export function LanguageHarness() {
       <section className="scenario-section">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">Verification scenarios</p>
-            <h2>Exercise the state surface</h2>
+            <p className="eyebrow">{messages.scenariosEyebrow}</p>
+            <h2>{messages.scenariosHeading}</h2>
           </div>
           <button className="secondary-button" type="button" onClick={toggleSimulation}>
-            {simulationRunning ? "Pause run" : "Resume run"}
+            {simulationRunning
+              ? messages.pauseRun
+              : elapsedMs >= scenarioDuration(scenario)
+                ? messages.runAgain
+                : elapsedMs > 0
+                  ? messages.resumeRun
+                  : messages.runScenario}
           </button>
         </div>
-        <div className="scenario-tabs" role="tablist" aria-label="Harness scenarios">
-          {HARNESS_SCENARIOS.map((item) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={item.id === scenario.id}
-              className={item.id === scenario.id ? "scenario-tab active" : "scenario-tab"}
-              key={item.id}
-              onClick={() => selectScenario(item.id)}
-            >
-              <span>{item.label}</span>
-              <small>{item.expected}</small>
-            </button>
-          ))}
+        <div className="scenario-tabs" role="tablist" aria-label={messages.scenarioTabsLabel}>
+          {HARNESS_SCENARIOS.map((item) => {
+            const copy = messages.scenarios[item.id] ?? item;
+            return (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={item.id === scenario.id}
+                className={item.id === scenario.id ? "scenario-tab active" : "scenario-tab"}
+                key={item.id}
+                onClick={() => selectScenario(item.id)}
+              >
+                <span>{copy.label}</span>
+                <small>{copy.expected}</small>
+              </button>
+            );
+          })}
         </div>
         <div className="scenario-summary">
-          <p>{scenario.description}</p>
+          <p>{scenarioCopy.description}</p>
           <span>
-            {(Math.min(elapsedMs, scenarioDuration(scenario)) / 1_000).toFixed(1)}s sampled
+            {messages.sampledSeconds(
+              (Math.min(elapsedMs, scenarioDuration(scenario)) / 1_000).toFixed(1),
+            )}
           </span>
         </div>
       </section>
@@ -282,12 +349,12 @@ export function LanguageHarness() {
       <section className="transcript-panel panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">Live transcript</p>
+            <p className="eyebrow">{messages.syntheticTranscript}</p>
             <h2>{frame.transcript}</h2>
           </div>
-          <span className="revision">revision {Math.floor(frame.atMs / 500) + 1}</span>
+          <span className="revision">{messages.revision(Math.floor(frame.atMs / 500) + 1)}</span>
         </div>
-        <ul className="timeline" aria-label="Language switch timeline">
+        <ul className="timeline" aria-label={messages.timelineLabel}>
           {scenario.frames.map((item) => (
             <li
               className={`timeline-segment language-${item.stableLanguage}${item.atMs === frame.atMs ? " current" : ""}`}
@@ -302,51 +369,62 @@ export function LanguageHarness() {
 
       <section className="posterior-grid">
         <PosteriorPanel
-          title="Raw acoustic"
-          eyebrow="Model posterior"
+          title={messages.rawAcoustic}
+          eyebrow={messages.modelPosterior}
           distribution={frame.acoustic}
+          statusLabel={messages.fixtureStatus}
         />
         <PosteriorPanel
-          title="Fused evidence"
-          eyebrow="Acoustic + optional Nova"
+          title={messages.fusedEvidence}
+          eyebrow={messages.fusedEvidenceEyebrow}
           distribution={frame.fused}
+          statusLabel={messages.fixtureStatus}
         />
-        <PosteriorPanel title="Online HMM" eyebrow="Realtime tracker" distribution={frame.hmm} />
+        <PosteriorPanel
+          title={messages.onlineHmm}
+          eyebrow={messages.realtimeTracker}
+          distribution={frame.hmm}
+          statusLabel={messages.fixtureStatus}
+        />
       </section>
 
       <section className="diagnostics panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">Runtime diagnostics</p>
-            <h2>Bounded, observable, privacy-safe</h2>
+            <p className="eyebrow">{messages.diagnosticsEyebrow}</p>
+            <h2>{messages.diagnosticsHeading}</h2>
           </div>
-          <span className="source-truth">Rust source of truth</span>
+          <span className="source-truth">{messages.rustSourceOfTruth}</span>
         </div>
         <div className="metrics-grid">
           <Metric
-            label="Observation quality"
+            label={messages.observationQuality}
             value={`${Math.round(frame.quality * 100)}%`}
-            detail="calibrated input"
+            detail={messages.calibratedInput}
           />
           <Metric
-            label="Speech coverage"
+            label={messages.speechCoverage}
             value={`${Math.round(frame.speechCoverage * 100)}%`}
-            detail="voiced context"
+            detail={messages.voicedContext}
           />
           <Metric
-            label="Tracker update"
+            label={messages.trackerUpdate}
             value={`${frame.latencyMs} ms`}
-            detail="simulated end-to-end"
+            detail={messages.simulatedEndToEnd}
           />
-          <Metric label="Pending queue" value="1 / 16" detail="bounded ticks" />
-          <Metric label="Backpressure" value="0" detail="explicit events" />
-          <Metric label="Transport" value="Ready" detail="Cloudflare Worker" />
+          <Metric label={messages.pendingQueue} value="1 / 16" detail={messages.boundedTicks} />
+          <Metric label={messages.backpressure} value="0" detail={messages.explicitEvents} />
+          <Metric
+            label={messages.transport}
+            value={messages.ready}
+            detail={messages.cloudflareWorker}
+          />
         </div>
       </section>
 
       <footer>
-        <span>Kotoba Beacon · Language ID Lab</span>
-        <span>UI milestone · inference bridge pending</span>
+        <span>{messages.footerProduct}</span>
+        <span>{messages.footerMilestone}</span>
       </footer>
     </main>
   );

@@ -103,6 +103,42 @@ button {
   align-items: center;
 }
 
+.language-switcher {
+  display: inline-flex;
+  margin: 0;
+  padding: 3px;
+  background: rgb(251 250 245 / 72%);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+}
+
+.language-switcher legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.language-switcher button {
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 99px;
+  font-family: "DM Mono", monospace;
+  font-size: 10px;
+}
+
+.language-switcher button.active {
+  color: #fffaf4;
+  background: var(--ink);
+}
+
 .edge-status,
 .mode-pill,
 .live-dot,
@@ -702,7 +738,8 @@ footer {
     min-height: 74px;
   }
 
-  .edge-status {
+  .edge-status,
+  .mode-pill {
     display: none;
   }
 

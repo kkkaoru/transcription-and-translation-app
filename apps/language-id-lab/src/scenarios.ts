@@ -232,9 +232,9 @@ export const scenarioById = (id: string): HarnessScenario =>
 
 export const frameForElapsed = (scenario: HarnessScenario, elapsedMs: number): ScenarioFrame => {
   const duration = scenario.frames.at(-1)?.atMs ?? 0;
-  const loopedMs = duration === 0 ? 0 : elapsedMs % (duration + 1_500);
+  const clampedMs = Math.max(0, Math.min(elapsedMs, duration));
   return (
-    scenario.frames.filter((frame) => frame.atMs <= loopedMs).at(-1) ??
+    scenario.frames.filter((frame) => frame.atMs <= clampedMs).at(-1) ??
     scenario.frames[0] ?? {
       atMs: 0,
       stableLanguage: "unknown",

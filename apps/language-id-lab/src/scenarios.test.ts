@@ -49,8 +49,8 @@ describe("language harness scenarios", () => {
     });
   });
 
-  it("loops completed scenarios and falls back for unknown identifiers", () => {
-    expect(frameForElapsed(scenarioById("unsupported"), 4_600).stableLanguage).toBe("unknown");
+  it("clamps completed scenarios and falls back for unknown identifiers", () => {
+    expect(frameForElapsed(scenarioById("unsupported"), 4_600).stableLanguage).toBe("unsupported");
     expect(frameForElapsed(scenarioById("unsupported"), -1).stableLanguage).toBe("unknown");
     expect(frameForElapsed(EMPTY_SCENARIO, 0).stableLanguage).toBe("unknown");
     expect(scenarioById("missing").id).toBe("ja-ambiguous");

@@ -10,9 +10,10 @@ The app provides:
 - stable language, candidate, and switch-evidence surfaces;
 - acoustic, fused, and HMM posterior visualization;
 - switch timeline and runtime diagnostics;
+- Japanese and English UI copy with an in-page, persisted language switcher;
 - deterministic synthetic scenarios for the PR's required JA ambiguity, JA → EN → JA, and unsupported-language behavior.
 
-Synthetic scenarios are display fixtures, not a TypeScript implementation of the tracker. Rust remains the source of truth. Audio captured by the current UI is not uploaded; the LanguageSessionDO, Nova-3, and private Container bridges are subsequent PR phases.
+Synthetic scenarios start paused and run once only after an explicit button press, so an idle microphone never appears to change the stable language. They are display fixtures, not a TypeScript implementation of the tracker. Rust remains the source of truth. Audio captured by the current UI is not uploaded; the LanguageSessionDO, Nova-3, and private Container bridges are subsequent PR phases.
 
 ## Commands
 
