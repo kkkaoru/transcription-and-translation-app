@@ -43,12 +43,14 @@ describe("timed quality steps", () => {
         "dictionaries:typecheck",
         "sentence-boundary:typecheck",
         "azookey-compare:typecheck",
+        "vad-lab:typecheck",
         "test:coverage",
         "core:test:coverage",
         "azookey-reading:test:coverage",
         "dictionaries:test:coverage",
         "sentence-boundary:test:coverage",
         "azookey-compare:test:coverage",
+        "native:diagnostics:test:coverage",
         "gateway:build",
         "gateway:test:coverage",
         "worker:typecheck",
@@ -88,7 +90,7 @@ describe("timed quality steps", () => {
 
   it("gives every planned step a stable identity and semantic asset labels", () => {
     const described = describeQualitySteps(QUALITY_GATE_STEPS);
-    assert.equal(described.length, 52);
+    assert.equal(described.length, 54);
     assert.equal(new Set(described.map(({ id }) => id)).size, described.length);
     assert.deepEqual(described[10], {
       id: "assets:verify:checkout-baseline",
@@ -97,11 +99,11 @@ describe("timed quality steps", () => {
       index: 11,
       occurrence: 1,
     });
-    assert.deepEqual(described[26], {
+    assert.deepEqual(described[28], {
       id: "assets:verify:post-worker-build",
       script: "assets:verify",
       label: "assets:verify (post worker:typecheck)",
-      index: 27,
+      index: 29,
       occurrence: 2,
     });
   });
@@ -229,9 +231,9 @@ describe("timed quality steps", () => {
     const payload = serializeTimingSummary(
       {
         exitCode: 0,
-        plannedStepCount: 52,
-        totalMs: 540,
-        stepsTotalMs: 520,
+        plannedStepCount: 54,
+        totalMs: 560,
+        stepsTotalMs: 540,
         overheadMs: 20,
         records,
       },
@@ -256,14 +258,14 @@ describe("timed quality steps", () => {
         recordedAt: "2026-08-15T18:52:00.000Z",
         outcome: "passed",
         exitCode: 0,
-        plannedStepCount: 52,
-        recordedStepCount: 52,
-        totalMs: 540,
-        stepsTotalMs: 520,
+        plannedStepCount: 54,
+        recordedStepCount: 54,
+        totalMs: 560,
+        stepsTotalMs: 540,
         overheadMs: 20,
       },
     );
-    assert.equal(parsed.steps.length, 52);
+    assert.equal(parsed.steps.length, 54);
     assert.deepEqual(Object.keys(parsed.steps[0]), [
       "id",
       "script",

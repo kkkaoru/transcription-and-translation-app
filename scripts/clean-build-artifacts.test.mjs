@@ -41,6 +41,7 @@ describe("cleanBuildArtifacts", () => {
     const comparisonOutput = await createFile(root, "apps/azookey-compare/.next/server/app.js");
     const gatewayOutput = await createFile(root, "apps/inference-gateway/dist/index.js");
     const coreOutput = await createFile(root, "packages/inference-server-core/dist/index.js");
+    const mobileBuildOutput = await createFile(root, "apps/mobile/build/ios/Runner.app/Runner");
     const coverageOutput = await createFile(root, "apps/desktop/coverage/coverage-summary.json");
     const parapperBundle = await createFile(
       root,
@@ -61,6 +62,7 @@ describe("cleanBuildArtifacts", () => {
       comparisonOutput,
       gatewayOutput,
       coreOutput,
+      mobileBuildOutput,
       coverageOutput,
       parapperBundle,
       parapperWindowsBundle,
@@ -85,8 +87,13 @@ describe("cleanBuildArtifacts", () => {
       "apps/azookey-compare/coverage",
       "apps/inference-gateway/coverage",
       "apps/cloudflare-worker-server/coverage",
+      "apps/mobile/coverage",
+      "apps/vad-lab/coverage",
+      "packages/azookey-reading/coverage",
+      "packages/dictionaries/coverage",
       "packages/inference-server-core/coverage",
       "packages/parapper-asr/coverage",
+      "packages/sentence-boundary/coverage",
     ];
     const coverageOutputs = await Promise.all(
       coverageDirectories.map((directory) =>
@@ -127,6 +134,17 @@ describe("cleanBuildArtifacts", () => {
 
   it("prunes Rust debug/release caches while retaining release runtime files", async () => {
     const root = await createRoot();
+    const nativeDebugCache = await createFile(root, "apps/native/target/debug/deps/old.rlib");
+    const nativeCoverageCache = await createFile(
+      root,
+      "apps/native/target/llvm-cov-target/debug/deps/old.rlib",
+    );
+    const nativeReleaseDeps = await createFile(root, "apps/native/target/release/deps/old.rlib");
+    const mobileRustTarget = await createFile(root, "apps/mobile/rust/target/debug/deps/old.rlib");
+    const engineTarget = await createFile(
+      root,
+      "crates/parapper-engine/target/debug/deps/old.rlib",
+    );
     const debugCache = await createFile(root, "packages/parapper-asr/target/debug/deps/old.rlib");
     const libraryTarget = await createFile(
       root,
@@ -156,6 +174,14 @@ describe("cleanBuildArtifacts", () => {
       root,
       "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/bundle/msi/old.msi",
     );
+    const nativeReleaseBinary = await createFile(
+      root,
+      "apps/native/target/release/kotoba-beacon-native",
+    );
+    const nativeRuntime = await createFile(
+      root,
+      "apps/native/target/sherpa-onnx-prebuilt/lib/libsherpa-onnx-c-api.dylib",
+    );
     const releaseBinary = await createFile(root, "packages/parapper-asr/target/release/parapper");
     const releaseRuntime = await createFile(
       root,
@@ -165,6 +191,11 @@ describe("cleanBuildArtifacts", () => {
     await cleanBuildArtifacts({ root, pruneRust: true });
 
     for (const removed of [
+      nativeDebugCache,
+      nativeCoverageCache,
+      nativeReleaseDeps,
+      mobileRustTarget,
+      engineTarget,
       debugCache,
       libraryTarget,
       azookeyWasmTarget,
@@ -176,7 +207,7 @@ describe("cleanBuildArtifacts", () => {
     ]) {
       assert.equal(existsSync(removed), false, `Rust cache remains: ${removed}`);
     }
-    for (const retained of [releaseBinary, releaseRuntime]) {
+    for (const retained of [nativeReleaseBinary, nativeRuntime, releaseBinary, releaseRuntime]) {
       assert.equal(existsSync(retained), true, `release runtime was removed: ${retained}`);
     }
   });
@@ -197,6 +228,7 @@ describe("cleanBuildArtifacts", () => {
 
   it("is wired into every build entrypoint", async () => {
     const workspace = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
+    const makefile = await readFile(join(repositoryRoot, "Makefile"), "utf8");
     const desktop = JSON.parse(
       await readFile(join(repositoryRoot, "apps/desktop/package.json"), "utf8"),
     );
@@ -214,6 +246,15 @@ describe("cleanBuildArtifacts", () => {
     }
     assert.match(workspace.scripts["clean:build"], /--prune-rust/);
     assert.match(workspace.scripts["clean:build:rust"], /--prune-rust/);
+    assert.equal(workspace.scripts["rust:native:coverage"], "make rust-native-coverage");
+    assert.equal(
+      workspace.scripts["rust:parapper-engine:coverage"],
+      "make rust-parapper-engine-coverage",
+    );
+    assert.match(makefile, /^rust-native-coverage:/mu);
+    assert.match(makefile, /^rust-parapper-engine-coverage:/mu);
+    assert.match(makefile, /^clean-build-artifacts:/mu);
+    assert.match(makefile, /scripts\/run-rust-coverage\.mjs/u);
     assert.match(desktop.scripts.build, new RegExp(cleanup));
     // bridge.ts imports this package directly. Declaring it here prevents a
     // clean install from depending on another workspace package's hoisting.
@@ -260,6 +301,22 @@ describe("cleanBuildArtifacts", () => {
     assert.equal(existsSync(rustBundle), true);
     assert.equal(result.removed.length, 0);
     assert.match(result.skipped[0], /deferred/);
+  });
+
+  it("ignores completed tmux wrappers that only mention an old cargo command", async () => {
+    const root = await createRoot();
+    const staleOutput = await createFile(root, "apps/native/target/debug/deps/old.rlib");
+
+    const result = await cleanBuildArtifacts({
+      root,
+      pruneRust: true,
+      processCommands: [
+        `tmux new-session -- sh -lc (cargo test --manifest-path ${join(root, "apps/native/Cargo.toml")})`,
+      ],
+    });
+
+    assert.equal(existsSync(staleOutput), false);
+    assert.equal(result.skipped.length, 0);
   });
 
   it("preserves a live azookey-compare Next.js output while cleaning other artifacts", async () => {

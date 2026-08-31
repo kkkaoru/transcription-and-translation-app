@@ -1,3 +1,16 @@
+# This repository contains several large Rust graphs (GPUI, ONNX Runtime,
+# CTranslate2, and Candle). Per-crate incremental caches previously retained
+# tens of gigabytes of duplicate object files. Prefer bounded rebuild storage
+# over incremental compilation speed; cargo-llvm-cov supplies its own coverage
+# instrumentation and remains unaffected.
+[profile.dev]
+incremental = false
+debug = 1
+
+[profile.test]
+incremental = false
+debug = 1
+
 # CTranslate2's vendored Windows build links the static MSVC runtime. Keep Rust
 # and every other C/C++ build dependency on the same runtime so Native does not
 # mix /MT and /MD objects at link time.

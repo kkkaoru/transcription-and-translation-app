@@ -44,6 +44,14 @@ export const ciGateMappings = new Map([
   ],
   ["cargo test --locked --manifest-path apps/native/Cargo.toml", "rust:native:test"],
   [
+    "cargo test --locked --manifest-path crates/caption-bridge-fonts/Cargo.toml",
+    "rust:native:test",
+  ],
+  [
+    "cargo test --locked --manifest-path crates/caption-bridge-browser-source/Cargo.toml",
+    "rust:native:test",
+  ],
+  [
     "cargo test --locked --manifest-path crates/caption-bridge-audio/Cargo.toml",
     "rust:native:test",
   ],

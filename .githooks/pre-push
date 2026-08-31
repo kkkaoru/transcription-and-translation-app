@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+repository_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+cd "$repository_root"
+
+zero_oid=0000000000000000000000000000000000000000
+coverage_base=
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if [ "$local_oid" = "$zero_oid" ]; then
+    continue
+  fi
+  if [ "$remote_oid" != "$zero_oid" ]; then
+    coverage_base=$remote_oid
+    break
+  fi
+done
+
+if [ -z "$coverage_base" ]; then
+  remote_name=${1:-origin}
+  if git rev-parse --verify --quiet "$remote_name/main" >/dev/null; then
+    coverage_base=$(git merge-base HEAD "$remote_name/main")
+  else
+    coverage_base=$(git rev-parse HEAD^)
+  fi
+fi
+
+export RUST_COVERAGE_BASE="$coverage_base"
+make rust-native-coverage
+make rust-parapper-engine-coverage
+bun run native:diagnostics:test:coverage

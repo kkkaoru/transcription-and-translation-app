@@ -4,11 +4,15 @@ PARAPPER_MANIFEST := packages/parapper-asr/Cargo.toml
 NATIVE_MANIFEST := apps/native/Cargo.toml
 NATIVE_BINARY := apps/native/target/release/kotoba-beacon-native
 MOBILE_DIR := apps/mobile
+RUST_COVERAGE_RUNNER := node scripts/run-rust-coverage.mjs
+RUST_COVERAGE_ARGS ?=
 
 .PHONY: help build native-release native-package native-install native-replace \
-	parapper-fetch parapper-check mobile-help mobile-setup mobile-generate \
-	mobile-check mobile-test mobile-coverage mobile-build mobile-build-android \
-	mobile-build-ios mobile-clean
+	parapper-fetch parapper-check setup-git-hooks rust-native-coverage \
+	rust-parapper-engine-coverage clean-build-artifacts mobile-help mobile-setup \
+	mobile-generate mobile-check \
+	mobile-test mobile-coverage mobile-build mobile-build-android mobile-build-ios \
+	mobile-build-ios-device mobile-install-ios-device mobile-run-ios-device mobile-clean
 
 help:
 	@printf '%s\n' \
@@ -20,6 +24,10 @@ help:
 		'  make native-replace  Alias for native-install' \
 		'  make parapper-fetch      Fetch locked Parapper Rust dependencies once' \
 		'  make parapper-check      Check Parapper with locked, offline dependencies' \
+		'  make setup-git-hooks     Enable the tracked pre-push coverage gate' \
+		'  make rust-native-coverage Run serialized Native Rust coverage with automatic disk cleanup' \
+		'  make rust-parapper-engine-coverage Run serialized engine coverage with automatic disk cleanup' \
+		'  make clean-build-artifacts Remove rebuildable Rust, Flutter, and coverage artifacts' \
 		'  make mobile-help         List every Flutter companion target' \
 		'  make mobile-setup        Resolve Flutter and locked Mobile Rust dependencies' \
 		'  make mobile-generate     Regenerate Flutter Rust Bridge bindings' \
@@ -29,6 +37,9 @@ help:
 		'  make mobile-build        Build Android ARM64 and iOS Simulator artifacts' \
 		'  make mobile-build-android Build only the Android ARM64 release APK' \
 		'  make mobile-build-ios    Build only the iOS Simulator app' \
+		'  make mobile-build-ios-device IOS_DEVICE=<udid> Build the physical-iPhone release app' \
+		'  make mobile-install-ios-device IOS_DEVICE=<udid> Install the release app' \
+		'  make mobile-run-ios-device IOS_DEVICE=<udid> Install and launch the release app' \
 		'  make mobile-clean        Remove generated Mobile build and coverage caches'
 
 # Normal builds terminate the installed app before replacement, but never relaunch or activate it.
@@ -53,6 +64,29 @@ parapper-fetch:
 # Offline mode avoids Cargo package-cache/network stalls during repeat validation.
 parapper-check:
 	cargo check --locked --offline --manifest-path $(PARAPPER_MANIFEST) -p parapper
+
+setup-git-hooks:
+	git config --local core.hooksPath .githooks
+	@test "$$(git config --get core.hooksPath)" = .githooks
+
+# Rust coverage is intentionally routed through one disk-bounded runner. The
+# runner serializes agents, removes stale/rebuildable caches before compiling,
+# requires 12 GiB free, and deletes the instrumented target on every exit.
+rust-native-coverage:
+	$(RUST_COVERAGE_RUNNER) $(NATIVE_MANIFEST) \
+		--changed-lines=95 \
+		--changed-path=apps/native/src/capture.rs \
+		--changed-path=apps/native/src/pipeline_diagnostics.rs \
+		$(RUST_COVERAGE_ARGS)
+
+rust-parapper-engine-coverage:
+	$(RUST_COVERAGE_RUNNER) crates/parapper-engine/Cargo.toml \
+		--changed-lines=95 \
+		--changed-path=crates/parapper-engine/src \
+		$(RUST_COVERAGE_ARGS)
+
+clean-build-artifacts:
+	node scripts/clean-build-artifacts.mjs --prune-rust
 
 mobile-help:
 	$(MAKE) -C $(MOBILE_DIR) help
@@ -80,6 +114,15 @@ mobile-build-android:
 
 mobile-build-ios:
 	$(MAKE) -C $(MOBILE_DIR) ios
+
+mobile-build-ios-device:
+	$(MAKE) -C $(MOBILE_DIR) ios-device
+
+mobile-install-ios-device:
+	$(MAKE) -C $(MOBILE_DIR) install-ios-device
+
+mobile-run-ios-device:
+	$(MAKE) -C $(MOBILE_DIR) run-ios-device
 
 mobile-clean:
 	$(MAKE) -C $(MOBILE_DIR) clean

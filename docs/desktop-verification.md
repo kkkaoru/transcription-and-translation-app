@@ -96,3 +96,13 @@ The ring stores reasons, character counts, and equality flags, not transcript te
 ## Development note: coverage serialization
 
 `check:all` and `test:coverage` use shared `coverage/` directories. Never run them concurrently in parallel-agent work; serialize them to prevent cleanup races and excessive memory pressure.
+
+Run Rust coverage through `make rust-native-coverage` or
+`make rust-parapper-engine-coverage`, not a bare `cargo llvm-cov` command.
+The shared runner allows only one Rust coverage build at a time, removes stale
+repository and coverage caches before compiling, refuses to start below the
+12 GiB free-space floor, and deletes the instrumented target after success or
+failure. Moving a target to macOS `TMPDIR` alone is not a disk-space fix because
+it normally shares the worktree's APFS volume. Use
+`make clean-build-artifacts` to remove stale Rust, Flutter, and coverage
+outputs; cleanup defers while a real Cargo or rustc process is active.

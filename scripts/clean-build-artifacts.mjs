@@ -75,6 +75,11 @@ const generatedDirectories = [
   "packages/parapper-asr/src-tauri/target/release/bundle",
   "packages/parapper-asr/target/release/bundle",
   "packages/parapper-asr/target/x86_64-pc-windows-msvc/release/bundle",
+  "apps/mobile/build",
+  "apps/mobile/.dart_tool/build",
+  "apps/mobile/.dart_tool/flutter_build",
+  "apps/mobile/.dart_tool/hooks_runner",
+  "apps/mobile/.dart_tool/pub",
 ];
 
 // Vitest writes reports beneath each workspace package.  They are generated
@@ -85,21 +90,41 @@ const coverageDirectories = [
   "apps/azookey-compare/coverage",
   "apps/inference-gateway/coverage",
   "apps/cloudflare-worker-server/coverage",
+  "apps/mobile/coverage",
+  "apps/vad-lab/coverage",
+  "packages/azookey-reading/coverage",
+  "packages/dictionaries/coverage",
   "packages/inference-server-core/coverage",
   "packages/parapper-asr/coverage",
+  "packages/sentence-boundary/coverage",
 ];
 
 // Debug artifacts are never distributed and can grow without bound because
 // every changed Rust dependency/feature creates another hashed `deps` and
 // incremental tree.  Library-only targets have no runtime files to retain.
 const disposableRustTargets = [
+  "apps/mobile/rust/target",
+  "apps/native/target/debug",
+  "apps/native/target/llvm-cov-target",
+  "apps/native/target/x86_64-pc-windows-msvc/debug",
+  "apps/zenz-container/n5-server/target",
+  "apps/zenz-container/src/criu-poc/criu-bootstrap/target",
+  "crates/caption-bridge-audio/target",
+  "crates/caption-bridge-browser-source/target",
+  "crates/caption-bridge-fonts/target",
+  "crates/caption-bridge-japanese-text/target",
+  "crates/caption-bridge-render/target",
+  "crates/caption-bridge-syphon/target",
+  "crates/parapper-engine/target",
+  "packages/azookey-rust/target",
   "packages/azookey-wasm/target",
+  "packages/input-lm-rust/target",
   "packages/parapper-asr/target/debug",
   "packages/parapper-asr/target/x86_64-pc-windows-msvc/debug",
   "packages/parapper-asr/src-tauri/target",
-  "packages/azookey-rust/target",
   "packages/vibrato/core/target",
   "packages/vibrato/wasm/target",
+  "packages/zenz-verifier-rust/target",
   "submodules/Parapper-ASR/target",
 ];
 
@@ -108,6 +133,16 @@ const disposableRustTargets = [
 // release builds bounded without forcing the distributed artifacts to be
 // rebuilt just to run the cleanup command.
 const releaseCacheDirectories = [
+  "apps/native/target/release/build",
+  "apps/native/target/release/deps",
+  "apps/native/target/release/.fingerprint",
+  "apps/native/target/release/incremental",
+  "apps/native/target/release/examples",
+  "apps/native/target/x86_64-pc-windows-msvc/release/build",
+  "apps/native/target/x86_64-pc-windows-msvc/release/deps",
+  "apps/native/target/x86_64-pc-windows-msvc/release/.fingerprint",
+  "apps/native/target/x86_64-pc-windows-msvc/release/incremental",
+  "apps/native/target/x86_64-pc-windows-msvc/release/examples",
   "packages/parapper-asr/target/release/build",
   "packages/parapper-asr/target/release/deps",
   "packages/parapper-asr/target/release/.fingerprint",
@@ -229,7 +264,11 @@ const commandBelongsToRoot = (line, root) => {
  * does not expose command lines.
  */
 const activeRustProcesses = (root, commands = listProcessCommands()) => {
-  const rustCommand = /(?:^|[\\/\s])(?:cargo|rustc|rustdoc)(?:\.exe)?(?:\s|$)/i;
+  // Match the process executable, not an arbitrary cargo-looking substring in
+  // another process's arguments. Detached tmux sessions retain their original
+  // `sh -lc (cargo ...)` text after the cargo child exits; treating those
+  // wrappers as live Rust builds made cleanup defer forever.
+  const rustCommand = /^(?:[^\s]*[\\/])?(?:cargo|cargo-llvm-cov|rustc|rustdoc)(?:\.exe)?(?:\s|$)/i;
   return commands.filter((line) => commandBelongsToRoot(line, root) && rustCommand.test(line));
 };
 
