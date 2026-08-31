@@ -57,6 +57,7 @@ pub struct TrackerConfig {
     pub tracker_step_ms: u64,
     pub hmm_self_probability: f32,
     pub switch_llr_threshold: f32,
+    pub max_llr_increment: f32,
     pub switch_posterior_threshold: f32,
     pub retain_posterior_threshold: f32,
     pub max_switch_silence_ms: u64,
@@ -69,6 +70,7 @@ impl Default for TrackerConfig {
             tracker_step_ms: 500,
             hmm_self_probability: 0.94,
             switch_llr_threshold: 3.0,
+            max_llr_increment: 2.0,
             switch_posterior_threshold: 0.72,
             retain_posterior_threshold: 0.42,
             max_switch_silence_ms: 1_500,
@@ -88,6 +90,9 @@ impl TrackerConfig {
         if self.switch_llr_threshold <= 0.0 || !self.switch_llr_threshold.is_finite() {
             return Err(ConfigError::InvalidSwitchThreshold);
         }
+        if self.max_llr_increment <= 0.0 || !self.max_llr_increment.is_finite() {
+            return Err(ConfigError::InvalidLlrIncrement);
+        }
         if !(0.0..=1.0).contains(&self.switch_posterior_threshold)
             || !(0.0..=1.0).contains(&self.retain_posterior_threshold)
             || self.switch_posterior_threshold <= self.retain_posterior_threshold
@@ -106,6 +111,7 @@ pub enum ConfigError {
     TrackerStepZero,
     InvalidSelfProbability,
     InvalidSwitchThreshold,
+    InvalidLlrIncrement,
     InvalidHysteresis,
     InvalidMinimumQuality,
 }
@@ -184,16 +190,13 @@ impl LanguageTracker {
             if tick_ms > target_ms {
                 break;
             }
-
-            let observation = self.take_latest_observation_for_tick(tick_ms);
-            if let Some(observation) = observation {
+            if let Some(observation) = self.take_latest_observation_for_tick(tick_ms) {
                 if let Some(event) = self.advance_tick(tick_ms, observation) {
                     events.push(event);
                 }
             } else {
                 self.expire_episode_on_silence(tick_ms);
             }
-
             self.last_tick_ms = tick_ms;
             self.next_tick_ms = Some(tick_ms.saturating_add(self.config.tracker_step_ms));
         }
@@ -253,14 +256,17 @@ impl LanguageTracker {
             self.switch_episode = None;
             return None;
         }
-
         if !observation.speech {
             self.expire_episode_on_silence(tick_ms);
             return None;
         }
 
-        let increment = observation.log_scores[candidate.index()]
+        let raw_increment = observation.log_scores[candidate.index()]
             - observation.log_scores[self.stable_language.index()];
+        let increment = raw_increment.clamp(
+            -self.config.max_llr_increment,
+            self.config.max_llr_increment,
+        );
         let mut episode = match self.switch_episode {
             Some(existing) if existing.candidate == candidate => existing,
             _ => SwitchEpisode {
@@ -349,7 +355,6 @@ pub fn fixed_lag_viterbi(
     if observations.is_empty() {
         return Vec::new();
     }
-
     let cross_probability = (1.0 - self_probability) / (LANGUAGE_COUNT as f32 - 1.0);
     let mut scores = [-(LANGUAGE_COUNT as f32).ln(); LANGUAGE_COUNT];
     let mut backpointers = vec![[0usize; LANGUAGE_COUNT]; observations.len()];
@@ -499,6 +504,14 @@ mod tests {
         );
         assert_eq!(
             TrackerConfig {
+                max_llr_increment: 0.0,
+                ..default
+            }
+            .validate(),
+            Err(ConfigError::InvalidLlrIncrement)
+        );
+        assert_eq!(
+            TrackerConfig {
                 switch_posterior_threshold: 0.4,
                 retain_posterior_threshold: 0.5,
                 ..default
@@ -571,6 +584,16 @@ mod tests {
         }
         assert!(switch_at.is_some_and(|at| at <= 2500));
         assert_eq!(tracker.state().stable_language, Language::En);
+    }
+
+    #[test]
+    fn single_extreme_observation_cannot_switch_by_itself() {
+        let mut tracker = tracker();
+        lock_ja(&mut tracker);
+        tracker.push_observation(obs(500, 0.001, 0.997, 0.001, 0.001));
+        assert!(tracker.advance_to(500).is_empty());
+        assert_eq!(tracker.state().stable_language, Language::Ja);
+        assert!(tracker.state().candidate_llr <= 2.0);
     }
 
     #[test]
@@ -656,6 +679,7 @@ mod tests {
     #[test]
     fn switch_episode_expires_after_speech_gap() {
         let mut tracker = LanguageTracker::new(TrackerConfig {
+            hmm_self_probability: 0.6,
             switch_llr_threshold: 100.0,
             max_switch_silence_ms: 500,
             ..TrackerConfig::default()
