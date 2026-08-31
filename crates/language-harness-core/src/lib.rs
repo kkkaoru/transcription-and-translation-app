@@ -432,7 +432,7 @@ pub fn fixed_lag_viterbi(
     }
     let cross_probability = (1.0 - self_probability) / (LANGUAGE_COUNT as f32 - 1.0);
     let mut scores = [-(LANGUAGE_COUNT as f32).ln(); LANGUAGE_COUNT];
-    let mut backpointers = vec![[0u8; LANGUAGE_COUNT]; observations.len()];
+    let mut backpointers: Vec<Backpointer> = vec![[0u8; LANGUAGE_COUNT]; observations.len()];
 
     for (time, observation) in observations.iter().enumerate() {
         let mut next = [f32::NEG_INFINITY; LANGUAGE_COUNT];
