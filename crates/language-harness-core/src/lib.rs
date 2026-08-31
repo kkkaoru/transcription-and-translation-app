@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use std::collections::VecDeque;
+
 pub const LANGUAGE_COUNT: usize = 4;
 const EPSILON: f32 = 1.0e-6;
 
@@ -138,8 +140,10 @@ pub struct LanguageTracker {
     config: TrackerConfig,
     posterior: [f32; LANGUAGE_COUNT],
     stable_language: Language,
-    latest_observation: Option<Observation>,
+    pending: VecDeque<Observation>,
+    last_enqueued_at_ms: Option<u64>,
     next_tick_ms: Option<u64>,
+    last_tick_ms: u64,
     switch_episode: Option<SwitchEpisode>,
 }
 
@@ -152,20 +156,26 @@ impl LanguageTracker {
             config,
             posterior,
             stable_language: Language::Unknown,
-            latest_observation: None,
+            pending: VecDeque::new(),
+            last_enqueued_at_ms: None,
             next_tick_ms: None,
+            last_tick_ms: 0,
             switch_episode: None,
         })
     }
 
-    pub fn push_observation(&mut self, observation: Observation) {
-        match self.latest_observation {
-            Some(current) if current.at_ms > observation.at_ms => {}
-            _ => self.latest_observation = Some(observation),
+    /// Returns false when an out-of-order observation is rejected.
+    pub fn push_observation(&mut self, observation: Observation) -> bool {
+        if self
+            .last_enqueued_at_ms
+            .is_some_and(|last| observation.at_ms < last)
+        {
+            return false;
         }
-        if self.next_tick_ms.is_none() {
-            self.next_tick_ms = Some(observation.at_ms);
-        }
+        self.last_enqueued_at_ms = Some(observation.at_ms);
+        self.next_tick_ms.get_or_insert(observation.at_ms);
+        self.pending.push_back(observation);
+        true
     }
 
     pub fn advance_to(&mut self, target_ms: u64) -> Vec<SwitchEvent> {
@@ -174,11 +184,17 @@ impl LanguageTracker {
             if tick_ms > target_ms {
                 break;
             }
-            if let Some(observation) = self.latest_observation.filter(|item| item.at_ms <= tick_ms) {
+
+            let observation = self.take_latest_observation_for_tick(tick_ms);
+            if let Some(observation) = observation {
                 if let Some(event) = self.advance_tick(tick_ms, observation) {
                     events.push(event);
                 }
+            } else {
+                self.expire_episode_on_silence(tick_ms);
             }
+
+            self.last_tick_ms = tick_ms;
             self.next_tick_ms = Some(tick_ms.saturating_add(self.config.tracker_step_ms));
         }
         events
@@ -191,7 +207,7 @@ impl LanguageTracker {
             candidate_language: self.switch_episode.map(|episode| episode.candidate),
             candidate_llr: self.switch_episode.map_or(0.0, |episode| episode.llr),
             posterior: self.posterior,
-            tick_at_ms: self.next_tick_ms.map_or(0, |value| value.saturating_sub(self.config.tracker_step_ms)),
+            tick_at_ms: self.last_tick_ms,
         }
     }
 
@@ -199,9 +215,19 @@ impl LanguageTracker {
         self.posterior = [0.0; LANGUAGE_COUNT];
         self.posterior[Language::Unknown.index()] = 1.0;
         self.stable_language = Language::Unknown;
-        self.latest_observation = None;
+        self.pending.clear();
+        self.last_enqueued_at_ms = None;
         self.next_tick_ms = None;
+        self.last_tick_ms = 0;
         self.switch_episode = None;
+    }
+
+    fn take_latest_observation_for_tick(&mut self, tick_ms: u64) -> Option<Observation> {
+        let mut latest = None;
+        while self.pending.front().is_some_and(|item| item.at_ms <= tick_ms) {
+            latest = self.pending.pop_front();
+        }
+        latest
     }
 
     fn advance_tick(&mut self, tick_ms: u64, observation: Observation) -> Option<SwitchEvent> {
@@ -217,21 +243,7 @@ impl LanguageTracker {
         );
 
         if self.stable_language == Language::Unknown {
-            let best = argmax(&self.posterior);
-            if best != Language::Unknown
-                && self.posterior[best.index()] >= self.config.switch_posterior_threshold
-            {
-                let from = self.stable_language;
-                self.stable_language = best;
-                self.switch_episode = None;
-                return Some(SwitchEvent {
-                    at_ms: tick_ms,
-                    from,
-                    to: best,
-                    llr: 0.0,
-                });
-            }
-            return None;
+            return self.try_lock_initial_language(tick_ms);
         }
 
         let candidate = argmax(&self.posterior);
@@ -277,11 +289,29 @@ impl LanguageTracker {
         None
     }
 
+    fn try_lock_initial_language(&mut self, tick_ms: u64) -> Option<SwitchEvent> {
+        let best = argmax(&self.posterior);
+        if best == Language::Unknown
+            || self.posterior[best.index()] < self.config.switch_posterior_threshold
+        {
+            return None;
+        }
+        let from = self.stable_language;
+        self.stable_language = best;
+        self.switch_episode = None;
+        Some(SwitchEvent {
+            at_ms: tick_ms,
+            from,
+            to: best,
+            llr: 0.0,
+        })
+    }
+
     fn expire_episode_on_silence(&mut self, tick_ms: u64) {
-        if let Some(episode) = self.switch_episode {
-            if tick_ms.saturating_sub(episode.last_speech_ms) > self.config.max_switch_silence_ms {
-                self.switch_episode = None;
-            }
+        if self.switch_episode.is_some_and(|episode| {
+            tick_ms.saturating_sub(episode.last_speech_ms) > self.config.max_switch_silence_ms
+        }) {
+            self.switch_episode = None;
         }
     }
 }
@@ -294,16 +324,20 @@ pub fn hmm_forward(
     let cross_probability = (1.0 - self_probability) / (LANGUAGE_COUNT as f32 - 1.0);
     let mut unnormalized = [0.0; LANGUAGE_COUNT];
     for destination in 0..LANGUAGE_COUNT {
-        let mut predicted = 0.0;
-        for source in 0..LANGUAGE_COUNT {
-            let transition = if source == destination {
-                self_probability
-            } else {
-                cross_probability
-            };
-            predicted += previous[source] * transition;
-        }
-        unnormalized[destination] = predicted.max(EPSILON) * observation_log_scores[destination].exp();
+        let predicted = previous
+            .iter()
+            .enumerate()
+            .map(|(source, probability)| {
+                let transition = if source == destination {
+                    self_probability
+                } else {
+                    cross_probability
+                };
+                probability * transition
+            })
+            .sum::<f32>();
+        unnormalized[destination] =
+            predicted.max(EPSILON) * observation_log_scores[destination].exp();
     }
     normalize_probabilities(unnormalized)
 }
@@ -315,6 +349,7 @@ pub fn fixed_lag_viterbi(
     if observations.is_empty() {
         return Vec::new();
     }
+
     let cross_probability = (1.0 - self_probability) / (LANGUAGE_COUNT as f32 - 1.0);
     let mut scores = [-(LANGUAGE_COUNT as f32).ln(); LANGUAGE_COUNT];
     let mut backpointers = vec![[0usize; LANGUAGE_COUNT]; observations.len()];
@@ -325,13 +360,13 @@ pub fn fixed_lag_viterbi(
             let emission = observation[destination].max(EPSILON).ln();
             let mut best_score = f32::NEG_INFINITY;
             let mut best_source = 0usize;
-            for source in 0..LANGUAGE_COUNT {
+            for (source, source_score) in scores.iter().copied().enumerate() {
                 let transition = if source == destination {
                     self_probability
                 } else {
                     cross_probability
                 };
-                let score = scores[source] + transition.max(EPSILON).ln() + emission;
+                let score = source_score + transition.max(EPSILON).ln() + emission;
                 if score > best_score {
                     best_score = score;
                     best_source = source;
@@ -397,6 +432,13 @@ mod tests {
         .unwrap()
     }
 
+    fn lock_ja(tracker: &mut LanguageTracker) {
+        assert!(tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001)));
+        let events = tracker.advance_to(0);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].to, Language::Ja);
+    }
+
     #[test]
     fn language_indexes_are_stable() {
         assert_eq!(Language::Ja.index(), 0);
@@ -429,18 +471,30 @@ mod tests {
     }
 
     #[test]
-    fn config_validation_rejects_all_invalid_shapes() {
+    fn config_validation_rejects_invalid_shapes() {
         let default = TrackerConfig::default();
         assert_eq!(
-            TrackerConfig { tracker_step_ms: 0, ..default }.validate(),
+            TrackerConfig {
+                tracker_step_ms: 0,
+                ..default
+            }
+            .validate(),
             Err(ConfigError::TrackerStepZero)
         );
         assert_eq!(
-            TrackerConfig { hmm_self_probability: 0.2, ..default }.validate(),
+            TrackerConfig {
+                hmm_self_probability: 0.2,
+                ..default
+            }
+            .validate(),
             Err(ConfigError::InvalidSelfProbability)
         );
         assert_eq!(
-            TrackerConfig { switch_llr_threshold: 0.0, ..default }.validate(),
+            TrackerConfig {
+                switch_llr_threshold: f32::NAN,
+                ..default
+            }
+            .validate(),
             Err(ConfigError::InvalidSwitchThreshold)
         );
         assert_eq!(
@@ -453,7 +507,11 @@ mod tests {
             Err(ConfigError::InvalidHysteresis)
         );
         assert_eq!(
-            TrackerConfig { min_observation_quality: 2.0, ..default }.validate(),
+            TrackerConfig {
+                min_observation_quality: 2.0,
+                ..default
+            }
+            .validate(),
             Err(ConfigError::InvalidMinimumQuality)
         );
         assert_eq!(default.validate(), Ok(default));
@@ -462,31 +520,31 @@ mod tests {
     #[test]
     fn hmm_forward_prefers_stability_but_accepts_strong_evidence() {
         let previous = [0.95, 0.02, 0.02, 0.01];
-        let ambiguous = obs(0, 0.45, 0.44, 0.1, 0.01).log_scores;
-        let stable = hmm_forward(previous, ambiguous, 0.94);
+        let stable = hmm_forward(
+            previous,
+            obs(0, 0.45, 0.44, 0.1, 0.01).log_scores,
+            0.94,
+        );
         assert!(stable[Language::Ja.index()] > stable[Language::En.index()]);
-
-        let english = obs(0, 0.01, 0.98, 0.005, 0.005).log_scores;
-        let switched = hmm_forward(stable, english, 0.94);
+        let switched = hmm_forward(
+            stable,
+            obs(0, 0.01, 0.98, 0.005, 0.005).log_scores,
+            0.94,
+        );
         assert!(switched[Language::En.index()] > stable[Language::En.index()]);
     }
 
     #[test]
     fn initial_unknown_state_locks_to_confident_language() {
         let mut tracker = tracker();
-        tracker.push_observation(obs(0, 0.98, 0.01, 0.005, 0.005));
-        let events = tracker.advance_to(0);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].from, Language::Unknown);
-        assert_eq!(events[0].to, Language::Ja);
+        lock_ja(&mut tracker);
         assert_eq!(tracker.state().stable_language, Language::Ja);
     }
 
     #[test]
-    fn ambiguous_evidence_keeps_the_stable_language() {
+    fn ambiguous_evidence_keeps_stable_language() {
         let mut tracker = tracker();
-        tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        tracker.advance_to(0);
+        lock_ja(&mut tracker);
         for tick in [500, 1000, 1500, 2000] {
             tracker.push_observation(obs(tick, 0.42, 0.4, 0.17, 0.01));
             tracker.advance_to(tick);
@@ -498,8 +556,7 @@ mod tests {
     #[test]
     fn sustained_new_language_switches_without_fixed_duration_rule() {
         let mut tracker = tracker();
-        tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        tracker.advance_to(0);
+        lock_ja(&mut tracker);
         let mut switch_at = None;
         for tick in [500, 1000, 1500, 2000, 2500] {
             tracker.push_observation(obs(tick, 0.01, 0.98, 0.005, 0.005));
@@ -512,61 +569,83 @@ mod tests {
                 break;
             }
         }
-        assert!(switch_at.is_some());
-        assert!(switch_at.unwrap() <= 2500);
+        assert!(switch_at.is_some_and(|at| at <= 2500));
         assert_eq!(tracker.state().stable_language, Language::En);
     }
 
     #[test]
-    fn event_frequency_does_not_advance_hmm_more_than_fixed_ticks() {
+    fn multiple_events_in_one_tick_are_coalesced() {
         let mut dense = tracker();
-        dense.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        dense.advance_to(0);
+        lock_ja(&mut dense);
         for at in [100, 200, 300, 400, 500] {
             dense.push_observation(obs(at, 0.01, 0.98, 0.005, 0.005));
         }
         dense.advance_to(500);
 
         let mut sparse = tracker();
-        sparse.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        sparse.advance_to(0);
+        lock_ja(&mut sparse);
         sparse.push_observation(obs(500, 0.01, 0.98, 0.005, 0.005));
         sparse.advance_to(500);
 
         assert_eq!(dense.state().stable_language, sparse.state().stable_language);
-        for (a, b) in dense.state().posterior.iter().zip(sparse.state().posterior) {
+        for (a, b) in dense
+            .state()
+            .posterior
+            .iter()
+            .zip(sparse.state().posterior)
+        {
             assert!((a - b).abs() < 1.0e-6);
         }
     }
 
     #[test]
-    fn out_of_order_observation_does_not_replace_newer_evidence() {
+    fn stale_observation_is_not_reapplied_across_ticks() {
         let mut tracker = tracker();
+        lock_ja(&mut tracker);
         tracker.push_observation(obs(500, 0.01, 0.98, 0.005, 0.005));
-        tracker.push_observation(obs(100, 0.99, 0.005, 0.004, 0.001));
         tracker.advance_to(500);
-        assert!(tracker.state().posterior[Language::En.index()] > tracker.state().posterior[Language::Ja.index()]);
+        let after_one = tracker.state();
+        tracker.advance_to(5_000);
+        let after_idle = tracker.state();
+        assert_eq!(after_idle.posterior, after_one.posterior);
+        assert_eq!(after_idle.stable_language, Language::Ja);
+        assert_eq!(after_idle.candidate_llr, 0.0);
+    }
+
+    #[test]
+    fn future_observation_waits_for_its_tick() {
+        let mut tracker = tracker();
+        lock_ja(&mut tracker);
+        tracker.push_observation(obs(750, 0.01, 0.98, 0.005, 0.005));
+        tracker.advance_to(500);
+        let before = tracker.state().posterior;
+        tracker.advance_to(1000);
+        assert_ne!(tracker.state().posterior, before);
+    }
+
+    #[test]
+    fn out_of_order_observation_is_rejected() {
+        let mut tracker = tracker();
+        assert!(tracker.push_observation(obs(500, 0.01, 0.98, 0.005, 0.005)));
+        assert!(!tracker.push_observation(obs(100, 0.99, 0.005, 0.004, 0.001)));
     }
 
     #[test]
     fn low_quality_observation_is_ignored() {
         let mut tracker = tracker();
-        tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        tracker.advance_to(0);
+        lock_ja(&mut tracker);
         let before = tracker.state();
         let mut weak = obs(500, 0.01, 0.98, 0.005, 0.005);
         weak.quality = 0.1;
         tracker.push_observation(weak);
         tracker.advance_to(500);
         assert_eq!(tracker.state().posterior, before.posterior);
-        assert_eq!(tracker.state().stable_language, Language::Ja);
     }
 
     #[test]
     fn silence_does_not_accumulate_switch_evidence() {
         let mut tracker = tracker();
-        tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        tracker.advance_to(0);
+        lock_ja(&mut tracker);
         let mut english = obs(500, 0.01, 0.98, 0.005, 0.005);
         english.speech = false;
         tracker.push_observation(english);
@@ -576,55 +655,28 @@ mod tests {
 
     #[test]
     fn switch_episode_expires_after_speech_gap() {
-        let mut config = TrackerConfig::default();
-        config.switch_llr_threshold = 100.0;
-        config.max_switch_silence_ms = 500;
-        let mut tracker = LanguageTracker::new(config).unwrap();
-        tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        tracker.advance_to(0);
+        let mut tracker = LanguageTracker::new(TrackerConfig {
+            switch_llr_threshold: 100.0,
+            max_switch_silence_ms: 500,
+            ..TrackerConfig::default()
+        })
+        .unwrap();
+        lock_ja(&mut tracker);
         tracker.push_observation(obs(500, 0.05, 0.9, 0.04, 0.01));
         tracker.advance_to(500);
         assert_eq!(tracker.state().candidate_language, Some(Language::En));
-        let mut silence = obs(1500, 0.05, 0.9, 0.04, 0.01);
-        silence.speech = false;
-        tracker.push_observation(silence);
         tracker.advance_to(1500);
         assert_eq!(tracker.state().candidate_language, None);
     }
 
     #[test]
-    fn changing_candidate_resets_accumulated_llr() {
-        let mut config = TrackerConfig::default();
-        config.switch_llr_threshold = 100.0;
-        let mut tracker = LanguageTracker::new(config).unwrap();
-        tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        tracker.advance_to(0);
-        tracker.push_observation(obs(500, 0.05, 0.9, 0.04, 0.01));
-        tracker.advance_to(500);
-        let en_llr = tracker.state().candidate_llr;
-        assert!(en_llr > 0.0);
-        tracker.push_observation(obs(1000, 0.05, 0.04, 0.01, 0.9));
-        tracker.advance_to(1000);
-        if tracker.state().candidate_language == Some(Language::Unsupported) {
-            assert!(tracker.state().candidate_llr < en_llr + 5.0);
-        }
-    }
-
-    #[test]
-    fn reset_restores_unknown_state_and_timing() {
+    fn reset_restores_unknown_state() {
         let mut tracker = tracker();
-        tracker.push_observation(obs(0, 0.99, 0.005, 0.004, 0.001));
-        tracker.advance_to(0);
+        lock_ja(&mut tracker);
         tracker.reset();
-        let state = tracker.state();
-        assert_eq!(state.stable_language, Language::Unknown);
-        assert_eq!(state.posterior, [0.0, 0.0, 1.0, 0.0]);
-        assert_eq!(state.tick_at_ms, 0);
-    }
-
-    #[test]
-    fn advance_before_first_observation_is_noop() {
-        let mut tracker = tracker();
+        assert_eq!(tracker.state().stable_language, Language::Unknown);
+        assert_eq!(tracker.state().posterior, [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(tracker.state().tick_at_ms, 0);
         assert!(tracker.advance_to(10_000).is_empty());
     }
 
@@ -640,8 +692,10 @@ mod tests {
             [0.1, 0.75, 0.1, 0.05],
             [0.95, 0.02, 0.02, 0.01],
         ];
-        let path = fixed_lag_viterbi(&sequence, 0.98);
-        assert_eq!(path, vec![Language::Ja, Language::Ja, Language::Ja]);
+        assert_eq!(
+            fixed_lag_viterbi(&sequence, 0.98),
+            vec![Language::Ja, Language::Ja, Language::Ja]
+        );
     }
 
     #[test]
@@ -654,18 +708,16 @@ mod tests {
             [0.02, 0.95, 0.02, 0.01],
         ];
         let path = fixed_lag_viterbi(&sequence, 0.9);
-        assert_eq!(path[0], Language::Ja);
-        assert_eq!(path[path.len() - 1], Language::En);
+        assert_eq!(path.first(), Some(&Language::Ja));
+        assert_eq!(path.last(), Some(&Language::En));
     }
 
     #[test]
-    fn normalization_preserves_valid_distribution() {
-        let value = normalize_probabilities([0.4, 0.3, 0.2, 0.1]);
-        assert_eq!(value, [0.4, 0.3, 0.2, 0.1]);
-    }
-
-    #[test]
-    fn argmax_uses_first_value_on_tie() {
+    fn normalization_preserves_valid_distribution_and_ties_are_stable() {
+        assert_eq!(
+            normalize_probabilities([0.4, 0.3, 0.2, 0.1]),
+            [0.4, 0.3, 0.2, 0.1]
+        );
         assert_eq!(argmax(&[0.5, 0.5, 0.0, 0.0]), Language::Ja);
     }
 }
