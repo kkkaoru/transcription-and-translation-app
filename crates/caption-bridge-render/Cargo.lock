@@ -29,9 +29,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "caption-bridge-fonts"
+version = "0.1.0"
+
+[[package]]
 name = "caption-bridge-render"
 version = "0.1.0"
 dependencies = [
+ "caption-bridge-fonts",
  "cosmic-text",
 ]
 

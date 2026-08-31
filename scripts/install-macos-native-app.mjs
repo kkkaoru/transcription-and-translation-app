@@ -37,9 +37,10 @@ export const ORT_DYNAMIC_LIBRARY_TARGET = join("..", "Frameworks", NATIVE_RUNTIM
 export const NATIVE_NOTICE_SOURCES = [
   [join(repoRoot, "NOTICE"), "NOTICE"],
   [join(repoRoot, "third-party", "gpui-LICENSE-APACHE"), "gpui-LICENSE-APACHE"],
+  [join(repoRoot, "third-party", "gpui-component-LICENSE-APACHE"), "gpui-component-LICENSE-APACHE"],
   [
-    join(repoRoot, "third-party", "gpui-component-LICENSE-APACHE"),
-    "gpui-component-LICENSE-APACHE",
+    join(repoRoot, "crates", "caption-bridge-fonts", "assets", "NotoSansJP-OFL.txt"),
+    "NotoSansJP-OFL.txt",
   ],
 ];
 
@@ -108,7 +109,9 @@ export const terminateRunningNativeApp = (
 
   const terminated = run("/usr/bin/pkill", ["-TERM", "-f", pattern], { encoding: "utf8" });
   if (terminated.status !== 0 && terminated.status !== 1) {
-    throw new Error(`could not terminate the running Native app: ${(terminated.stderr || "").trim()}`);
+    throw new Error(
+      `could not terminate the running Native app: ${(terminated.stderr || "").trim()}`,
+    );
   }
   for (let attempt = 0; attempt < 50; attempt += 1) {
     wait();
@@ -117,7 +120,9 @@ export const terminateRunningNativeApp = (
       return true;
     }
     if (remaining.status !== 0) {
-      throw new Error(`could not inspect Native app termination: ${(remaining.stderr || "").trim()}`);
+      throw new Error(
+        `could not inspect Native app termination: ${(remaining.stderr || "").trim()}`,
+      );
     }
   }
 
@@ -284,7 +289,7 @@ export const assembleNativeApp = ({
   runChecked("/bin/mv", [staging, installApp]);
   adhocSign(installApp);
   registerLaunchServices(installApp);
-  return { sourceBinary, installApp, replaced: true };
+  return { sourceBinary, installApp, replaced: true, launched: false };
 };
 
 export const buildNativeRelease = () => {
@@ -310,12 +315,16 @@ export const installBuiltNativeApp = ({
 };
 
 const main = () => {
-  try {
-    const result = installBuiltNativeApp();
-    console.log(`Installed ${result.installApp} from ${result.sourceBinary} (${result.profile})`);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+  const result = spawnSync("make", ["build"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+  if (result.error) {
+    console.error(`could not run make build: ${result.error.message}`);
     process.exit(1);
+  }
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
   }
 };
 

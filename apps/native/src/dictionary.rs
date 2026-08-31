@@ -4,28 +4,21 @@ use std::path::PathBuf;
 
 use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
-use gpui::{Context, ExternalPaths, FocusHandle, IntoElement, Role};
+use gpui::{Context, Entity, ExternalPaths, IntoElement};
+use gpui_component::input::{Input, InputState};
 use gpui_component::{h_flex, v_flex, ActiveTheme as _};
 
 use crate::domain::{NativeDictionaryProfile, UiLanguage};
 use crate::i18n::{text, TextKey};
-use crate::ui::{
-    button, card, danger_button, editable_text, error_line, heading, muted, selectable_text,
-};
+use crate::ui::{button, card, danger_button, error_line, heading, muted, selectable_text};
 
 pub struct DictionaryViewState<'a> {
     pub dictionaries: &'a [NativeDictionaryProfile],
     pub selected_dictionary_id: &'a str,
     pub entries: &'a [CustomDictionaryEntry],
-    pub query: &'a str,
-    pub draft_reading: &'a str,
-    pub draft_word: &'a str,
-    pub query_caret: Option<usize>,
-    pub reading_caret: Option<usize>,
-    pub word_caret: Option<usize>,
-    pub query_focus: &'a FocusHandle,
-    pub reading_focus: &'a FocusHandle,
-    pub word_focus: &'a FocusHandle,
+    pub query_input: &'a Entity<InputState>,
+    pub reading_input: &'a Entity<InputState>,
+    pub word_input: &'a Entity<InputState>,
     pub language: UiLanguage,
     pub persist_error: Option<&'a str>,
 }
@@ -37,10 +30,7 @@ pub struct DictionaryCallbacks<V> {
     pub on_clear_dictionary: fn(&mut V),
     pub on_import_paths: fn(&mut V, &[PathBuf]),
     pub on_download_csv: fn(&mut V, &mut gpui::Window, &mut Context<V>),
-    pub on_focus_query: fn(&mut V, &mut gpui::Window, &mut Context<V>),
-    pub on_focus_reading: fn(&mut V, &mut gpui::Window, &mut Context<V>),
-    pub on_focus_word: fn(&mut V, &mut gpui::Window, &mut Context<V>),
-    pub on_save: fn(&mut V),
+    pub on_save: fn(&mut V, &mut gpui::Window, &mut Context<V>),
     pub on_delete: fn(&mut V, &str),
 }
 
@@ -53,15 +43,9 @@ pub fn render_dictionary<V: 'static>(
         dictionaries,
         selected_dictionary_id,
         entries,
-        query,
-        draft_reading,
-        draft_word,
-        query_caret,
-        reading_caret,
-        word_caret,
-        query_focus,
-        reading_focus,
-        word_focus,
+        query_input,
+        reading_input,
+        word_input,
         language,
         persist_error,
     } = state;
@@ -155,76 +139,25 @@ pub fn render_dictionary<V: 'static>(
                 )),
         )
         .child(muted(text(language, TextKey::DictionaryImportHint), cx))
-        .child(field_editor(
-            text(language, TextKey::Search),
-            query,
-            "dict-query",
-            query_caret,
-            query_focus,
-            cx,
-            callbacks.on_focus_query,
-        ))
-        .child(field_editor(
-            text(language, TextKey::Reading),
-            draft_reading,
-            "dict-reading",
-            reading_caret,
-            reading_focus,
-            cx,
-            callbacks.on_focus_reading,
-        ))
-        .child(field_editor(
-            text(language, TextKey::Word),
-            draft_word,
-            "dict-word",
-            word_caret,
-            word_focus,
-            cx,
-            callbacks.on_focus_word,
-        ))
+        .child(field_editor(text(language, TextKey::Search), "dict-query", query_input))
+        .child(field_editor(text(language, TextKey::Reading), "dict-reading", reading_input))
+        .child(field_editor(text(language, TextKey::Word), "dict-word", word_input))
         .child(button(
             "dict-save",
             text(language, TextKey::Save),
-            cx.listener(move |view, _event, _window, _cx| (callbacks.on_save)(view)),
+            cx.listener(move |view, _event, window, cx| (callbacks.on_save)(view, window, cx)),
         ))
         .when_some(persist_error.map(str::to_string), |this, error| this.child(error_line(error)))
         .child(list)
 }
 
-fn field_editor<V: 'static>(
+fn field_editor(
     label: &'static str,
-    value: &str,
     id: &'static str,
-    caret: Option<usize>,
-    focus_handle: &FocusHandle,
-    cx: &mut Context<V>,
-    on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
+    input: &Entity<InputState>,
 ) -> impl IntoElement {
-    let focus_handle = focus_handle.clone();
-    h_flex().gap_3().child(gpui_component::label::Label::new(label).w_24()).child(
-        h_flex()
-            .id(id)
-            .track_focus(&focus_handle)
-            .tab_index(0)
-            .accessibility_id(label)
-            .role(Role::TextInput)
-            .aria_label(label)
-            .aria_value(value)
-            .flex_1()
-            .min_h_8()
-            .px_3()
-            .py_2()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .when(caret.is_some(), |this| this.border_2())
-            .border_color(if caret.is_some() { cx.theme().foreground } else { cx.theme().input })
-            .focus(|style| style.border_2().border_color(cx.theme().foreground))
-            .bg(cx.theme().background)
-            .cursor_text()
-            .on_click(cx.listener(move |view, _event, window, cx| {
-                on_focus(view, window, cx);
-                window.focus(&focus_handle, cx);
-            }))
-            .child(editable_text(value, caret, cx)),
-    )
+    h_flex()
+        .gap_3()
+        .child(gpui_component::label::Label::new(label).w_24())
+        .child(Input::new(input).accessibility_id(id).aria_label(label).flex_1())
 }

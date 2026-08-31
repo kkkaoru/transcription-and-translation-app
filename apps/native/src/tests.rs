@@ -4,10 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::app::{
-    capture_display_active, delete_editable_text, erase_editable_text, insert_editable_text,
-    main_window_options, next_caret, output_window_options, previous_caret,
-};
+use crate::app::{capture_display_active, main_window_options, output_window_options};
 use crate::debug_surfaces::{
     caption_publication, prepare_caption_publication_with, CaptionPublication,
 };
@@ -42,20 +39,23 @@ fn capture_display_is_compact_only_while_audio_resources_are_active() {
 }
 
 #[test]
-fn editable_text_cursor_inserts_moves_and_deletes_utf8() {
-    let mut text = "新字幕".to_string();
-    let mut caret = "新".len();
-    insert_editable_text(&mut text, &mut caret, "しい");
-    assert_eq!(text, "新しい字幕");
-    assert_eq!(caret, "新しい".len());
-    caret = previous_caret(&text, caret);
-    assert_eq!(caret, "新し".len());
-    caret = next_caret(&text, caret);
-    assert_eq!(caret, "新しい".len());
-    erase_editable_text(&mut text, &mut caret);
-    assert_eq!(text, "新し字幕");
-    delete_editable_text(&mut text, &mut caret);
-    assert_eq!(text, "新し幕");
+fn native_text_fields_use_ime_capable_input_state() {
+    let app = include_str!("app.rs");
+    let dictionary = include_str!("dictionary.rs");
+    let style = include_str!("style.rs");
+
+    for field in [
+        "query_input: Entity<InputState>",
+        "reading_input: Entity<InputState>",
+        "word_input: Entity<InputState>",
+        "preview_source_input: Entity<InputState>",
+        "preview_translation_input: Entity<InputState>",
+    ] {
+        assert!(app.contains(field), "missing IME-capable state: {field}");
+    }
+    assert!(dictionary.contains("Input::new(input)"));
+    assert!(style.contains("Input::new(input)"));
+    assert!(!app.contains("event.keystroke.key_char"));
 }
 
 #[test]
@@ -185,13 +185,15 @@ fn release_build_and_idle_loop_use_bounded_resource_settings() {
 
     let ci = include_str!("../../../.github/workflows/ci.yml");
     let native_test_step = ci
-        .split("- name: Test Native")
+        .split("- name: Test Native\n")
         .nth(1)
         .and_then(|steps| steps.split("- name: Build Native release").next())
         .expect("Native CI test step must remain present");
     assert!(native_test_step.contains("RUST_TEST_THREADS: 1"));
     assert!(ci.contains("crates/caption-bridge-audio/Cargo.toml"));
     assert!(ci.contains("crates/caption-bridge-japanese-text/Cargo.toml"));
+    assert!(ci.contains("crates/caption-bridge-fonts/Cargo.toml"));
+    assert!(ci.contains("crates/caption-bridge-browser-source/Cargo.toml"));
     assert!(ci.contains("crates/caption-bridge-render/Cargo.toml"));
     assert!(native_test_step.contains("cargo test --locked --manifest-path apps/native/Cargo.toml"));
 }
@@ -229,7 +231,7 @@ fn style_defaults_disable_background_plate() {
     assert_eq!(style.source_font_weight, 750);
     assert_eq!(style.translation_font_weight, 650);
     assert_eq!(style.shadow_antialias, 3);
-    assert_eq!(style.source_font_family, "\"Noto Sans JP Variable\", \"Noto Sans JP\", sans-serif");
+    assert_eq!(style.source_font_family, "\"Noto Sans JP\", sans-serif");
 }
 
 #[test]
@@ -293,11 +295,15 @@ fn style_editor_has_continuous_controls_and_nested_scrolling() {
     assert!(style.contains("copy-recognition-to-translation"));
     assert!(style.contains("copy-translation-to-recognition"));
     assert!(style.contains("style-reset-all"));
-    assert!(style.contains("if event.dragging()"));
+    assert!(!style.contains("event.dragging()"));
+    assert!(style.matches("event.drag(app).is_owned_by").count() >= 2);
+    assert!(style.contains("StylePointerDrag::new"));
     assert!(!style.contains("TextKey::Typography"));
     assert!(style.contains("overflow_y_scroll()"));
-    assert!(style.contains("color_square_image"));
-    assert!(style.contains("hue_bar_image"));
+    assert!(style.contains("ColorPicker::new(color_pickers.state(id))"));
+    assert!(style.contains("ColorPickerState::new(window, cx)"));
+    assert!(!style.contains("color_square_image"));
+    assert!(!style.contains("hue_bar_image"));
     assert!(style.contains("preview-source-input"));
     assert!(style.contains("preview-translation-input"));
     let preview_surface = style.find("style-preview-surface").expect("preview surface");
@@ -314,6 +320,13 @@ fn style_editor_has_continuous_controls_and_nested_scrolling() {
     assert!(app.contains("caption_bridge_render::font_families()"));
     assert!(!app.contains("text_system().all_font_names()"));
     assert!(!style.contains("const COLORS"));
+}
+
+#[test]
+fn live_result_rows_reserve_one_line_before_wrapping() {
+    let live = include_str!("live.rs");
+    assert!(live.contains("selectable_text(source).min_h_7().text_lg()"));
+    assert!(live.contains("selectable_text(translation).min_h_7().text_lg()"));
 }
 
 #[test]
@@ -414,6 +427,7 @@ fn native_ui_uses_gpui_component_roots_controls_and_theme_tokens() {
     assert!(ui.contains("TabBar::new"));
     assert!(ui.contains("Button::new"));
     assert!(live.contains("Switch::new"));
+    assert!(live.contains(".dropdown_menu("));
     assert!(output.contains("Switch::new"));
     assert!(settings.contains("GroupBox::new"));
     assert!(dictionary.contains("danger_button("));
@@ -422,6 +436,7 @@ fn native_ui_uses_gpui_component_roots_controls_and_theme_tokens() {
     assert!(!dictionary.contains("DownloadTsv"));
     assert!(app.contains("prompt_for_new_path"));
     assert!(style.contains("Switch::new"));
+    assert!(style.contains("ColorPicker::new"));
     assert!(style.contains("cx.theme().primary"));
     assert!(!ui.contains("rgb(0x"));
     assert!(!live.contains("rgb(0x"));
@@ -457,7 +472,7 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(settings.contains("selectable_text(format!("));
     assert!(dictionary.contains("selectable_text(format!("));
     assert!(!ui.contains(".opacity("));
-    assert!(live.contains("selectable_text(source).text_lg()"));
+    assert!(live.contains("selectable_text(source).min_h_7().text_lg()"));
     assert!(live.contains(".primary()"));
     assert!(settings.contains("settings-mobile-companion-enabled"));
     assert!(dictionary.contains("danger_button("));
@@ -465,23 +480,13 @@ fn native_ui_keeps_a_small_accessible_visual_vocabulary() {
     assert!(ui.contains("Button::new(id).outline().label(label)"));
     assert!(!ui.contains(".danger()"));
     assert!(!ui.contains("button_danger"));
-    assert!(dictionary.contains(".track_focus(&focus_handle)"));
-    assert!(dictionary.contains(".tab_index(0)"));
-    assert!(dictionary.contains(".accessibility_id(label)"));
-    assert!(dictionary.contains(".role(Role::TextInput)"));
-    assert!(dictionary.contains(".aria_label(label)"));
-    assert!(dictionary.contains(".aria_value(value)"));
-    assert!(style.contains(".track_focus(&focus_handle)"));
-    assert!(style.contains(".tab_index(0)"));
-    assert!(style.contains(".accessibility_id(label)"));
-    assert!(style.contains(".role(Role::TextInput)"));
-    assert!(style.contains(".aria_label(label)"));
-    assert!(style.contains(".aria_value(value)"));
+    assert!(
+        dictionary.contains("Input::new(input).accessibility_id(id).aria_label(label).flex_1()")
+    );
+    assert!(style.contains("Input::new(input).accessibility_id(id).aria_label(label).w_full()"));
     assert!(style.contains(".dropdown_caret(true)"));
-    assert!(dictionary.contains("border_color(cx.theme().foreground)"));
-    assert!(style.contains("border_color(cx.theme().foreground)"));
     assert!(style.contains(".accessibility_id(format!(\"{}: {label}\""));
-    assert!(style.contains(".accessibility_id(format!(\"{label}: {}\""));
+    assert!(style.contains("ColorPicker::new(color_pickers.state(id)).label(label)"));
 }
 
 #[test]
@@ -619,7 +624,7 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(settings.contains(".when(show_details"));
     assert!(settings.contains("settings-mobile-companion-enabled"));
     assert!(settings.contains(".checked(settings.companion_enabled)"));
-    assert!(settings.contains(".disabled(!settings.companion_enabled)"));
+    assert!(settings.contains(".when(settings.companion_enabled"));
     assert!(!settings.contains("stage_location_control"));
     assert!(!settings.contains("ButtonGroup::new"));
     assert!(!settings.contains("companion_asr_on_mobile"));
@@ -627,20 +632,18 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(!settings.contains("companion_translation_on_mobile"));
     assert!(settings.contains(".toggled(language == UiLanguage::Japanese)"));
     assert!(settings.contains(".toggled(settings.caption_timeout_ms == timeout)"));
-    assert!(live.contains(".toggled(Some(device.id.as_str()) == selected_device_id)"));
-    assert!(style.contains(".toggled(active)"));
+    assert!(live.contains("PopupMenuItem::new(label.clone()).checked(*selected)"));
+    assert!(style.contains("ColorPicker::new(color_pickers.state(id)).label(label)"));
+    let qr = settings.find("companion-pairing-qr").expect("pairing QR");
     let endpoint_button = settings.find("copy-companion-endpoint").expect("endpoint copy button");
-    let endpoint_value = settings[endpoint_button..]
-        .find("TextKey::LanEndpoint")
-        .map(|offset| endpoint_button + offset)
-        .expect("detailed endpoint value");
-    assert!(settings[endpoint_button..endpoint_value].contains("show_details.then_some"));
     let token_button = settings.find("copy-companion-token").expect("token copy button");
-    let token_value = settings[token_button..]
-        .find("TextKey::PairingToken")
-        .map(|offset| token_button + offset)
-        .expect("detailed token value");
-    assert!(settings[token_button..token_value].contains("show_details.then_some"));
+    assert!(qr < endpoint_button);
+    assert!(endpoint_button < token_button);
+    assert!(settings[qr..token_button].contains("h_flex()"));
+    assert!(settings.contains("companion-pairing-qr"));
+    assert!(settings.contains("TextKey::ScanPairingQrHint"));
+    assert!(settings.contains("TextKey::LanEndpoint"));
+    assert!(settings.contains("TextKey::PairingToken"));
     assert!(settings.contains("TextKey::ConnectedAuthenticated"));
     assert!(settings.contains("TextKey::WaitingMobileCompanion"));
     assert!(settings.contains("TextKey::AutomaticDiscovery"));
@@ -650,6 +653,7 @@ fn settings_support_one_ui_language_at_a_time() {
     assert!(i18n.contains("TextKey::ShowDetails => \"詳細表示\""));
     assert!(i18n.contains("TextKey::Desktop => \"デスクトップ\""));
     assert!(i18n.contains("TextKey::CopyPairingToken => \"ペアリングトークンをコピー\""));
+    assert!(i18n.contains("端末のカメラアプリでこのQRコードを読み取ってください"));
     assert!(!settings.contains("Copy pairing token"));
     assert!(!settings.contains("Copy LAN endpoint"));
 }
@@ -679,6 +683,25 @@ fn style_round_trip_preserves_new_native_fields() {
     assert_eq!(loaded.preview_background_image_y_percent, -8.0);
     assert_eq!(loaded.preview_background_color, "#ffffff");
     assert!(native_style_path(&dir).ends_with("caption-style.json"));
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn legacy_noto_variable_alias_migrates_to_the_embedded_family_name() {
+    let dir = unique_temp_dir("noto-style");
+    let legacy = "\"Noto Sans JP Variable\", \"Noto Sans JP\", sans-serif";
+    let style = NativeStyleSettings {
+        font_family: legacy.to_string(),
+        source_font_family: legacy.to_string(),
+        translation_font_family: legacy.to_string(),
+        ..NativeStyleSettings::default()
+    };
+    save_style_settings(&dir, &style).expect("save legacy font style");
+
+    let loaded = load_style_settings(&dir).expect("load migrated font style");
+    assert_eq!(loaded.font_family, "\"Noto Sans JP\", sans-serif");
+    assert_eq!(loaded.source_font_family, "\"Noto Sans JP\", sans-serif");
+    assert_eq!(loaded.translation_font_family, "\"Noto Sans JP\", sans-serif");
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 

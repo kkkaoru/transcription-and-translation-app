@@ -3,10 +3,9 @@
 use gpui::prelude::*;
 use gpui::{relative, rgb, ClipboardItem, Context, IntoElement, SharedString};
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::switch::Switch;
-use gpui_component::{
-    h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, StyledExt as _,
-};
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, StyledExt as _};
 
 use crate::capture::CaptureController;
 use crate::domain::{
@@ -16,7 +15,6 @@ use crate::i18n::{text, TextKey};
 use crate::ui::{button, card, error_line, heading, muted, selectable_text};
 
 pub struct LiveCallbacks<V> {
-    pub on_toggle_select: fn(&mut V),
     pub on_refresh_devices: fn(&mut V),
     pub on_select_device: fn(&mut V, &str),
     pub on_start: fn(&mut V),
@@ -36,7 +34,6 @@ impl<V> Copy for LiveCallbacks<V> {}
 
 pub fn render_live<V: 'static>(
     capture: &CaptureController,
-    select_open: bool,
     settings: &NativeAppSettings,
     cx: &mut Context<V>,
     callbacks: &LiveCallbacks<V>,
@@ -60,33 +57,37 @@ pub fn render_live<V: 'static>(
     let translation_enabled = capture.translation_enabled();
     let status_label = capture_status_label(snapshot.status, language);
 
+    let device_options = snapshot
+        .devices
+        .iter()
+        .map(|device| {
+            (
+                device.id.clone(),
+                device_label(device.name.as_str(), device.is_default, language),
+                Some(device.id.as_str()) == selected_device_id,
+            )
+        })
+        .collect::<Vec<_>>();
+    let view = cx.entity();
+    let on_select_device = callbacks.on_select_device;
     let trigger = Button::new("live-device-select")
         .label(selected)
         .dropdown_caret(true)
         .disabled(!has_devices)
-        .on_click(cx.listener(move |view, _event, _window, _cx| {
-            (callbacks.on_toggle_select)(view);
-        }));
-
-    let dropdown = (select_open && has_devices).then(|| {
-        v_flex()
-            .gap_2()
-            .p_2()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
-            .children(snapshot.devices.iter().map(|device| {
-                let id = device.id.clone();
-                Button::new(format!("live-device-option-{id}"))
-                    .selected(Some(device.id.as_str()) == selected_device_id)
-                    .toggled(Some(device.id.as_str()) == selected_device_id)
-                    .label(device_label(device.name.as_str(), device.is_default, language))
-                    .on_click(cx.listener(move |view, _event, _window, _cx| {
-                        (callbacks.on_select_device)(view, &id);
-                    }))
-            }))
-    });
+        .dropdown_menu(move |menu, _window, _cx| {
+            device_options.iter().fold(menu, |menu, (id, label, selected)| {
+                let id = id.clone();
+                let view = view.clone();
+                menu.item(PopupMenuItem::new(label.clone()).checked(*selected).on_click(
+                    move |_event, _window, cx| {
+                        view.update(cx, |view, cx| {
+                            on_select_device(view, &id);
+                            cx.notify();
+                        });
+                    },
+                ))
+            })
+        });
 
     let source =
         caption_when_visible(&snapshot.source_text, language, settings.show_recognition_result);
@@ -122,7 +123,6 @@ pub fn render_live<V: 'static>(
                 )),
         )
         .child(trigger)
-        .when_some(dropdown, |this, menu| this.child(menu))
         .child(
             h_flex()
                 .gap_3()
@@ -195,7 +195,7 @@ pub fn render_live<V: 'static>(
                 v_flex()
                     .gap_2()
                     .child(muted(text(language, TextKey::RecognitionResult), cx))
-                    .child(selectable_text(source).text_lg()),
+                    .child(selectable_text(source).min_h_7().text_lg()),
             )
         })
         .when_some(translation, |this, translation| {
@@ -203,7 +203,7 @@ pub fn render_live<V: 'static>(
                 v_flex()
                     .gap_2()
                     .child(muted(text(language, TextKey::TranslationResult), cx))
-                    .child(selectable_text(translation).text_lg()),
+                    .child(selectable_text(translation).min_h_7().text_lg()),
             )
         })
 }

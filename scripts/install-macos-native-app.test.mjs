@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   assertNotRetiredDestination,
   BUNDLE_ID,
@@ -128,5 +130,17 @@ describe("macOS Native app install", () => {
     );
     assert.equal(findCalled, false);
     assert.equal(assembleCalled, false);
+  });
+
+  it("forwards direct installs through make build without foregrounding the app", () => {
+    const source = readFileSync(
+      fileURLToPath(import.meta.url).replace(/\.test\.mjs$/u, ".mjs"),
+      "utf8",
+    );
+    assert.match(source, /spawnSync\("make", \["build"\]/u);
+    assert.equal(source.includes('"open"'), false);
+    assert.equal(source.includes("open -a"), false);
+    assert.equal(source.includes("open -n"), false);
+    assert.match(source, /launched: false/u);
   });
 });

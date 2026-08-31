@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   assemblePortableNativeRelease,
   nativeExecutableName,
@@ -76,9 +77,20 @@ describe("Native release packaging", () => {
     assert.deepEqual(readdirSync(join(output, "azookey")), ["system.azkdict.gz"]);
     assert.deepEqual(readdirSync(join(output, "third-party")).sort(), [
       "NOTICE",
+      "NotoSansJP-OFL.txt",
       "gpui-LICENSE-APACHE",
       "gpui-component-LICENSE-APACHE",
     ]);
+  });
+
+  it("does not launch or foreground the app from Makefile packaging", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const packaging = readFileSync(join(here, "package-native-release.mjs"), "utf8");
+    const makefile = readFileSync(resolve(here, "..", "Makefile"), "utf8");
+    assert.match(packaging, /never starts or foregrounds the app/u);
+    assert.equal(packaging.includes('"open"'), false);
+    assert.match(makefile, /without relaunching/u);
+    assert.equal(/\bopen\s+-a\b/u.test(makefile), false);
   });
 
   it("rejects incomplete runtime output", () => {

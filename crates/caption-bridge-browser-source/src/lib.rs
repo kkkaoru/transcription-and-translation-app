@@ -14,8 +14,9 @@
 
 #![forbid(unsafe_code)]
 
+use caption_bridge_fonts::{NOTO_SANS_JP_BROWSER_PATH, NOTO_SANS_JP_VARIABLE_TTF};
 use serde::Serialize;
-use std::io::{Error as IoError, ErrorKind};
+use std::io::{Cursor, Error as IoError, ErrorKind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -371,6 +372,22 @@ fn snapshot_feed(shared: &SharedState) -> BrowserSourceFeed {
 
 fn respond(request: Request, feed: &BrowserSourceFeed) {
     let path = request.url().split('?').next().unwrap_or(request.url());
+    if request.method() == &Method::Get && path == NOTO_SANS_JP_BROWSER_PATH {
+        let response = Response::new(
+            StatusCode(200),
+            vec![
+                header(b"Content-Type", b"font/ttf"),
+                header(b"Cache-Control", b"public, max-age=31536000, immutable"),
+                header(b"X-Content-Type-Options", b"nosniff"),
+            ],
+            Cursor::new(NOTO_SANS_JP_VARIABLE_TTF),
+            Some(NOTO_SANS_JP_VARIABLE_TTF.len()),
+            None,
+        );
+        let _ = request.respond(response);
+        return;
+    }
+
     let (status, content_type, body) = match (request.method(), path) {
         (&Method::Get, "/") => (StatusCode(200), "text/html; charset=utf-8", html_page(feed)),
         (&Method::Get, "/captions.json") => {
@@ -417,6 +434,9 @@ const HTML_TEMPLATE: &str = r##"<!doctype html>
 <meta charset="utf-8">
 <title>Kotoba Beacon Captions</title>
 <style>
+  @font-face { font-family: "Noto Sans JP";
+    src: url("/fonts/NotoSansJP-Variable.ttf") format("truetype");
+    font-style: normal; font-weight: 100 900; font-display: block; }
   html, body { margin: 0; padding: 0; width: 100%; height: 100%;
     background: transparent; overflow: hidden; }
   #lines { position: absolute; width: 90%; transform: translate(-50%, -100%);
@@ -447,7 +467,9 @@ function applyLineStyle(line, style, translated) {
   line.style.fontWeight = String(style.fontWeight);
   line.style.letterSpacing = `${style.letterSpacingPx}px`;
   line.style.lineHeight = String(style.lineHeight);
-  line.style.fontSize = `${translated ? style.translationSizePx : style.sourceSizePx}px`;
+  const fontSize = translated ? style.translationSizePx : style.sourceSizePx;
+  line.style.fontSize = `${fontSize}px`;
+  line.style.minHeight = translated ? `${fontSize * style.lineHeight}px` : "";
   line.style.color = translated ? style.translationColor : style.sourceColor;
   line.style.opacity = String(translated ? style.translationOpacity : style.sourceOpacity);
   line.style.background = style.backgroundEnabled
@@ -466,7 +488,7 @@ function render(f) {
   const source = f.caption ? f.caption.source : "";
   const translation = f.caption ? f.caption.translation : "";
   for (const [text, translated] of [[source, false], [translation, true]]) {
-    if (!text.trim().length) { continue; }
+    if (!text.trim().length && !translated) { continue; }
     const line = document.createElement("div");
     line.className = "line";
     line.textContent = text;
@@ -522,6 +544,26 @@ mod tests {
         response.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or(response)
     }
 
+    fn http_get_bytes(port: u16, path: &str) -> Vec<u8> {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect loopback");
+        stream.set_read_timeout(Some(Duration::from_secs(5))).expect("set read timeout");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        )
+        .expect("send request");
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).expect("read response");
+        response
+    }
+
+    fn response_body_bytes(response: &[u8]) -> &[u8] {
+        response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map_or(response, |index| &response[index + 4..])
+    }
+
     fn server_is_stopped(port: u16) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         while TcpStream::connect(("127.0.0.1", port)).is_ok() && Instant::now() < deadline {
@@ -571,6 +613,10 @@ mod tests {
         assert!(!page.contains("data-layout"));
         assert!(page.contains("line.style.webkitTextStroke"));
         assert!(page.contains("line.style.paintOrder = \"stroke fill\""));
+        assert!(page.contains("@font-face { font-family: \"Noto Sans JP\";"));
+        assert!(page.contains("/fonts/NotoSansJP-Variable.ttf"));
+        assert!(page.contains("line.style.minHeight"));
+        assert!(page.contains("!text.trim().length && !translated"));
         assert!(page.contains("style.backgroundEnabled"));
         assert!(page.contains("box-decoration-break: slice"));
         assert!(!page.contains("box-decoration-break: clone"));
@@ -640,6 +686,13 @@ mod tests {
             serde_json::from_str(response_body(&feed_body)).expect("feed JSON");
         assert_eq!(json["caption"]["source"], "こんにちは");
         assert_eq!(json["caption"]["translation"], "Hello");
+
+        let font_response = http_get_bytes(port, "/fonts/NotoSansJP-Variable.ttf");
+        assert!(font_response.starts_with(b"HTTP/1.1 200 OK"));
+        assert!(font_response
+            .windows(b"Content-Type: font/ttf".len())
+            .any(|window| { window.eq_ignore_ascii_case(b"Content-Type: font/ttf") }));
+        assert!(response_body_bytes(&font_response).windows(4).any(|bytes| bytes == b"\0\x01\0\0"));
 
         server.stop();
         assert!(!server.is_running());

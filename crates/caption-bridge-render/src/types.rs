@@ -80,7 +80,7 @@ pub struct CaptionStyle {
 impl CaptionStyle {
     pub fn default_source() -> Self {
         Self {
-            font_family: "\"Noto Sans JP Variable\", \"Noto Sans JP\", sans-serif".to_string(),
+            font_family: "\"Noto Sans JP\", sans-serif".to_string(),
             font_size_px: 36.0,
             font_weight: 750,
             color: "#ffffff".to_string(),

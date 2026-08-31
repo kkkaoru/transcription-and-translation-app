@@ -74,6 +74,14 @@ revisions are locked in `apps/native/Cargo.lock`; complete license texts are
 retained at `third-party/gpui-LICENSE-APACHE` and
 `third-party/gpui-component-LICENSE-APACHE`.
 
+## Noto Sans JP
+
+Native raster and OBS Browser Source captions embed the Google Fonts variable
+build of Noto Sans JP. It is distributed under the SIL Open Font License 1.1;
+the complete license text is retained at
+`crates/caption-bridge-fonts/assets/NotoSansJP-OFL.txt` and included in Native
+release notices.
+
 ## Other bundled components
 
 Additional bundled runtimes retain their upstream notices in place, including

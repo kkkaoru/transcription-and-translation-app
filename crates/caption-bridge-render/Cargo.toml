@@ -6,4 +6,5 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
+caption-bridge-fonts = { path = "../caption-bridge-fonts" }
 cosmic-text = "0.19.0"

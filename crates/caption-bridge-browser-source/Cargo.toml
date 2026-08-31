@@ -8,6 +8,7 @@ description = "Framework-agnostic OBS Browser Source loopback HTTP caption serve
 license = "MIT"
 
 [dependencies]
+caption-bridge-fonts = { path = "../caption-bridge-fonts" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

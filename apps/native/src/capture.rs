@@ -27,6 +27,7 @@ use crate::domain::{parapper_runtime_dir, CaptureStatus};
 use crate::hot_path::{normalize_pcm16_into, NATIVE_PCM_FRAME_SAMPLES};
 use crate::memory::release_unused_process_memory;
 use crate::microphone_permission::ensure_microphone_access;
+use crate::pipeline_diagnostics::record_pipeline_event;
 
 const PARAPPER_VAD_INTERVAL_MS: u32 = 32;
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
@@ -74,7 +75,6 @@ impl CaptureSnapshot {
         match event {
             WorkerEvent::Status(status) => self.status = status,
             WorkerEvent::Caption { source, update_mode, .. } => {
-                self.translation_text.clear();
                 apply_caption_update(&mut self.source_text, &source, update_mode);
             }
             WorkerEvent::Translation { source, translation, .. } => {
@@ -101,6 +101,7 @@ enum WorkerCommand {
 
 #[derive(Debug, PartialEq, Eq)]
 struct TranslationRequest {
+    turn_id: u64,
     revision: u64,
     source: String,
 }
@@ -128,9 +129,23 @@ struct TranslationMailboxReceiver {
 
 enum WorkerEvent {
     Status(CaptureStatus),
-    Caption { revision: u64, source: String, update_mode: CaptionUpdateMode, is_final: bool },
-    Translation { revision: u64, source: String, translation: String },
-    TranslationError { revision: Option<u64>, message: String },
+    Caption {
+        turn_id: u64,
+        revision: u64,
+        source: String,
+        update_mode: CaptionUpdateMode,
+        is_final: bool,
+    },
+    Translation {
+        turn_id: u64,
+        revision: u64,
+        source: String,
+        translation: String,
+    },
+    TranslationError {
+        revision: Option<u64>,
+        message: String,
+    },
     Rms(Option<f32>),
     Error(String),
     EngineReady(bool),
@@ -154,6 +169,7 @@ struct RoutedStageOutput {
     turn_id: u64,
     revision: u64,
     text: String,
+    display_text: String,
     is_final: bool,
 }
 
@@ -168,9 +184,11 @@ struct RoutingContext<'a> {
 
 struct EnginePublishState<'a> {
     recognition_text: &'a mut String,
+    recognition_surface_text: &'a mut String,
     recognition_turn_id: &'a mut Option<String>,
     recognition_input_is_hiragana: &'a mut bool,
     caption_revision: &'a mut u64,
+    canonical_seen_turn: &'a mut Option<(u64, u64)>,
 }
 
 pub struct CaptureController {
@@ -181,6 +199,7 @@ pub struct CaptureController {
     worker: Option<JoinHandle<()>>,
     worker_stop_requested: Option<Arc<AtomicBool>>,
     translation_enabled: bool,
+    current_caption_turn_id: Option<u64>,
     current_caption_revision: u64,
     awaiting_translation_revision: Option<u64>,
     recognition_in_progress: bool,
@@ -199,6 +218,7 @@ impl CaptureController {
             worker: None,
             worker_stop_requested: None,
             translation_enabled: false,
+            current_caption_turn_id: None,
             current_caption_revision: 0,
             awaiting_translation_revision: None,
             recognition_in_progress: false,
@@ -379,6 +399,7 @@ impl CaptureController {
         self.worker = Some(handle);
         self.worker_stop_requested = Some(stop_requested);
         self.translation_enabled = translation_enabled;
+        self.current_caption_turn_id = None;
         self.current_caption_revision = 0;
         self.awaiting_translation_revision = None;
         self.recognition_in_progress = false;
@@ -433,21 +454,54 @@ impl CaptureController {
     fn apply_worker_event_at(&mut self, event: WorkerEvent, now: Instant, caption_timeout_ms: u64) {
         let configured_hold = Duration::from_millis(caption_timeout_ms);
         match event {
-            WorkerEvent::Caption { revision, source, update_mode, is_final } => {
-                if revision < self.current_caption_revision {
+            WorkerEvent::Caption { turn_id, revision, source, update_mode, is_final } => {
+                let current_turn = self.current_caption_turn_id;
+                let stale = current_turn.is_some_and(|current| turn_id < current)
+                    || (current_turn == Some(turn_id) && revision < self.current_caption_revision);
+                if stale {
+                    record_pipeline_event(
+                        "ui_caption_discarded",
+                        &serde_json::json!({
+                            "turn_id": turn_id,
+                            "current_turn_id": current_turn,
+                            "revision": revision,
+                            "current_revision": self.current_caption_revision,
+                            "source": &source,
+                            "is_final": is_final,
+                            "reason": "stale_turn_or_revision",
+                        }),
+                    );
                     return;
                 }
-                // Live recognition always takes priority over holding an older translated pair.
-                // Translation must never delay the first visible source-text update.
+                let starts_new_turn = current_turn != Some(turn_id);
+                if starts_new_turn {
+                    self.snapshot.source_text.clear();
+                    self.snapshot.translation_text.clear();
+                    self.awaiting_translation_revision = None;
+                }
+                // Keep the latest translation from this same turn visible while
+                // recognition advances. A newer translation replaces it; only a
+                // genuinely new turn clears it.
+                self.current_caption_turn_id = Some(turn_id);
                 self.current_caption_revision = revision;
-                self.awaiting_translation_revision = None;
                 self.recognition_in_progress = !is_final;
                 self.snapshot.apply_worker_event(WorkerEvent::Caption {
+                    turn_id,
                     revision,
                     source,
                     update_mode,
                     is_final,
                 });
+                record_pipeline_event(
+                    "ui_caption_applied",
+                    &serde_json::json!({
+                        "turn_id": turn_id,
+                        "revision": revision,
+                        "displayed_source": &self.snapshot.source_text,
+                        "is_final": is_final,
+                        "update_mode": format!("{update_mode:?}"),
+                    }),
+                );
                 if self.translation_enabled && is_final {
                     self.awaiting_translation_revision = Some(revision);
                     self.caption_expires_at = None;
@@ -455,14 +509,31 @@ impl CaptureController {
                     self.caption_expires_at = Some(now + configured_hold);
                 }
             }
-            WorkerEvent::Translation { revision, source, translation } => {
-                if !self.translation_enabled
-                    || revision != self.current_caption_revision
-                    || self.snapshot.source_text != source
-                {
+            WorkerEvent::Translation { turn_id, revision, source, translation } => {
+                if !self.translation_enabled || self.current_caption_turn_id != Some(turn_id) {
+                    record_pipeline_event(
+                        "ui_translation_discarded",
+                        &serde_json::json!({
+                            "turn_id": turn_id,
+                            "current_turn_id": self.current_caption_turn_id,
+                            "revision": revision,
+                            "current_revision": self.current_caption_revision,
+                            "source": source,
+                            "reason": "stale_turn",
+                        }),
+                    );
                     return;
                 }
                 self.snapshot.translation_text = translation;
+                record_pipeline_event(
+                    "ui_translation_applied",
+                    &serde_json::json!({
+                        "turn_id": turn_id,
+                        "revision": revision,
+                        "current_revision": self.current_caption_revision,
+                        "source": source,
+                    }),
+                );
                 if self.awaiting_translation_revision == Some(revision) {
                     self.awaiting_translation_revision = None;
                 }
@@ -589,7 +660,7 @@ fn run_capture_inner(
         return Ok(());
     }
     let mut engine = if companion_route.asr == ExecutionDevice::Desktop {
-        let config = EngineConfig::new(models_root.clone());
+        let config = native_engine_config(models_root.clone());
         Some(
             ParapperEngine::load(&config)
                 .map_err(|error| format!("Could not initialize speech recognition: {error:#}"))?,
@@ -621,9 +692,11 @@ fn run_capture_inner(
     }
     let _ = event_tx.send(WorkerEvent::Status(CaptureStatus::Capturing));
     let mut recognition_text = String::new();
+    let mut recognition_surface_text = String::new();
     let mut recognition_turn_id = None;
     let mut recognition_input_is_hiragana = false;
     let mut caption_revision = 0_u64;
+    let mut canonical_seen_turn = None;
     let mut normalized_samples = Vec::with_capacity(NATIVE_PCM_FRAME_SAMPLES);
     let mut last_rms_publish = Instant::now() - RMS_PUBLISH_INTERVAL;
     let (companion_handle, companion_session_id) = match companion_session {
@@ -656,8 +729,10 @@ fn run_capture_inner(
             Ok(WorkerCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(WorkerCommand::ResetCaption) => {
                 recognition_text.clear();
+                recognition_surface_text.clear();
                 recognition_turn_id = None;
                 recognition_input_is_hiragana = false;
+                canonical_seen_turn = None;
             }
             Ok(WorkerCommand::SetTranslationEnabled(enabled)) => {
                 translation_requested = enabled;
@@ -709,9 +784,11 @@ fn run_capture_inner(
                     };
                     let mut state = EnginePublishState {
                         recognition_text: &mut recognition_text,
+                        recognition_surface_text: &mut recognition_surface_text,
                         recognition_turn_id: &mut recognition_turn_id,
                         recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
                         caption_revision: &mut caption_revision,
+                        canonical_seen_turn: &mut canonical_seen_turn,
                     };
                     publish_engine_events(events, &routing, &mut state)?;
                 }
@@ -763,9 +840,11 @@ fn run_capture_inner(
         };
         let mut state = EnginePublishState {
             recognition_text: &mut recognition_text,
+            recognition_surface_text: &mut recognition_surface_text,
             recognition_turn_id: &mut recognition_turn_id,
             recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
             caption_revision: &mut caption_revision,
+            canonical_seen_turn: &mut canonical_seen_turn,
         };
         let tick_events = engine.as_mut().map_or_else(Vec::new, ParapperEngine::tick);
         publish_engine_events(tick_events, &routing, &mut state)?;
@@ -787,9 +866,11 @@ fn run_capture_inner(
     };
     let mut state = EnginePublishState {
         recognition_text: &mut recognition_text,
+        recognition_surface_text: &mut recognition_surface_text,
         recognition_turn_id: &mut recognition_turn_id,
         recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
         caption_revision: &mut caption_revision,
+        canonical_seen_turn: &mut canonical_seen_turn,
     };
     publish_engine_events(events, &routing, &mut state)?;
     if companion_route.asr == ExecutionDevice::Mobile {
@@ -958,8 +1039,17 @@ fn run_translation_worker(
         };
         match translator.translate_ja_to_en(&request.source) {
             Ok(translation) => {
+                record_pipeline_event(
+                    "desktop_translation_completed",
+                    &serde_json::json!({
+                        "turn_id": request.turn_id,
+                        "revision": request.revision,
+                        "source": &request.source,
+                    }),
+                );
                 if !stop_requested.load(Ordering::Acquire) {
                     let _ = event_tx.send(WorkerEvent::Translation {
+                        turn_id: request.turn_id,
                         revision: request.revision,
                         source: request.source,
                         translation,
@@ -1046,17 +1136,34 @@ fn route_asr_output(
     output: RoutedStageOutput,
     input_is_normalized_hiragana: bool,
 ) -> Result<(), String> {
+    record_pipeline_event(
+        "asr_routed",
+        &serde_json::json!({
+            "turn_id": output.turn_id,
+            "revision": output.revision,
+            "azookey_input": &output.text,
+            "input_is_normalized_hiragana": input_is_normalized_hiragana,
+            "is_final": output.is_final,
+            "route": context.route,
+        }),
+    );
     let _ = context.event_tx.send(WorkerEvent::Caption {
+        turn_id: output.turn_id,
         revision: output.revision,
-        source: output.text.clone(),
+        source: output.display_text.clone(),
         update_mode: CaptionUpdateMode::Replace,
         is_final: output.is_final,
     });
-    // Keep immediate ASR partials visible, but do not oscillate the Desktop
-    // caption between raw ASR, Mobile AzooKey, and Mobile translation outputs.
-    // Mobile downstream work starts once per finalized turn.
+    // Mobile AzooKey conversion is intentionally reserved for the finalized
+    // canonical reading. While the turn is open, translate the ASR surface
+    // directly so long speech still receives useful incremental translations.
     if context.route.azookey == ExecutionDevice::Mobile && !output.is_final {
-        return Ok(());
+        let surface = output.display_text.clone();
+        return route_translation_input(
+            context,
+            RoutedStageOutput { text: surface.clone(), display_text: surface, ..output },
+            ProcessingStage::Asr,
+        );
     }
     if context.route.azookey == ExecutionDevice::Mobile {
         if should_continue_on_mobile(context.route, ProcessingStage::Asr) {
@@ -1084,27 +1191,52 @@ fn route_asr_output(
     } else {
         convert_azookey(output.text.clone())?.text
     };
-    route_azookey_output(context, RoutedStageOutput { text: converted_source, ..output })
+    route_azookey_output(
+        context,
+        RoutedStageOutput {
+            text: converted_source.clone(),
+            display_text: converted_source,
+            ..output
+        },
+    )
 }
 
 fn route_azookey_output(
     context: &RoutingContext<'_>,
     output: RoutedStageOutput,
 ) -> Result<(), String> {
+    record_pipeline_event(
+        "azookey_output",
+        &serde_json::json!({
+            "turn_id": output.turn_id,
+            "revision": output.revision,
+            "text": &output.text,
+            "is_final": output.is_final,
+            "execution_device": context.route.azookey,
+        }),
+    );
     let _ = context.event_tx.send(WorkerEvent::Caption {
+        turn_id: output.turn_id,
         revision: output.revision,
-        source: output.text.clone(),
+        source: output.display_text.clone(),
         update_mode: CaptionUpdateMode::Replace,
         is_final: output.is_final,
     });
+    route_translation_input(context, output, ProcessingStage::Azookey)
+}
+
+fn route_translation_input(
+    context: &RoutingContext<'_>,
+    output: RoutedStageOutput,
+    input_stage: ProcessingStage,
+) -> Result<(), String> {
     if !context.translation_enabled {
         return Ok(());
     }
-    if context.route.translation == ExecutionDevice::Mobile && !output.is_final {
-        return Ok(());
-    }
     if context.route.translation == ExecutionDevice::Mobile {
-        if should_continue_on_mobile(context.route, ProcessingStage::Azookey) {
+        if input_stage == ProcessingStage::Azookey
+            && should_continue_on_mobile(context.route, ProcessingStage::Azookey)
+        {
             return Ok(());
         }
         let companion = context
@@ -1113,6 +1245,16 @@ fn route_azookey_output(
         let session_id = context
             .session_id
             .ok_or_else(|| "mobile companion session is unavailable".to_string())?;
+        record_pipeline_event(
+            "mobile_translation_queued",
+            &serde_json::json!({
+                "turn_id": output.turn_id,
+                "revision": output.revision,
+                "source": &output.text,
+                "is_final": output.is_final,
+                "input_stage": format!("{input_stage:?}"),
+            }),
+        );
         return companion.send_text(encode_stage_request(
             "translation.request".to_string(),
             session_id.to_string(),
@@ -1123,9 +1265,23 @@ fn route_azookey_output(
         )?);
     }
     if let Some(sender) = context.translation_tx {
+        record_pipeline_event(
+            "desktop_translation_queued",
+            &serde_json::json!({
+                "turn_id": output.turn_id,
+                "revision": output.revision,
+                "source": &output.text,
+                "is_final": output.is_final,
+                "input_stage": format!("{input_stage:?}"),
+            }),
+        );
         queue_translation(
             sender,
-            TranslationRequest { revision: output.revision, source: output.text },
+            TranslationRequest {
+                turn_id: output.turn_id,
+                revision: output.revision,
+                source: output.text,
+            },
             context.event_tx,
         );
     }
@@ -1138,8 +1294,20 @@ fn handle_mobile_result(
     caption_revision: &mut u64,
     latest_source: &mut String,
 ) -> Result<bool, String> {
-    if context.session_id != Some(result.session_id.as_str()) || result.revision < *caption_revision
-    {
+    let accepted = context.session_id == Some(result.session_id.as_str())
+        && result.revision >= *caption_revision;
+    record_pipeline_event(
+        "mobile_stage_result",
+        &serde_json::json!({
+            "message_type": &result.message_type,
+            "turn_id": result.turn_id,
+            "revision": result.revision,
+            "text": &result.text,
+            "is_final": result.is_final,
+            "accepted": accepted,
+        }),
+    );
+    if !accepted {
         return Ok(false);
     }
     match result.message_type.as_str() {
@@ -1151,6 +1319,7 @@ fn handle_mobile_result(
                 RoutedStageOutput {
                     turn_id: result.turn_id,
                     revision: result.revision,
+                    display_text: result.text.clone(),
                     text: result.text,
                     is_final: result.is_final,
                 },
@@ -1165,6 +1334,7 @@ fn handle_mobile_result(
                 RoutedStageOutput {
                     turn_id: result.turn_id,
                     revision: result.revision,
+                    display_text: result.text.clone(),
                     text: result.text,
                     is_final: result.is_final,
                 },
@@ -1173,6 +1343,7 @@ fn handle_mobile_result(
         }
         "translation.result" if context.route.translation == ExecutionDevice::Mobile => {
             let _ = context.event_tx.send(WorkerEvent::Translation {
+                turn_id: result.turn_id,
                 revision: result.revision,
                 source: latest_source.clone(),
                 translation: result.text,
@@ -1257,6 +1428,16 @@ fn route_uses_mobile(route: PipelineRoute) -> bool {
         || route.translation == ExecutionDevice::Mobile
 }
 
+fn native_engine_config(models_root: std::path::PathBuf) -> EngineConfig {
+    let mut config = EngineConfig::new(models_root);
+    // ReazonSpeech otherwise emits nothing during an uninterrupted segment until
+    // the eight-second segment boundary. Bounded, low-priority partial windows
+    // provide the first visible caption while normal segment/final ASR retains
+    // ownership of the canonical caption.
+    config.partial_window_asr_enabled = true;
+    config
+}
+
 fn native_audio_config() -> AudioCaptureConfig {
     AudioCaptureConfig {
         chunk_ms: PARAPPER_VAD_INTERVAL_MS,
@@ -1271,46 +1452,124 @@ fn publish_engine_events(
     state: &mut EnginePublishState<'_>,
 ) -> Result<(), String> {
     for event in events {
-        if let EngineEvent::Caption {
-            turn_id,
-            text,
-            azookey_input_text,
-            is_final,
-            update_mode,
-            ..
-        } = event
-        {
-            if routing.route.asr != ExecutionDevice::Desktop {
-                continue;
-            }
-            let input_is_normalized_hiragana = azookey_input_text.is_some();
-            let starts_new_input = state.recognition_turn_id.as_deref() != Some(&turn_id)
-                || update_mode == CaptionUpdateMode::Replace;
-            if starts_new_input {
-                *state.recognition_input_is_hiragana = input_is_normalized_hiragana;
-            } else {
-                *state.recognition_input_is_hiragana &= input_is_normalized_hiragana;
-            }
-            let normalizer_input = azookey_input_text.as_deref().unwrap_or(&text);
-            apply_turn_caption_update(
-                state.recognition_text,
-                state.recognition_turn_id,
-                &turn_id,
-                normalizer_input,
+        match event {
+            EngineEvent::Caption {
+                turn_id,
+                turn_session_id,
+                logical_turn_id,
+                text,
+                azookey_input_text,
+                is_final,
                 update_mode,
-            );
-            *state.caption_revision = state.caption_revision.wrapping_add(1).max(1);
-            let revision = *state.caption_revision;
-            route_asr_output(
-                routing,
-                RoutedStageOutput {
-                    turn_id: revision,
+                elapsed_millis,
+                speech_to_first_partial_millis,
+                speech_to_final_millis,
+            } => {
+                record_pipeline_event(
+                    "asr_engine_caption",
+                    &serde_json::json!({
+                        "turn_id": &turn_id,
+                        "turn_session_id": turn_session_id,
+                        "logical_turn_id": logical_turn_id,
+                        "surface": &text,
+                        "canonical_reading": azookey_input_text.as_deref(),
+                        "is_final": is_final,
+                        "update_mode": format!("{update_mode:?}"),
+                        "elapsed_millis": elapsed_millis,
+                        "speech_to_first_partial_millis": speech_to_first_partial_millis,
+                        "speech_to_final_millis": speech_to_final_millis,
+                        "route": routing.route,
+                    }),
+                );
+                if routing.route.asr != ExecutionDevice::Desktop {
+                    continue;
+                }
+                let input_is_normalized_hiragana = azookey_input_text.is_some();
+                let starts_new_input = state.recognition_turn_id.as_deref() != Some(&turn_id)
+                    || update_mode == CaptionUpdateMode::Replace;
+                if starts_new_input {
+                    *state.recognition_input_is_hiragana = input_is_normalized_hiragana;
+                } else {
+                    *state.recognition_input_is_hiragana &= input_is_normalized_hiragana;
+                }
+                let normalizer_input = azookey_input_text.as_deref().unwrap_or(&text);
+                apply_turn_caption_update(
+                    state.recognition_text,
+                    state.recognition_turn_id,
+                    &turn_id,
+                    normalizer_input,
+                    update_mode,
+                );
+                if starts_new_input {
+                    state.recognition_surface_text.clear();
+                }
+                apply_caption_update(state.recognition_surface_text, &text, update_mode);
+                *state.canonical_seen_turn = Some((turn_session_id, logical_turn_id));
+                *state.caption_revision = state.caption_revision.wrapping_add(1).max(1);
+                let revision = *state.caption_revision;
+                route_asr_output(
+                    routing,
+                    RoutedStageOutput {
+                        turn_id: logical_turn_id,
+                        revision,
+                        text: state.recognition_text.clone(),
+                        display_text: state.recognition_surface_text.clone(),
+                        is_final,
+                    },
+                    *state.recognition_input_is_hiragana,
+                )?;
+            }
+            EngineEvent::PartialWindow {
+                turn_id,
+                turn_session_id,
+                logical_turn_id,
+                text,
+                starts_turn,
+            } => {
+                let preview_turn = (turn_session_id, logical_turn_id);
+                let should_display = routing.route.asr == ExecutionDevice::Desktop
+                    && starts_turn
+                    && !text.trim().is_empty()
+                    && state.canonical_seen_turn.is_none_or(|current| preview_turn > current);
+                record_pipeline_event(
+                    "asr_partial_window",
+                    &serde_json::json!({
+                        "turn_id": &turn_id,
+                        "turn_session_id": turn_session_id,
+                        "logical_turn_id": logical_turn_id,
+                        "surface": &text,
+                        "starts_turn": starts_turn,
+                        "displayed": should_display,
+                        "route": routing.route,
+                    }),
+                );
+                if !should_display {
+                    continue;
+                }
+                // PartialWindow text is a bounded raw-ASR preview. Do not put it
+                // into canonical turn state or send it through AzooKey/translation:
+                // the normal Caption event replaces it with the complete canonical
+                // reading. Windows for later internal 8-second segments are ignored
+                // so they cannot erase an already accumulated caption prefix.
+                *state.caption_revision = state.caption_revision.wrapping_add(1).max(1);
+                let revision = *state.caption_revision;
+                let _ = routing.event_tx.send(WorkerEvent::Caption {
+                    turn_id: logical_turn_id,
                     revision,
-                    text: state.recognition_text.clone(),
-                    is_final,
-                },
-                *state.recognition_input_is_hiragana,
-            )?;
+                    source: text,
+                    update_mode: CaptionUpdateMode::Replace,
+                    is_final: false,
+                });
+                record_pipeline_event(
+                    "partial_window_routed",
+                    &serde_json::json!({
+                        "turn_id": &turn_id,
+                        "turn_session_id": turn_session_id,
+                        "logical_turn_id": logical_turn_id,
+                        "revision": revision,
+                    }),
+                );
+            }
         }
     }
     Ok(())
@@ -1392,11 +1651,11 @@ mod tests {
 
     use super::{
         apply_caption_update, apply_turn_caption_update, disconnected_current_session,
-        drain_mobile_final_results_with_timeout, native_audio_config, publish_engine_events,
-        queue_translation, route_asr_output, route_azookey_output, translation_mailbox,
-        CaptionUpdateMode, CaptureController, CaptureSnapshot, CaptureStatus, EngineEvent,
-        RoutedStageOutput, RoutingContext, TranslationCommand, TranslationRequest, WorkerCommand,
-        WorkerEvent, MAX_CAPTION_CHARACTERS,
+        drain_mobile_final_results_with_timeout, handle_mobile_result, native_audio_config,
+        native_engine_config, publish_engine_events, queue_translation, route_asr_output,
+        route_azookey_output, translation_mailbox, CaptionUpdateMode, CaptureController,
+        CaptureSnapshot, CaptureStatus, EngineEvent, RoutedStageOutput, RoutingContext,
+        TranslationCommand, TranslationRequest, WorkerCommand, WorkerEvent, MAX_CAPTION_CHARACTERS,
     };
 
     #[test]
@@ -1425,6 +1684,13 @@ mod tests {
     }
 
     #[test]
+    fn native_engine_enables_bounded_partial_windows_for_uninterrupted_speech() {
+        let config = native_engine_config(std::path::PathBuf::from("models"));
+
+        assert!(config.partial_window_asr_enabled);
+    }
+
+    #[test]
     fn quickmt_warmup_is_queued_immediately_when_translation_starts() {
         let (sender, receiver) = translation_mailbox();
 
@@ -1440,18 +1706,23 @@ mod tests {
         let (sender, receiver) = translation_mailbox();
 
         assert!(sender.replace_translation(TranslationRequest {
+            turn_id: 1,
             revision: 1,
             source: "古い途中結果".to_string(),
         }));
         assert!(sender.replace_translation(TranslationRequest {
+            turn_id: 1,
             revision: 2,
             source: "最新の確定結果".to_string(),
         }));
 
         assert!(matches!(
             receiver.recv_timeout(Duration::from_millis(10)),
-            Ok(TranslationCommand::Translate(TranslationRequest { revision: 2, source }))
-                if source == "最新の確定結果"
+            Ok(TranslationCommand::Translate(TranslationRequest {
+                turn_id: 1,
+                revision: 2,
+                source,
+            })) if source == "最新の確定結果"
         ));
         assert!(matches!(
             receiver.recv_timeout(Duration::from_millis(1)),
@@ -1468,6 +1739,277 @@ mod tests {
                 .text,
             "今日"
         );
+        assert_eq!(
+            super::convert_azookey_hiragana("ろくじゅうど".to_string())
+                .expect("convert numeric temperature with desktop AzooKey")
+                .text,
+            "60度"
+        );
+    }
+
+    #[test]
+    fn root_partial_window_is_visible_then_canonical_caption_replaces_it() {
+        let (event_tx, event_rx) = mpsc::sync_channel(8);
+        let mut recognition_text = String::new();
+        let mut recognition_surface_text = String::new();
+        let mut recognition_turn_id = None;
+        let mut recognition_input_is_hiragana = false;
+        let mut caption_revision = 0;
+        let mut canonical_seen_turn = None;
+        let routing = super::RoutingContext {
+            route: super::PipelineRoute {
+                asr: super::ExecutionDevice::Desktop,
+                azookey: super::ExecutionDevice::Desktop,
+                translation: super::ExecutionDevice::Desktop,
+            },
+            companion: None,
+            session_id: None,
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: false,
+        };
+        let mut state = super::EnginePublishState {
+            recognition_text: &mut recognition_text,
+            recognition_surface_text: &mut recognition_surface_text,
+            recognition_turn_id: &mut recognition_turn_id,
+            recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
+            caption_revision: &mut caption_revision,
+            canonical_seen_turn: &mut canonical_seen_turn,
+        };
+
+        publish_engine_events(
+            vec![
+                EngineEvent::PartialWindow {
+                    turn_id: "partial-window-1-1-1".to_string(),
+                    turn_session_id: 1,
+                    logical_turn_id: 1,
+                    text: "きょ".to_string(),
+                    starts_turn: true,
+                },
+                EngineEvent::Caption {
+                    turn_id: "turn-1-1-0".to_string(),
+                    turn_session_id: 1,
+                    logical_turn_id: 1,
+                    text: "今日".to_string(),
+                    azookey_input_text: Some("きょう".to_string()),
+                    is_final: false,
+                    update_mode: CaptionUpdateMode::Replace,
+                    elapsed_millis: 10,
+                    speech_to_first_partial_millis: Some(450),
+                    speech_to_final_millis: None,
+                },
+            ],
+            &routing,
+            &mut state,
+        )
+        .expect("route root partial and canonical caption");
+
+        publish_engine_events(
+            vec![
+                EngineEvent::PartialWindow {
+                    turn_id: "partial-window-1-1-2".to_string(),
+                    turn_session_id: 1,
+                    logical_turn_id: 1,
+                    text: "後続だけ".to_string(),
+                    starts_turn: false,
+                },
+                EngineEvent::PartialWindow {
+                    turn_id: "partial-window-1-1-delayed".to_string(),
+                    turn_session_id: 1,
+                    logical_turn_id: 1,
+                    text: "遅延した古い認識".to_string(),
+                    starts_turn: true,
+                },
+            ],
+            &routing,
+            &mut state,
+        )
+        .expect("ignore later internal segment preview");
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::Caption { revision: 1, source, is_final: false, .. })
+                if source == "きょ"
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::Caption { revision: 2, source, is_final: false, .. })
+                if source == "今日"
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::Caption { revision: 2, source, is_final: false, .. })
+                if source == "今日"
+        ));
+        assert!(event_rx.try_recv().is_err());
+        assert_eq!(*state.caption_revision, 2);
+        assert_eq!(state.recognition_text.as_str(), "きょう");
+        assert_eq!(state.recognition_turn_id.as_deref(), Some("turn-1-1-0"));
+    }
+
+    #[test]
+    fn canonical_append_keeps_surface_and_reading_accumulation_in_sync() {
+        let (event_tx, _event_rx) = mpsc::sync_channel(8);
+        let mut recognition_text = String::new();
+        let mut recognition_surface_text = String::new();
+        let mut recognition_turn_id = None;
+        let mut recognition_input_is_hiragana = false;
+        let mut caption_revision = 0;
+        let mut canonical_seen_turn = None;
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Desktop,
+                azookey: ExecutionDevice::Desktop,
+                translation: ExecutionDevice::Desktop,
+            },
+            companion: None,
+            session_id: None,
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: false,
+        };
+        let mut state = super::EnginePublishState {
+            recognition_text: &mut recognition_text,
+            recognition_surface_text: &mut recognition_surface_text,
+            recognition_turn_id: &mut recognition_turn_id,
+            recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
+            caption_revision: &mut caption_revision,
+            canonical_seen_turn: &mut canonical_seen_turn,
+        };
+
+        publish_engine_events(
+            vec![
+                EngineEvent::Caption {
+                    turn_id: "turn-1-1-0".to_string(),
+                    turn_session_id: 1,
+                    logical_turn_id: 1,
+                    text: "今日".to_string(),
+                    azookey_input_text: Some("きょう".to_string()),
+                    is_final: false,
+                    update_mode: CaptionUpdateMode::Replace,
+                    elapsed_millis: 10,
+                    speech_to_first_partial_millis: Some(100),
+                    speech_to_final_millis: None,
+                },
+                EngineEvent::Caption {
+                    turn_id: "turn-1-1-0".to_string(),
+                    turn_session_id: 1,
+                    logical_turn_id: 1,
+                    text: "です".to_string(),
+                    azookey_input_text: Some("です".to_string()),
+                    is_final: true,
+                    update_mode: CaptionUpdateMode::Append,
+                    elapsed_millis: 20,
+                    speech_to_first_partial_millis: Some(100),
+                    speech_to_final_millis: Some(200),
+                },
+            ],
+            &routing,
+            &mut state,
+        )
+        .expect("route replacement and append");
+
+        assert_eq!(state.recognition_text, "きょうです");
+        assert_eq!(state.recognition_surface_text, "今日です");
+        assert!(*state.recognition_input_is_hiragana);
+        assert_eq!(*state.caption_revision, 2);
+    }
+
+    #[test]
+    fn desktop_engine_caption_is_ignored_when_mobile_owns_asr() {
+        let (event_tx, event_rx) = mpsc::sync_channel(2);
+        let mut recognition_text = String::new();
+        let mut recognition_surface_text = String::new();
+        let mut recognition_turn_id = None;
+        let mut recognition_input_is_hiragana = false;
+        let mut caption_revision = 0;
+        let mut canonical_seen_turn = None;
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Mobile,
+                azookey: ExecutionDevice::Desktop,
+                translation: ExecutionDevice::Desktop,
+            },
+            companion: None,
+            session_id: None,
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: false,
+        };
+        let mut state = super::EnginePublishState {
+            recognition_text: &mut recognition_text,
+            recognition_surface_text: &mut recognition_surface_text,
+            recognition_turn_id: &mut recognition_turn_id,
+            recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
+            caption_revision: &mut caption_revision,
+            canonical_seen_turn: &mut canonical_seen_turn,
+        };
+
+        publish_engine_events(
+            vec![EngineEvent::Caption {
+                turn_id: "stale-desktop-caption".to_string(),
+                turn_session_id: 1,
+                logical_turn_id: 1,
+                text: "無視".to_string(),
+                azookey_input_text: Some("むし".to_string()),
+                is_final: false,
+                update_mode: CaptionUpdateMode::Replace,
+                elapsed_millis: 10,
+                speech_to_first_partial_millis: None,
+                speech_to_final_millis: None,
+            }],
+            &routing,
+            &mut state,
+        )
+        .expect("ignore desktop event");
+
+        assert_eq!(*state.caption_revision, 0);
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn mobile_asr_result_reaches_desktop_azookey_with_surface_preserved() {
+        let (event_tx, event_rx) = mpsc::sync_channel(4);
+        let routing = RoutingContext {
+            route: PipelineRoute {
+                asr: ExecutionDevice::Mobile,
+                azookey: ExecutionDevice::Desktop,
+                translation: ExecutionDevice::Desktop,
+            },
+            companion: None,
+            session_id: Some("session-1"),
+            event_tx: &event_tx,
+            translation_tx: None,
+            translation_enabled: false,
+        };
+        let mut caption_revision = 0;
+        let mut source = String::new();
+
+        assert!(handle_mobile_result(
+            MobileStageResult {
+                message_type: "asr.update".to_string(),
+                session_id: "session-1".to_string(),
+                turn_id: 3,
+                revision: 7,
+                text: "きょう".to_string(),
+                is_final: true,
+            },
+            &routing,
+            &mut caption_revision,
+            &mut source,
+        )
+        .expect("route mobile ASR"));
+
+        assert_eq!(caption_revision, 7);
+        assert_eq!(source, "きょう");
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::Caption { turn_id: 3, source, .. }) if source == "きょう"
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::Caption { turn_id: 3, source, .. }) if source == "今日"
+        ));
     }
 
     #[test]
@@ -1475,9 +2017,11 @@ mod tests {
         let (translation_tx, translation_rx) = translation_mailbox();
         let (event_tx, event_rx) = mpsc::sync_channel(4);
         let mut recognition_text = String::new();
+        let mut recognition_surface_text = String::new();
         let mut recognition_turn_id = None;
         let mut recognition_input_is_hiragana = false;
         let mut caption_revision = 0;
+        let mut canonical_seen_turn = None;
 
         let routing = super::RoutingContext {
             route: super::PipelineRoute {
@@ -1493,18 +2037,24 @@ mod tests {
         };
         let mut state = super::EnginePublishState {
             recognition_text: &mut recognition_text,
+            recognition_surface_text: &mut recognition_surface_text,
             recognition_turn_id: &mut recognition_turn_id,
             recognition_input_is_hiragana: &mut recognition_input_is_hiragana,
             caption_revision: &mut caption_revision,
+            canonical_seen_turn: &mut canonical_seen_turn,
         };
         publish_engine_events(
             vec![EngineEvent::Caption {
                 turn_id: "turn-1".to_string(),
+                turn_session_id: 1,
+                logical_turn_id: 1,
                 text: "こんにちは聞超えますか".to_string(),
                 azookey_input_text: Some("こんにちはきこえますか".to_string()),
                 is_final: false,
                 update_mode: CaptionUpdateMode::Replace,
                 elapsed_millis: 10,
+                speech_to_first_partial_millis: Some(120),
+                speech_to_final_millis: None,
             }],
             &routing,
             &mut state,
@@ -1513,13 +2063,16 @@ mod tests {
 
         assert!(matches!(
             translation_rx.recv_timeout(Duration::from_millis(10)),
-            Ok(TranslationCommand::Translate(TranslationRequest { revision: 1, source }))
-                if source == "こんにちは聞こえますか"
+            Ok(TranslationCommand::Translate(TranslationRequest {
+                turn_id: 1,
+                revision: 1,
+                source,
+            })) if source == "こんにちは聞こえますか"
         ));
         assert!(matches!(
             event_rx.try_recv(),
             Ok(WorkerEvent::Caption { revision: 1, source, is_final: false, .. })
-                if source == "こんにちはきこえますか"
+                if source == "こんにちは聞超えますか"
         ));
         assert!(matches!(
             event_rx.try_recv(),
@@ -1553,6 +2106,7 @@ mod tests {
 
         controller.apply_worker_event_at(
             WorkerEvent::Translation {
+                turn_id: 1,
                 revision: 1,
                 source: "こんにちは".to_string(),
                 translation: "Hello".to_string(),
@@ -1572,7 +2126,7 @@ mod tests {
 
         queue_translation(
             &translation_tx,
-            TranslationRequest { revision: 7, source: "字幕".to_string() },
+            TranslationRequest { turn_id: 1, revision: 7, source: "字幕".to_string() },
             &event_tx,
         );
 
@@ -1600,6 +2154,7 @@ mod tests {
             worker: Some(worker),
             worker_stop_requested: Some(stop_requested.clone()),
             translation_enabled: false,
+            current_caption_turn_id: None,
             current_caption_revision: 0,
             awaiting_translation_revision: None,
             recognition_in_progress: false,
@@ -1697,18 +2252,21 @@ mod tests {
     fn translation_updates_only_the_matching_recognition() {
         let mut snapshot = CaptureSnapshot::default();
         snapshot.apply_worker_event(WorkerEvent::Caption {
+            turn_id: 1,
             revision: 1,
             source: "こんにちは。".to_string(),
             update_mode: CaptionUpdateMode::Replace,
             is_final: true,
         });
         snapshot.apply_worker_event(WorkerEvent::Translation {
+            turn_id: 1,
             revision: 1,
             source: "古い字幕".to_string(),
             translation: "Old".to_string(),
         });
         assert!(snapshot.translation_text.is_empty());
         snapshot.apply_worker_event(WorkerEvent::Translation {
+            turn_id: 1,
             revision: 1,
             source: "こんにちは。".to_string(),
             translation: "Hello.".to_string(),
@@ -1722,6 +2280,7 @@ mod tests {
         let started_at = Instant::now();
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 1,
                 source: "最初の字幕".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1732,6 +2291,7 @@ mod tests {
         );
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 2,
                 source: "一分後の字幕".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1751,6 +2311,7 @@ mod tests {
         let partial_at = Instant::now();
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 1,
                 source: "認識中".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1777,6 +2338,7 @@ mod tests {
         let partial_at = Instant::now();
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 1,
                 source: "こんにちは".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1794,6 +2356,7 @@ mod tests {
 
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 2,
                 source: "こんにちは。".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1810,6 +2373,7 @@ mod tests {
 
         controller.apply_worker_event_at(
             WorkerEvent::Translation {
+                turn_id: 1,
                 revision: 2,
                 source: "こんにちは。".to_string(),
                 translation: "Hello.".to_string(),
@@ -1828,6 +2392,7 @@ mod tests {
         let finalized_at = Instant::now();
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 1,
                 source: "こんにちは。".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1838,6 +2403,7 @@ mod tests {
         );
         controller.apply_worker_event_at(
             WorkerEvent::Translation {
+                turn_id: 1,
                 revision: 1,
                 source: "こんにちは。".to_string(),
                 translation: "Hello.".to_string(),
@@ -1849,6 +2415,7 @@ mod tests {
 
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 2,
                 revision: 2,
                 source: "次の字幕".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1864,12 +2431,55 @@ mod tests {
     }
 
     #[test]
+    fn same_turn_partial_keeps_the_latest_live_translation_visible() {
+        let mut controller = CaptureController::new();
+        controller.translation_enabled = true;
+        let now = Instant::now();
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                turn_id: 1,
+                revision: 1,
+                source: "今日は".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: false,
+            },
+            now,
+            1_000,
+        );
+        controller.apply_worker_event_at(
+            WorkerEvent::Translation {
+                turn_id: 1,
+                revision: 1,
+                source: "今日は".to_string(),
+                translation: "Today".to_string(),
+            },
+            now + Duration::from_millis(1),
+            1_000,
+        );
+        controller.apply_worker_event_at(
+            WorkerEvent::Caption {
+                turn_id: 1,
+                revision: 2,
+                source: "今日は晴れです".to_string(),
+                update_mode: CaptionUpdateMode::Replace,
+                is_final: false,
+            },
+            now + Duration::from_millis(2),
+            1_000,
+        );
+
+        assert_eq!(controller.snapshot.source_text, "今日は晴れです");
+        assert_eq!(controller.snapshot.translation_text, "Today");
+    }
+
+    #[test]
     fn translated_pair_expires_after_the_configured_hold() {
         let mut controller = CaptureController::new();
         controller.translation_enabled = true;
         let now = Instant::now();
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 1,
                 source: "こんにちは。".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1880,6 +2490,7 @@ mod tests {
         );
         controller.apply_worker_event_at(
             WorkerEvent::Translation {
+                turn_id: 1,
                 revision: 1,
                 source: "こんにちは。".to_string(),
                 translation: "Hello.".to_string(),
@@ -1900,6 +2511,7 @@ mod tests {
         let now = Instant::now();
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 12,
                 source: "新しいASR".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1910,6 +2522,7 @@ mod tests {
         );
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 11,
                 source: "古いAzooKey".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1930,6 +2543,7 @@ mod tests {
         let now = Instant::now();
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 11,
                 source: "はい。".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1940,6 +2554,7 @@ mod tests {
         );
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 2,
                 revision: 12,
                 source: "はい。".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -1950,6 +2565,7 @@ mod tests {
         );
         controller.apply_worker_event_at(
             WorkerEvent::Translation {
+                turn_id: 1,
                 revision: 11,
                 source: "はい。".to_string(),
                 translation: "Stale yes.".to_string(),
@@ -1963,7 +2579,7 @@ mod tests {
     }
 
     #[test]
-    fn mobile_downstream_stages_wait_for_final_asr_to_prevent_caption_flicker() {
+    fn mobile_azookey_uses_asr_surface_for_incremental_translation() {
         let (companion, _inbound_tx, outbound_rx) = CompanionHandle::test_channel();
         let (event_tx, event_rx) = mpsc::sync_channel(8);
         let routing = RoutingContext {
@@ -1985,6 +2601,7 @@ mod tests {
                 turn_id: 4,
                 revision: 9,
                 text: "きょう".to_string(),
+                display_text: "今日".to_string(),
                 is_final: false,
             },
             true,
@@ -1993,9 +2610,14 @@ mod tests {
 
         assert!(matches!(
             event_rx.recv_timeout(Duration::from_millis(20)),
-            Ok(WorkerEvent::Caption { source, is_final: false, .. }) if source == "きょう"
+            Ok(WorkerEvent::Caption { source, is_final: false, .. }) if source == "今日"
         ));
-        assert!(outbound_rx.try_recv().is_err());
+        assert!(
+            matches!(outbound_rx.recv_timeout(Duration::from_millis(20)), Ok(CompanionOutbound::Text(message))
+                if message.contains("translation.request")
+                    && message.contains("\"source_text\":\"今日\"")
+                    && message.contains("\"is_final\":false"))
+        );
 
         route_asr_output(
             &routing,
@@ -2003,6 +2625,7 @@ mod tests {
                 turn_id: 4,
                 revision: 10,
                 text: "こんにちはきこえますか".to_string(),
+                display_text: "こんにちは聞こえますか".to_string(),
                 is_final: true,
             },
             true,
@@ -2014,7 +2637,7 @@ mod tests {
     }
 
     #[test]
-    fn mobile_translation_waits_for_final_azookey_result() {
+    fn mobile_translation_receives_partial_and_final_azookey_results() {
         let (companion, _inbound_tx, outbound_rx) = CompanionHandle::test_channel();
         let (event_tx, _event_rx) = mpsc::sync_channel(8);
         let routing = RoutingContext {
@@ -2036,11 +2659,17 @@ mod tests {
                 turn_id: 4,
                 revision: 9,
                 text: "今日".to_string(),
+                display_text: "今日".to_string(),
                 is_final: false,
             },
         )
-        .expect("publish AzooKey partial without translation");
-        assert!(outbound_rx.try_recv().is_err());
+        .expect("publish AzooKey partial with translation");
+        assert!(
+            matches!(outbound_rx.recv_timeout(Duration::from_millis(20)), Ok(CompanionOutbound::Text(message))
+                if message.contains("translation.request")
+                    && message.contains("\"source_text\":\"今日\"")
+                    && message.contains("\"is_final\":false"))
+        );
 
         route_azookey_output(
             &routing,
@@ -2048,12 +2677,15 @@ mod tests {
                 turn_id: 4,
                 revision: 10,
                 text: "今日。".to_string(),
+                display_text: "今日。".to_string(),
                 is_final: true,
             },
         )
         .expect("route finalized AzooKey");
         assert!(
-            matches!(outbound_rx.recv_timeout(Duration::from_millis(20)), Ok(CompanionOutbound::Text(message)) if message.contains("translation.request"))
+            matches!(outbound_rx.recv_timeout(Duration::from_millis(20)), Ok(CompanionOutbound::Text(message))
+                if message.contains("translation.request")
+                    && message.contains("\"is_final\":true"))
         );
     }
 
@@ -2098,6 +2730,7 @@ mod tests {
         assert!(matches!(
             event_rx.recv_timeout(Duration::from_millis(20)),
             Ok(WorkerEvent::Translation {
+                turn_id: 4,
                 revision: 9,
                 source,
                 translation,
@@ -2215,6 +2848,7 @@ mod tests {
         assert!(matches!(
             event_rx.recv_timeout(Duration::from_millis(20)),
             Ok(WorkerEvent::Caption {
+                turn_id: 5,
                 revision: 13,
                 source,
                 is_final: true,
@@ -2311,6 +2945,7 @@ mod tests {
         let now = Instant::now();
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 1,
                 revision: 1,
                 source: "古い字幕".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -2321,6 +2956,7 @@ mod tests {
         );
         controller.apply_worker_event_at(
             WorkerEvent::Caption {
+                turn_id: 2,
                 revision: 2,
                 source: "新しい字幕".to_string(),
                 update_mode: CaptionUpdateMode::Replace,
@@ -2331,6 +2967,7 @@ mod tests {
         );
         controller.apply_worker_event_at(
             WorkerEvent::Translation {
+                turn_id: 1,
                 revision: 1,
                 source: "古い字幕".to_string(),
                 translation: "Old caption".to_string(),

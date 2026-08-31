@@ -59,6 +59,8 @@ pub const PREVIEW_PLATE_HEIGHT: u32 = 180;
 #[cfg(any(feature = "gpui", test))]
 pub const DICTIONARY_SEARCH_LIMIT: usize = 50;
 pub const STYLE_VERSION: u32 = 2;
+const LEGACY_NOTO_SANS_JP_FAMILY: &str = "\"Noto Sans JP Variable\", \"Noto Sans JP\", sans-serif";
+const BUNDLED_NOTO_SANS_JP_FAMILY: &str = "\"Noto Sans JP\", sans-serif";
 #[cfg(any(feature = "gpui", test))]
 pub const SETTINGS_VERSION: u32 = 5;
 
@@ -568,7 +570,16 @@ fn migrate_native_style(mut style: NativeStyleSettings) -> NativeStyleSettings {
         style.translation_line_height = style.line_height;
         style.version = STYLE_VERSION;
     }
+    migrate_bundled_caption_font_name(&mut style.font_family);
+    migrate_bundled_caption_font_name(&mut style.source_font_family);
+    migrate_bundled_caption_font_name(&mut style.translation_font_family);
     style
+}
+
+fn migrate_bundled_caption_font_name(font_family: &mut String) {
+    if font_family == LEGACY_NOTO_SANS_JP_FAMILY {
+        BUNDLED_NOTO_SANS_JP_FAMILY.clone_into(font_family);
+    }
 }
 
 #[cfg(any(feature = "gpui", test))]

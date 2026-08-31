@@ -23,6 +23,53 @@ Kotoba Beacon Native
 
 There is no recognition sidecar, child-process supervisor, recognition WebSocket, or JSON IPC. Threads communicate through bounded in-memory queues.
 
+## Opt-in caption-pipeline diagnostics
+
+Native transcript diagnostics are disabled by default because their text can be
+sensitive. To diagnose a reproducible conversion problem, enable the bounded
+JSONL log with a marker file:
+
+```bash
+DIAGNOSTICS="$HOME/Library/Application Support/com.kotobabeacon.native/diagnostics"
+mkdir -p "$DIAGNOSTICS"
+touch "$DIAGNOSTICS/pipeline.enabled"
+```
+
+The app checks the marker for every pipeline event, so it can be enabled or
+disabled without changing settings. Reproduce the issue, then run the automatic classifier and disable collection:
+
+```bash
+bun run native:diagnostics:analyze
+rm "$DIAGNOSTICS/pipeline.enabled"
+```
+
+The command exits nonzero and reports machine-readable issue categories for a
+routed caption that never reached the UI, a discarded UI update, a long gap
+merged into one turn, a stable visible prefix lost by final ASR, or excessive
+speech-to-first-caption latency.
+
+`KOTOBA_PIPELINE_DIAGNOSTICS=1` is an alternative for terminal launches. Each
+record contains a process/session/build identity plus the correlated turn and
+revision. ASR records also include speech-to-first-caption/final latency. The
+`asr_engine_caption`, `asr_routed`, `azookey_output`, and
+`ui_caption_applied` stages distinguish raw ASR surface text, UniDic canonical
+reading, the actual AzooKey input/output, and the final displayed source. Mobile
+stage acceptance is recorded separately. The logger never stores PCM audio,
+uses owner-only permissions on Unix, flushes each record, and retains at most a
+4 MiB current file plus one rotated file. Remove the marker after collecting a
+non-sensitive reproduction. UniDic feature parsing and its checked-in hot-path
+benchmark are documented in
+[`docs/japanese-morph-feature-fields.md`](../../docs/japanese-morph-feature-fields.md).
+
+The real-model `bun run verify:native-turn-separation` regression check feeds
+two greeting fixtures in real time with a two-second gap and fails unless they
+produce exactly two final turn IDs. `bun scripts/verify-native-asr.mjs` also
+fails if final ASR drops a prefix already preserved by consecutive partials.
+`bun run verify:native-partial-window` enables the Native long-utterance mode
+and fails unless real ASR produces a root-segment preview before the eight-second
+segment boundary. Later internal segment previews are not routed, so they cannot
+erase an accumulated canonical caption.
+
 The hot capture loop reuses one PCM16-to-f32 normalization buffer across every
 32 ms microphone frame instead of allocating roughly 31 vectors per second.
 The 32 ms active UI poll also borrows the current caption and clones caption
@@ -326,7 +373,11 @@ clickable copy target and also has a dedicated copy button.
 
 Native persists multiple named style profiles in `caption-styles.json`. Horizontal and Vertical
 profiles are created by default; the Style tab can add, select, edit, and delete profiles. The
-selected profile is shared by the GPUI capture window, Browser Source, Syphon, and Spout.
+selected profile is shared by the GPUI capture window, Browser Source, Syphon, and Spout. Noto
+Sans JP Variable is embedded in the Native binary for raster output and served by the loopback
+Browser Source, so the default family does not depend on fonts installed on the host. An empty
+translation reserves one line of layout height; a one-line translation can arrive without moving
+the recognition line, while multiline translations still expand naturally.
 
 Native also persists multiple selectable dictionary sets in `dictionary-catalog.json`. Each set
 contains any number of reading/word entries and supports individual deletion, clearing the whole
@@ -379,7 +430,7 @@ Spout is Windows-only, and Browser Source plus Caption Output are available ever
 
 ```bash
 # macOS, Windows, or Linux (run on the target operating system)
-cargo build --locked --release --manifest-path apps/native/Cargo.toml
+make native-release
 ```
 
 Windows requires the MSVC C++ Build Tools and Windows SDK. The release executable is
@@ -392,7 +443,7 @@ Linux requires ALSA, Vulkan, Wayland, and X11 development libraries. On Ubuntu/D
 sudo apt-get install build-essential clang cmake libasound2-dev libfontconfig-dev \
   libglib2.0-dev libssl-dev libvulkan1 libwayland-dev libx11-xcb-dev \
   libxkbcommon-x11-dev libzstd-dev
-cargo build --locked --release --manifest-path apps/native/Cargo.toml
+make native-release
 ```
 
 The Linux executable is `apps/native/target/release/kotoba-beacon-native`. GPUI selects
@@ -401,7 +452,7 @@ Wayland or X11 at runtime.
 After building on any target OS, create a portable release without launching the app:
 
 ```bash
-node scripts/package-native-release.mjs
+make native-package
 ```
 
 Windows and Linux packages include the executable plus the ONNX Runtime and sherpa-onnx
@@ -411,9 +462,17 @@ operating systems so platform regressions cannot be hidden by a macOS-only gate.
 
 ## macOS installation
 
+Use the root Makefile as the only local Native build/install entry point:
+
 ```bash
-bun scripts/install-macos-native-app.mjs
+make build
 ```
+
+This locked release build stops a running installed app, packages it, and
+replaces `~/Applications/Kotoba Beacon Native.app` without launching or
+activating it. Launching is always an explicit user action, so repeated agent
+builds cannot move the app to the foreground. `bun run install:macos-native-app`
+forwards to the same Make target.
 
 Installed layout:
 

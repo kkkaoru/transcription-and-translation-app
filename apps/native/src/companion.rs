@@ -31,6 +31,10 @@ const MAX_DISCOVERY_DATAGRAM_BYTES: usize = 1_024;
 const COMPANION_SERVICE_TYPE: &str = "_kotobabeacon._tcp.local.";
 const COMPANION_SERVICE_INSTANCE: &str = "Kotoba Beacon Native";
 const COMPANION_SERVICE_HOSTNAME: &str = "kotoba-beacon.local.";
+const PAIRING_URL_SCHEME: &str = "kotobabeacon";
+const PAIRING_URL_HOST: &str = "pair";
+const PAIRING_QR_MODULE_PX: u32 = 6;
+const PAIRING_QR_QUIET_MODULES: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompanionConnectionSnapshot {
@@ -57,6 +61,85 @@ impl CompanionConnectionSnapshot {
             last_error: None,
         }
     }
+}
+
+/// Camera-readable custom URL that opens the installed companion app.
+pub fn companion_pairing_link(endpoint: &str, pairing_token: &str) -> String {
+    format!(
+        "{PAIRING_URL_SCHEME}://{PAIRING_URL_HOST}?endpoint={}&token={}",
+        percent_encode_query(endpoint),
+        percent_encode_query(pairing_token),
+    )
+}
+
+/// RGBA QR pixels for [companion_pairing_link], including a quiet zone.
+pub fn companion_pairing_qr_rgba(link: &str) -> Result<(u32, u32, Vec<u8>), String> {
+    let code = qrcode::QrCode::new(link.as_bytes())
+        .map_err(|error| format!("could not encode companion pairing QR: {error}"))?;
+    let width =
+        u32::try_from(code.width()).map_err(|_| "companion pairing QR is too large".to_string())?;
+    let modules = width.saturating_add(PAIRING_QR_QUIET_MODULES.saturating_mul(2));
+    let size = modules.saturating_mul(PAIRING_QR_MODULE_PX);
+    let pixel_count = usize::try_from(size.saturating_mul(size).saturating_mul(4))
+        .map_err(|_| "companion pairing QR is too large".to_string())?;
+    let mut pixels = vec![255_u8; pixel_count];
+    code.to_colors().iter().enumerate().for_each(|(index, color)| {
+        if *color != qrcode::Color::Dark {
+            return;
+        }
+        let module_width = code.width();
+        let Ok(module_x) = u32::try_from(index % module_width) else {
+            return;
+        };
+        let Ok(module_y) = u32::try_from(index / module_width) else {
+            return;
+        };
+        fill_qr_module(&mut pixels, size, module_x, module_y);
+    });
+    Ok((size, size, pixels))
+}
+
+fn percent_encode_query(value: &str) -> String {
+    value.bytes().fold(String::new(), |mut encoded, byte| {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push_str(&format!("{byte:02X}"));
+            }
+        }
+        encoded
+    })
+}
+
+fn fill_qr_module(pixels: &mut [u8], size: u32, module_x: u32, module_y: u32) {
+    let origin_x =
+        module_x.saturating_add(PAIRING_QR_QUIET_MODULES).saturating_mul(PAIRING_QR_MODULE_PX);
+    let origin_y =
+        module_y.saturating_add(PAIRING_QR_QUIET_MODULES).saturating_mul(PAIRING_QR_MODULE_PX);
+    let module_area = PAIRING_QR_MODULE_PX.saturating_mul(PAIRING_QR_MODULE_PX);
+    (0..module_area).for_each(|offset| {
+        let dx = offset % PAIRING_QR_MODULE_PX;
+        let dy = offset / PAIRING_QR_MODULE_PX;
+        let pixel_x = origin_x.saturating_add(dx);
+        let pixel_y = origin_y.saturating_add(dy);
+        let Some(pixel_index) = pixel_y
+            .saturating_mul(size)
+            .saturating_add(pixel_x)
+            .saturating_mul(4)
+            .try_into()
+            .ok()
+            .filter(|index: &usize| index.saturating_add(3) < pixels.len())
+        else {
+            return;
+        };
+        pixels[pixel_index] = 0;
+        pixels[pixel_index + 1] = 0;
+        pixels[pixel_index + 2] = 0;
+        pixels[pixel_index + 3] = 255;
+    });
 }
 
 #[derive(Debug)]
@@ -509,8 +592,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        constant_time_equal, generate_pairing_token, CompanionConnectionSnapshot, CompanionInbound,
-        CompanionServer, COMPANION_PORT,
+        companion_pairing_link, companion_pairing_qr_rgba, constant_time_equal,
+        generate_pairing_token, CompanionConnectionSnapshot, CompanionInbound, CompanionServer,
+        COMPANION_PORT,
     };
     use rust_lib_kotoba_beacon_companion::api::simple::{
         decode_discovery_response, default_pipeline_route, encode_discovery_request,
@@ -525,6 +609,30 @@ mod tests {
         let token = generate_pairing_token().expect("pairing token");
         assert_eq!(token.len(), 32);
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn companion_pairing_link_percent_encodes_the_endpoint_and_token() {
+        assert_eq!(
+            companion_pairing_link(
+                "ws://192.168.1.2:18183/companion",
+                "0123456789abcdef0123456789abcdef",
+            ),
+            "kotobabeacon://pair?endpoint=ws%3A%2F%2F192.168.1.2%3A18183%2Fcompanion&token=0123456789abcdef0123456789abcdef",
+        );
+    }
+
+    #[test]
+    fn companion_pairing_qr_contains_dark_modules() {
+        let (width, height, pixels) = companion_pairing_qr_rgba(
+            "kotobabeacon://pair?endpoint=ws%3A%2F%2F192.168.1.2%3A18183%2Fcompanion&token=0123456789abcdef0123456789abcdef",
+        )
+        .expect("pairing QR");
+        assert_eq!(width, height);
+        assert!(width > 24);
+        assert_eq!(pixels.len(), width as usize * height as usize * 4);
+        assert!(pixels.chunks(4).any(|pixel| pixel == [0, 0, 0, 255]));
+        assert!(pixels.chunks(4).any(|pixel| pixel == [255, 255, 255, 255]));
     }
 
     #[test]

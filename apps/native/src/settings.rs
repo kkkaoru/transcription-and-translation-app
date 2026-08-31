@@ -1,11 +1,13 @@
 //! Runtime settings and build information.
 
+use std::sync::Arc;
+
 use gpui::prelude::*;
-use gpui::{Context, IntoElement};
+use gpui::{img, px, Context, ImageSource, IntoElement, RenderImage};
 use gpui_component::button::Button;
 use gpui_component::group_box::{GroupBox, GroupBoxVariants as _};
 use gpui_component::switch::Switch;
-use gpui_component::{h_flex, v_flex, Disableable as _, Selectable as _, StyledExt as _};
+use gpui_component::{h_flex, v_flex, Selectable as _, StyledExt as _};
 use rust_lib_kotoba_beacon_companion::api::simple::{
     ExecutionDevice, MobileCapabilities, PipelineRoute,
 };
@@ -13,6 +15,8 @@ use rust_lib_kotoba_beacon_companion::api::simple::{
 use crate::domain::{NativeAppSettings, UiLanguage, BUILD_ID, RECOGNITION_MODE_LABEL};
 use crate::i18n::{text, TextKey};
 use crate::ui::{card, error_line, heading, muted, selectable_text};
+
+const PAIRING_QR_DISPLAY_PX: f32 = 180.0;
 
 pub struct SettingsRuntimeInfo<'a> {
     pub translation_model_installed: bool,
@@ -23,6 +27,7 @@ pub struct SettingsRuntimeInfo<'a> {
     pub companion_session_id: Option<&'a str>,
     pub companion_route: Option<PipelineRoute>,
     pub companion_capabilities: Option<&'a MobileCapabilities>,
+    pub companion_pairing_qr: Option<Arc<RenderImage>>,
     pub persist_error: Option<&'a str>,
 }
 
@@ -130,20 +135,42 @@ pub fn render_settings<V: 'static>(
                                 (callbacks.on_toggle_companion)(view);
                             })),
                     )
-                    .child(
-                        h_flex()
-                            .gap_3()
+                    .when(settings.companion_enabled, |this| {
+                        this.child(selectable_text(text(language, TextKey::ScanPairingQrHint)))
+                            .when_some(runtime.companion_pairing_qr.clone(), |this, qr| {
+                                this.child(
+                                    img(ImageSource::Render(qr))
+                                        .id("companion-pairing-qr")
+                                        .w(px(PAIRING_QR_DISPLAY_PX))
+                                        .h(px(PAIRING_QR_DISPLAY_PX)),
+                                )
+                            })
                             .child(
-                                Button::new("copy-companion-endpoint")
-                                    .label(text(language, TextKey::CopyLanEndpoint))
-                                    .disabled(!settings.companion_enabled)
-                                    .on_click(cx.listener(move |view, _event, _window, cx| {
-                                        (callbacks.on_copy_companion_endpoint)(view, cx);
-                                    })),
+                                h_flex()
+                                    .gap_3()
+                                    .child(
+                                        Button::new("copy-companion-endpoint")
+                                            .label(text(language, TextKey::CopyLanEndpoint))
+                                            .on_click(cx.listener(
+                                                move |view, _event, _window, cx| {
+                                                    (callbacks.on_copy_companion_endpoint)(
+                                                        view, cx,
+                                                    );
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        Button::new("copy-companion-token")
+                                            .label(text(language, TextKey::CopyPairingToken))
+                                            .on_click(cx.listener(
+                                                move |view, _event, _window, cx| {
+                                                    (callbacks.on_copy_companion_token)(view, cx);
+                                                },
+                                            )),
+                                    ),
                             )
-                            .when_some(
-                                show_details.then_some(companion_endpoint).flatten(),
-                                |this, endpoint| {
+                            .when(show_details, |this| {
+                                this.when_some(companion_endpoint.clone(), |this, endpoint| {
                                     this.child(
                                         selectable_text(format!(
                                             "{}: {endpoint}",
@@ -151,34 +178,22 @@ pub fn render_settings<V: 'static>(
                                         ))
                                         .text_sm(),
                                     )
-                                },
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .child(
-                                Button::new("copy-companion-token")
-                                    .label(text(language, TextKey::CopyPairingToken))
-                                    .disabled(!settings.companion_enabled)
-                                    .on_click(cx.listener(move |view, _event, _window, cx| {
-                                        (callbacks.on_copy_companion_token)(view, cx);
-                                    })),
-                            )
-                            .when_some(
-                                show_details.then_some(companion_token).flatten(),
-                                |this, token| {
-                                    this.child(
-                                        selectable_text(format!(
-                                            "{}: {token}",
-                                            text(language, TextKey::PairingToken)
-                                        ))
-                                        .text_sm(),
-                                    )
-                                },
-                            ),
-                    )
-                    .when(show_details, |this| this.child(companion_status(runtime, language))),
+                                })
+                                .when_some(
+                                    companion_token.clone(),
+                                    |this, token| {
+                                        this.child(
+                                            selectable_text(format!(
+                                                "{}: {token}",
+                                                text(language, TextKey::PairingToken)
+                                            ))
+                                            .text_sm(),
+                                        )
+                                    },
+                                )
+                            })
+                            .child(companion_status(runtime, language))
+                    }),
             ),
         )
         .child(GroupBox::new().outline().title(text(language, TextKey::CaptionTimeout)).child(

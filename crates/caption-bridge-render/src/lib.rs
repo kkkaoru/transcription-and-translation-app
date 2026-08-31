@@ -15,6 +15,20 @@ pub use types::{CaptionFrame, CaptionOrder, CaptionStyle, OverlayGeometry, RgbaI
 mod tests {
     use super::*;
 
+    fn red_pixel_row_bounds(image: &RgbaImage) -> (usize, usize) {
+        let rows = image
+            .pixels
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(_, pixel)| pixel[0] > pixel[2] && pixel[3] > 0)
+            .map(|(index, _)| index / image.width as usize)
+            .collect::<Vec<_>>();
+        (
+            rows.first().copied().expect("red source pixels start"),
+            rows.last().copied().expect("red source pixels end"),
+        )
+    }
+
     #[test]
     fn empty_strings_are_transparent() {
         let geometry = OverlayGeometry::default_1280x720();
@@ -166,6 +180,43 @@ mod tests {
         let low_image = rasterize(&low, &frame);
         let high_image = rasterize(&high, &frame);
         assert_ne!(low_image.pixels, high_image.pixels);
+    }
+
+    #[test]
+    fn one_line_translation_does_not_move_the_source_block() {
+        let mut geometry = OverlayGeometry::default_1280x720();
+        geometry.source.color = "#ff0000".to_string();
+        geometry.source.shadow_enabled = false;
+        geometry.source.culling_enabled = false;
+        geometry.source.background_enabled = false;
+        geometry.translation.color = "#0000ff".to_string();
+        geometry.translation.shadow_enabled = false;
+        geometry.translation.culling_enabled = false;
+        geometry.translation.background_enabled = false;
+
+        let empty = rasterize(
+            &geometry,
+            &CaptionFrame {
+                source: "認識結果".to_string(),
+                translation: String::new(),
+                partial: String::new(),
+            },
+        );
+        let one_line = rasterize(
+            &geometry,
+            &CaptionFrame {
+                source: "認識結果".to_string(),
+                translation: "One-line translation".to_string(),
+                partial: String::new(),
+            },
+        );
+
+        assert_eq!(red_pixel_row_bounds(&empty), red_pixel_row_bounds(&one_line));
+    }
+
+    #[test]
+    fn bundled_noto_sans_jp_is_visible_to_the_renderer() {
+        assert!(font_families().iter().any(|family| family == "Noto Sans JP"));
     }
 
     #[test]

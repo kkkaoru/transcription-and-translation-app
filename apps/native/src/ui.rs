@@ -94,17 +94,6 @@ pub fn muted(value: impl Into<SharedString>, cx: &App) -> impl IntoElement {
     selectable_text(value).text_sm().text_color(cx.theme().muted_foreground)
 }
 
-pub fn editable_text(value: &str, caret: Option<usize>, cx: &App) -> gpui::Div {
-    let caret = caret.filter(|index| *index <= value.len() && value.is_char_boundary(*index));
-    let (before, after) = caret.map_or((value, ""), |index| value.split_at(index));
-    gpui_component::h_flex()
-        .child(SharedString::from(before.to_string()))
-        .when(caret.is_some(), |this| {
-            this.child(gpui::div().w_0p5().h_4().flex_shrink_0().bg(cx.theme().primary))
-        })
-        .child(SharedString::from(after.to_string()))
-}
-
 pub fn error_line(value: impl Into<SharedString>) -> impl IntoElement {
     Alert::error("inline-error", selectable_text(value)).banner()
 }

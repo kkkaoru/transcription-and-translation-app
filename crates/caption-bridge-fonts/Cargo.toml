@@ -1,0 +1,11 @@
+[package]
+name = "caption-bridge-fonts"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Shared embedded caption fonts"
+
+[lib]
+name = "caption_bridge_fonts"
+crate-type = ["rlib"]

@@ -21,6 +21,8 @@ mod live;
 mod microphone_permission;
 #[cfg(feature = "gpui")]
 mod output;
+#[cfg(any(feature = "gpui", test))]
+mod pipeline_diagnostics;
 #[cfg(feature = "gpui")]
 mod settings;
 #[cfg(feature = "gpui")]

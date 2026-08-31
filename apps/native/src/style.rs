@@ -4,28 +4,46 @@ use std::{rc::Rc, sync::Arc};
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, img, px, relative, Bounds, Context, Entity, ExternalPaths, FocusHandle,
-    IntoElement, MouseDownEvent, MouseMoveEvent, ObjectFit, Pixels, Point, RenderImage, Role,
-    SharedString, Window,
+    canvas, div, img, px, relative, Bounds, Context, DragMoveEvent, Empty, Entity, ExternalPaths,
+    IntoElement, MouseDownEvent, ObjectFit, Pixels, Point, RenderImage, SharedString, Window,
 };
 use gpui_component::button::Button;
+use gpui_component::color_picker::{ColorPicker, ColorPickerState};
 use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::switch::Switch;
-use gpui_component::{
-    h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, StyledExt as _,
-};
+use gpui_component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, StyledExt as _};
 
 use crate::domain::{NativeStyleProfile, NativeStyleSettings, UiLanguage};
 use crate::i18n::{text, TextKey};
 use crate::ui::{
-    button, card, danger_button, editable_text, error_line, heading, image_view, muted,
-    render_image, selectable_text,
+    button, card, danger_button, error_line, heading, image_view, muted, selectable_text,
 };
 
 const PREVIEW_WIDTH_PX: f32 = 560.0;
 const PREVIEW_HEIGHT_PX: f32 = 157.5;
+
+#[derive(Clone)]
+struct StylePointerDrag {
+    owner_id: String,
+}
+
+impl StylePointerDrag {
+    fn new(owner_id: impl Into<String>) -> Self {
+        Self { owner_id: owner_id.into() }
+    }
+
+    fn is_owned_by(&self, control_id: &str) -> bool {
+        self.owner_id == control_id
+    }
+}
+
+impl gpui::Render for StylePointerDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
 
 macro_rules! slider {
     ($id:expr, $label:expr, $language:expr, $value:expr, $min:expr, $max:expr, $step:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
@@ -48,22 +66,8 @@ macro_rules! slider {
 }
 
 macro_rules! color_picker {
-    ($id:expr, $label:expr, $value:expr, $active:expr, $color_code_input:expr, $language:expr, $on_toggle:expr, $style:expr, $cx:expr, $on_change:expr, $set:expr $(,)?) => {
-        color_picker_control(
-            ColorPickerSpec {
-                id: $id,
-                label: $label,
-                language: $language,
-                value: $value,
-                active: $active,
-                color_code_input: $color_code_input,
-                set: $set,
-            },
-            $style,
-            $cx,
-            $on_change,
-            $on_toggle,
-        )
+    ($id:expr, $label:expr, $color_pickers:expr $(,)?) => {
+        color_picker_control($id, $label, $color_pickers)
     };
 }
 
@@ -92,40 +96,84 @@ pub struct StyleCallbacks<V> {
     pub on_copy_text_style: fn(&mut V, StyleTextTarget),
     pub on_change: fn(&mut V, NativeStyleSettings),
     pub on_font_select: fn(&mut V, StyleTextTarget, &str),
-    pub on_preview_source_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
-    pub on_preview_translation_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
     pub on_preview_image_paths: fn(&mut V, &[std::path::PathBuf]),
     pub on_preview_image_position: fn(&mut V, f32, f32),
     pub on_reset_preview_image_position: fn(&mut V),
     pub on_delete_preview_image: fn(&mut V),
-    pub on_color_toggle: fn(&mut V, &str, &mut Window, &mut Context<V>),
 }
 
 pub struct StyleViewState<'a> {
     pub profiles: &'a [NativeStyleProfile],
     pub selected_profile_id: &'a str,
-    pub preview_source: &'a str,
-    pub preview_translation: &'a str,
+    pub preview_source_input: &'a Entity<InputState>,
+    pub preview_translation_input: &'a Entity<InputState>,
     pub preview_image: Arc<RenderImage>,
     pub fonts: &'a [String],
     pub language: UiLanguage,
-    pub active_color_picker: Option<&'a str>,
-    pub color_code_input: &'a Entity<InputState>,
-    pub preview_source_caret: Option<usize>,
-    pub preview_translation_caret: Option<usize>,
-    pub preview_source_focus: &'a FocusHandle,
-    pub preview_translation_focus: &'a FocusHandle,
+    pub color_pickers: &'a StyleColorPickers,
     pub persist_error: Option<&'a str>,
 }
 
-struct ColorPickerSpec<'a> {
-    id: &'static str,
-    label: &'static str,
-    language: UiLanguage,
-    value: &'a str,
-    active: bool,
-    color_code_input: &'a Entity<InputState>,
-    set: fn(&mut NativeStyleSettings, &str),
+pub struct StyleColorPickers {
+    source: Entity<ColorPickerState>,
+    translation: Entity<ColorPickerState>,
+    background: Entity<ColorPickerState>,
+    outline: Entity<ColorPickerState>,
+    shadow: Entity<ColorPickerState>,
+}
+
+impl StyleColorPickers {
+    pub fn new<V: 'static>(
+        style: &NativeStyleSettings,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) -> Self {
+        let mut picker = |value: &str| {
+            cx.new(|cx| ColorPickerState::new(window, cx).default_value(parse_rgb(value)))
+        };
+        Self {
+            source: picker(&style.source_color),
+            translation: picker(&style.translation_color),
+            background: picker(&style.background_color),
+            outline: picker(&style.outline_color),
+            shadow: picker(&style.shadow_color),
+        }
+    }
+
+    pub fn entries(&self) -> [(&'static str, &Entity<ColorPickerState>); 5] {
+        [
+            ("source-color", &self.source),
+            ("translation-color", &self.translation),
+            ("background-color", &self.background),
+            ("outline-color", &self.outline),
+            ("shadow-color", &self.shadow),
+        ]
+    }
+
+    fn state(&self, id: &str) -> &Entity<ColorPickerState> {
+        self.entries()
+            .into_iter()
+            .find_map(|(entry_id, state)| (entry_id == id).then_some(state))
+            .expect("style color picker ID must be registered")
+    }
+
+    pub fn sync<V: 'static>(
+        &self,
+        style: &NativeStyleSettings,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) {
+        for (id, state) in self.entries() {
+            let value = style_color_value(style, id).expect("registered color must exist");
+            let in_sync = state
+                .read(cx)
+                .value()
+                .is_some_and(|color| hsla_to_rgb_hex(color).eq_ignore_ascii_case(value));
+            if !in_sync {
+                state.update(cx, |state, cx| state.set_value(parse_rgb(value), window, cx));
+            }
+        }
+    }
 }
 
 struct SliderSpec {
@@ -148,31 +196,6 @@ struct RangeSpec {
     max: f32,
     step: f32,
     accent: gpui::Rgba,
-}
-
-struct ColorChannelSpec {
-    id: String,
-    label: &'static str,
-    language: UiLanguage,
-    channel_index: usize,
-    channels: [u8; 3],
-    set: fn(&mut NativeStyleSettings, &str),
-}
-
-struct ColorSquareSpec {
-    id: String,
-    hue: f32,
-    saturation: f32,
-    brightness: f32,
-    set: fn(&mut NativeStyleSettings, &str),
-}
-
-struct HueBarSpec {
-    id: String,
-    hue: f32,
-    saturation: f32,
-    brightness: f32,
-    set: fn(&mut NativeStyleSettings, &str),
 }
 
 struct ToggleSpec {
@@ -206,17 +229,12 @@ pub fn render_style<V: 'static>(
     let StyleViewState {
         profiles,
         selected_profile_id,
-        preview_source,
-        preview_translation,
+        preview_source_input,
+        preview_translation_input,
         preview_image,
         fonts,
         language,
-        active_color_picker,
-        color_code_input,
-        preview_source_caret,
-        preview_translation_caret,
-        preview_source_focus,
-        preview_translation_focus,
+        color_pickers,
         persist_error,
     } = state;
 
@@ -285,29 +303,36 @@ pub fn render_style<V: 'static>(
 
     let preview_has_background_image = style.preview_background_image_path.is_some();
     let preview_drag = preview_has_background_image.then(|| {
+        const CONTROL_ID: &str = "style-preview-position-drag";
         let entity = cx.entity();
         let on_position = callbacks.on_preview_image_position;
-        canvas(
-            |bounds, _, _| bounds,
-            move |bounds, _, window, _| {
-                window.on_mouse_event(move |event: &MouseMoveEvent, _, _, app| {
-                    if event.dragging() {
-                        let center_x = bounds.origin.x + bounds.size.width / 2.0;
-                        let center_y = bounds.origin.y + bounds.size.height / 2.0;
-                        let x = ((event.position.x - center_x) / bounds.size.width * 200.0)
-                            .clamp(-100.0, 100.0);
-                        let y = ((event.position.y - center_y) / bounds.size.height * 200.0)
-                            .clamp(-100.0, 100.0);
-                        entity.update(app, |view, cx| {
-                            on_position(view, x, y);
-                            cx.notify();
-                        });
-                    }
+        div()
+            .id(CONTROL_ID)
+            .absolute()
+            .inset_0()
+            .cursor_move()
+            .on_drag(StylePointerDrag::new(CONTROL_ID), |drag, _, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| drag.clone())
+            })
+            .on_drag_move(move |event: &DragMoveEvent<StylePointerDrag>, _, app| {
+                let is_owner = event.drag(app).is_owned_by(CONTROL_ID);
+                if !is_owner {
+                    return;
+                }
+                let bounds = event.bounds;
+                let center_x = bounds.origin.x + bounds.size.width / 2.0;
+                let center_y = bounds.origin.y + bounds.size.height / 2.0;
+                let x = ((event.event.position.x - center_x) / bounds.size.width * 200.0)
+                    .clamp(-100.0, 100.0);
+                let y = ((event.event.position.y - center_y) / bounds.size.height * 200.0)
+                    .clamp(-100.0, 100.0);
+                entity.update(app, |view, cx| {
+                    on_position(view, x, y);
+                    cx.notify();
                 });
-            },
-        )
-        .absolute()
-        .inset_0()
+                app.stop_propagation();
+            })
     });
     let mut preview_surface = div()
         .id("style-preview-surface")
@@ -344,20 +369,12 @@ pub fn render_style<V: 'static>(
         .child(preview_input(
             "preview-source-input",
             text(language, TextKey::PreviewRecognition),
-            preview_source,
-            preview_source_caret,
-            preview_source_focus,
-            cx,
-            callbacks.on_preview_source_focus,
+            preview_source_input,
         ))
         .child(preview_input(
             "preview-translation-input",
             text(language, TextKey::PreviewTranslation),
-            preview_translation,
-            preview_translation_caret,
-            preview_translation_focus,
-            cx,
-            callbacks.on_preview_translation_focus,
+            preview_translation_input,
         ))
         .child(muted(text(language, TextKey::PreviewImageHint), cx))
         .when(preview_has_background_image, |this| {
@@ -460,15 +477,7 @@ pub fn render_style<V: 'static>(
             .child(color_picker!(
                 "source-color",
                 text(language, TextKey::SourceColor),
-                &style.source_color,
-                active_color_picker == Some("source-color"),
-                color_code_input,
-                language,
-                callbacks.on_color_toggle,
-                style,
-                cx,
-                callbacks.on_change,
-                |next, color| next.source_color = color.to_string(),
+                color_pickers,
             ))
             .child(slider!(
                 "source-opacity",
@@ -573,15 +582,7 @@ pub fn render_style<V: 'static>(
             .child(color_picker!(
                 "translation-color",
                 text(language, TextKey::TranslationColor),
-                &style.translation_color,
-                active_color_picker == Some("translation-color"),
-                color_code_input,
-                language,
-                callbacks.on_color_toggle,
-                style,
-                cx,
-                callbacks.on_change,
-                |next, color| next.translation_color = color.to_string(),
+                color_pickers,
             ))
             .child(slider!(
                 "translation-opacity",
@@ -660,15 +661,7 @@ pub fn render_style<V: 'static>(
             .child(color_picker!(
                 "background-color",
                 text(language, TextKey::BackgroundColor),
-                &style.background_color,
-                active_color_picker == Some("background-color"),
-                color_code_input,
-                language,
-                callbacks.on_color_toggle,
-                style,
-                cx,
-                callbacks.on_change,
-                |next, color| next.background_color = color.to_string(),
+                color_pickers,
             ))
             .child(slider!(
                 "background-opacity",
@@ -702,15 +695,7 @@ pub fn render_style<V: 'static>(
             .child(color_picker!(
                 "shadow-color",
                 text(language, TextKey::ShadowColor),
-                &style.shadow_color,
-                active_color_picker == Some("shadow-color"),
-                color_code_input,
-                language,
-                callbacks.on_color_toggle,
-                style,
-                cx,
-                callbacks.on_change,
-                |next, color| next.shadow_color = color.to_string(),
+                color_pickers,
             ))
             .child(slider!(
                 "shadow-blur",
@@ -783,15 +768,7 @@ pub fn render_style<V: 'static>(
             .child(color_picker!(
                 "outline-color",
                 text(language, TextKey::OutlineColor),
-                &style.outline_color,
-                active_color_picker == Some("outline-color"),
-                color_code_input,
-                language,
-                callbacks.on_color_toggle,
-                style,
-                cx,
-                callbacks.on_change,
-                |next, color| next.outline_color = color.to_string(),
+                color_pickers,
             ))
             .child(slider!(
                 "outline-width",
@@ -840,41 +817,16 @@ fn setting_section(title: &'static str, content: gpui::Div, cx: &gpui::App) -> g
         .child(content.flex().flex_col().gap_3())
 }
 
-fn preview_input<V: 'static>(
+fn preview_input(
     id: &'static str,
     label: &'static str,
-    value: &str,
-    caret: Option<usize>,
-    focus_handle: &FocusHandle,
-    cx: &mut Context<V>,
-    on_focus: fn(&mut V, &mut gpui::Window, &mut Context<V>),
+    input: &Entity<InputState>,
 ) -> impl IntoElement {
-    let focus_handle = focus_handle.clone();
-    v_flex().flex_1().gap_2().child(muted(label, cx)).child(
-        h_flex()
-            .id(id)
-            .track_focus(&focus_handle)
-            .tab_index(0)
-            .accessibility_id(label)
-            .role(Role::TextInput)
-            .aria_label(label)
-            .aria_value(value)
-            .min_h_8()
-            .px_3()
-            .py_2()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .when(caret.is_some(), |this| this.border_2())
-            .border_color(if caret.is_some() { cx.theme().foreground } else { cx.theme().input })
-            .focus(|style| style.border_2().border_color(cx.theme().foreground))
-            .bg(cx.theme().background)
-            .cursor_text()
-            .on_click(cx.listener(move |view, _event, window, cx| {
-                on_focus(view, window, cx);
-                window.focus(&focus_handle, cx);
-            }))
-            .child(editable_text(value, caret, cx)),
-    )
+    v_flex()
+        .flex_1()
+        .gap_2()
+        .child(Label::new(label))
+        .child(Input::new(input).accessibility_id(id).aria_label(label).w_full())
 }
 
 fn font_family_picker<V: 'static>(
@@ -972,27 +924,15 @@ fn range_control<V: 'static>(
             });
         });
     let down_update = Rc::clone(&update);
-    let move_update = update;
-    let interaction = canvas(
+    let down_entity = entity.clone();
+    let click_interaction = canvas(
         |bounds, _, _| bounds,
         move |bounds, _, window, _| {
-            window.on_mouse_event({
-                let entity = entity.clone();
-                move |event: &MouseDownEvent, _, _, app| {
-                    if bounds.contains(&event.position) {
-                        let next = range_value(bounds, event.position, min, max, step);
-                        entity.update(app, |view, cx| {
-                            down_update(view, next);
-                            cx.notify();
-                        });
-                    }
-                }
-            });
-            window.on_mouse_event(move |event: &MouseMoveEvent, _, _, app| {
-                if event.dragging() {
+            window.on_mouse_event(move |event: &MouseDownEvent, _, _, app| {
+                if bounds.contains(&event.position) {
                     let next = range_value(bounds, event.position, min, max, step);
-                    entity.update(app, |view, cx| {
-                        move_update(view, next);
+                    down_entity.update(app, |view, cx| {
+                        down_update(view, next);
                         cx.notify();
                     });
                 }
@@ -1003,6 +943,10 @@ fn range_control<V: 'static>(
     .top_0()
     .left_0()
     .size_full();
+    let drag_owner_id = id.clone();
+    let drag_payload = StylePointerDrag::new(id.clone());
+    let drag_entity = entity;
+    let drag_update = update;
 
     v_flex()
         .gap_2()
@@ -1030,6 +974,22 @@ fn range_control<V: 'static>(
                 .h_6()
                 .w_full()
                 .cursor_pointer()
+                .on_drag(drag_payload, |drag, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.new(|_| drag.clone())
+                })
+                .on_drag_move(move |event: &DragMoveEvent<StylePointerDrag>, _, app| {
+                    let is_owner = event.drag(app).is_owned_by(&drag_owner_id);
+                    if !is_owner {
+                        return;
+                    }
+                    let next = range_value(event.bounds, event.event.position, min, max, step);
+                    drag_entity.update(app, |view, cx| {
+                        drag_update(view, next);
+                        cx.notify();
+                    });
+                    app.stop_propagation();
+                })
                 .child(div().absolute().w_full().h_1().rounded_full().bg(cx.theme().input))
                 .child(div().w(relative(fraction)).h_1().rounded_full().bg(accent))
                 .child(
@@ -1041,7 +1001,7 @@ fn range_control<V: 'static>(
                         .border_color(cx.theme().background)
                         .bg(accent),
                 )
-                .child(interaction),
+                .child(click_interaction),
         )
         .child(
             h_flex()
@@ -1078,280 +1038,12 @@ fn format_slider_value(value: f32, step: f32) -> String {
     }
 }
 
-fn color_picker_control<V: 'static>(
-    spec: ColorPickerSpec<'_>,
-    style: &NativeStyleSettings,
-    cx: &mut Context<V>,
-    on_change: fn(&mut V, NativeStyleSettings),
-    on_toggle: fn(&mut V, &str, &mut Window, &mut Context<V>),
+fn color_picker_control(
+    id: &'static str,
+    label: &'static str,
+    color_pickers: &StyleColorPickers,
 ) -> impl IntoElement {
-    let ColorPickerSpec { id, label, language, value, active, color_code_input, set } = spec;
-    let channels = parse_rgb_channels(value);
-    let (hue, saturation, brightness) = rgb_to_hsv(channels);
-    let square = color_square_control(
-        ColorSquareSpec { id: format!("{id}-square"), hue, saturation, brightness, set },
-        style,
-        cx,
-        on_change,
-    );
-    let hue_bar = hue_bar_control(
-        HueBarSpec { id: format!("{id}-hue"), hue, saturation, brightness, set },
-        style,
-        cx,
-        on_change,
-    );
-    let red = color_channel_stepper(
-        ColorChannelSpec {
-            id: format!("{id}-red"),
-            label: "R",
-            language,
-            channel_index: 0,
-            channels,
-            set,
-        },
-        style,
-        cx,
-        on_change,
-    );
-    let green = color_channel_stepper(
-        ColorChannelSpec {
-            id: format!("{id}-green"),
-            label: "G",
-            language,
-            channel_index: 1,
-            channels,
-            set,
-        },
-        style,
-        cx,
-        on_change,
-    );
-    let blue = color_channel_stepper(
-        ColorChannelSpec {
-            id: format!("{id}-blue"),
-            label: "B",
-            language,
-            channel_index: 2,
-            channels,
-            set,
-        },
-        style,
-        cx,
-        on_change,
-    );
-
-    v_flex()
-        .gap_2()
-        .child(
-            Button::new(format!("color-picker-{id}"))
-                .selected(active)
-                .toggled(active)
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            div()
-                                .size_6()
-                                .rounded(cx.theme().radius)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                // This swatch represents user-selected caption data.
-                                .bg(parse_rgb(value)),
-                        )
-                        .child(Label::new(label))
-                        .child(muted(value.to_uppercase(), cx)),
-                )
-                .on_click(cx.listener(move |view, _event, window, cx| {
-                    on_toggle(view, id, window, cx);
-                })),
-        )
-        .when(active, |this| {
-            this.child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(Label::new(text(language, TextKey::ColorCode)))
-                    .child(
-                        Input::new(color_code_input)
-                            .accessibility_id(format!("color-code-{id}"))
-                            .aria_label(format!("{label}: {}", text(language, TextKey::ColorCode)))
-                            .w_40(),
-                    ),
-            )
-            .child(h_flex().justify_center().child(square))
-            .child(hue_bar)
-            .child(h_flex().justify_center().gap_3().child(red).child(green).child(blue))
-        })
-}
-
-fn color_channel_stepper<V: 'static>(
-    spec: ColorChannelSpec,
-    style: &NativeStyleSettings,
-    cx: &mut Context<V>,
-    on_change: fn(&mut V, NativeStyleSettings),
-) -> impl IntoElement {
-    let ColorChannelSpec { id, label, language, channel_index, channels, set } = spec;
-    let entity = cx.entity();
-    let current = style.clone();
-    let update = Rc::new(move |view: &mut V, next_channels: [u8; 3]| {
-        let mut next = current.clone();
-        set(&mut next, &rgb_hex(next_channels));
-        on_change(view, next);
-    });
-    let decrease_entity = entity.clone();
-    let decrease_update = Rc::clone(&update);
-    let decrease = Button::new(format!("{id}-decrease"))
-        .label("−")
-        .accessibility_id(format!("{label}: {}", text(language, TextKey::Decrease)))
-        .tooltip(format!("{label}: {}", text(language, TextKey::Decrease)))
-        .disabled(channels[channel_index] == 0)
-        .on_click(move |_event, _window, app| {
-            decrease_entity.update(app, |view, _| {
-                decrease_update(view, step_rgb_channel(channels, channel_index, -1));
-            });
-        });
-    let increase = Button::new(format!("{id}-increase"))
-        .label("+")
-        .accessibility_id(format!("{label}: {}", text(language, TextKey::Increase)))
-        .tooltip(format!("{label}: {}", text(language, TextKey::Increase)))
-        .disabled(channels[channel_index] == u8::MAX)
-        .on_click(move |_event, _window, app| {
-            entity.update(app, |view, _| {
-                update(view, step_rgb_channel(channels, channel_index, 1));
-            });
-        });
-
-    h_flex()
-        .gap_2()
-        .child(Label::new(label).text_sm().text_color(cx.theme().muted_foreground))
-        .child(Label::new(channels[channel_index].to_string()).min_w_8().text_center().text_sm())
-        .child(decrease)
-        .child(increase)
-}
-
-fn step_rgb_channel(mut channels: [u8; 3], channel_index: usize, delta: i16) -> [u8; 3] {
-    let next = i16::from(channels[channel_index]) + delta;
-    channels[channel_index] = next.clamp(0, i16::from(u8::MAX)) as u8;
-    channels
-}
-
-fn color_square_control<V: 'static>(
-    spec: ColorSquareSpec,
-    style: &NativeStyleSettings,
-    cx: &mut Context<V>,
-    on_change: fn(&mut V, NativeStyleSettings),
-) -> impl IntoElement {
-    let ColorSquareSpec { id, hue, saturation, brightness, set } = spec;
-    let entity = cx.entity();
-    let current = style.clone();
-    let update = Rc::new(move |view: &mut V, channels: [u8; 3]| {
-        let color = rgb_hex(channels);
-        let mut next = current.clone();
-        set(&mut next, &color);
-        on_change(view, next);
-    });
-    let down_update = Rc::clone(&update);
-    let move_update = update;
-    let interaction = canvas(
-        |bounds, _, _| bounds,
-        move |bounds, _, window, _| {
-            window.on_mouse_event({
-                let entity = entity.clone();
-                move |event: &MouseDownEvent, _, _, app| {
-                    if bounds.contains(&event.position) {
-                        let channels = square_rgb(bounds, event.position, hue);
-                        entity.update(app, |view, cx| {
-                            down_update(view, channels);
-                            cx.notify();
-                        });
-                    }
-                }
-            });
-            window.on_mouse_event(move |event: &MouseMoveEvent, _, _, app| {
-                if event.dragging() {
-                    let channels = square_rgb(bounds, event.position, hue);
-                    entity.update(app, |view, cx| {
-                        move_update(view, channels);
-                        cx.notify();
-                    });
-                }
-            });
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full();
-
-    div()
-        .id(id)
-        .relative()
-        .w(px(240.0))
-        .h(px(180.0))
-        .rounded_md()
-        .cursor_pointer()
-        .child(image_view(render_image(color_square_image(hue, saturation, brightness))))
-        .child(interaction)
-}
-
-fn hue_bar_control<V: 'static>(
-    spec: HueBarSpec,
-    style: &NativeStyleSettings,
-    cx: &mut Context<V>,
-    on_change: fn(&mut V, NativeStyleSettings),
-) -> impl IntoElement {
-    let HueBarSpec { id, hue, saturation, brightness, set } = spec;
-    let entity = cx.entity();
-    let current = style.clone();
-    let update = Rc::new(move |view: &mut V, next_hue: f32| {
-        let color = rgb_hex(hsv_to_rgb(next_hue, saturation, brightness));
-        let mut next = current.clone();
-        set(&mut next, &color);
-        on_change(view, next);
-    });
-    let down_update = Rc::clone(&update);
-    let move_update = update;
-    let interaction = canvas(
-        |bounds, _, _| bounds,
-        move |bounds, _, window, _| {
-            window.on_mouse_event({
-                let entity = entity.clone();
-                move |event: &MouseDownEvent, _, _, app| {
-                    if bounds.contains(&event.position) {
-                        let next_hue = hue_from_position(bounds, event.position);
-                        entity.update(app, |view, cx| {
-                            down_update(view, next_hue);
-                            cx.notify();
-                        });
-                    }
-                }
-            });
-            window.on_mouse_event(move |event: &MouseMoveEvent, _, _, app| {
-                if event.dragging() {
-                    let next_hue = hue_from_position(bounds, event.position);
-                    entity.update(app, |view, cx| {
-                        move_update(view, next_hue);
-                        cx.notify();
-                    });
-                }
-            });
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full();
-
-    div()
-        .id(id)
-        .relative()
-        .w(px(240.0))
-        .h(px(20.0))
-        .rounded_md()
-        .overflow_hidden()
-        .cursor_pointer()
-        .child(image_view(render_image(hue_bar_image(hue))))
-        .child(interaction)
+    ColorPicker::new(color_pickers.state(id)).label(label)
 }
 
 fn toggle_control<V: 'static>(
@@ -1371,104 +1063,6 @@ fn toggle_control<V: 'static>(
     ))
 }
 
-fn color_square_image(
-    hue: f32,
-    selected_saturation: f32,
-    selected_brightness: f32,
-) -> caption_bridge_render::RgbaImage {
-    const WIDTH: u32 = 480;
-    const HEIGHT: u32 = 360;
-    let marker_x = selected_saturation * (WIDTH - 1) as f32;
-    let marker_y = (1.0 - selected_brightness) * (HEIGHT - 1) as f32;
-    let pixels = (0..WIDTH * HEIGHT)
-        .flat_map(|index| {
-            let x = index % WIDTH;
-            let y = index / WIDTH;
-            let saturation = x as f32 / (WIDTH - 1) as f32;
-            let brightness = 1.0 - y as f32 / (HEIGHT - 1) as f32;
-            let marker_distance = (x as f32 - marker_x).hypot(y as f32 - marker_y);
-            if (6.0..=10.0).contains(&marker_distance) {
-                return [255, 255, 255, 255];
-            }
-            let [red, green, blue] = hsv_to_rgb(hue, saturation, brightness);
-            [red, green, blue, 255]
-        })
-        .collect();
-    caption_bridge_render::RgbaImage { width: WIDTH, height: HEIGHT, stride: WIDTH * 4, pixels }
-}
-
-fn hue_bar_image(selected_hue: f32) -> caption_bridge_render::RgbaImage {
-    const WIDTH: u32 = 480;
-    const HEIGHT: u32 = 40;
-    let marker_x = selected_hue.rem_euclid(360.0) / 360.0 * (WIDTH - 1) as f32;
-    let pixels = (0..WIDTH * HEIGHT)
-        .flat_map(|index| {
-            let x = index % WIDTH;
-            if (x as f32 - marker_x).abs() <= 3.0 {
-                return [255, 255, 255, 255];
-            }
-            let hue = x as f32 / (WIDTH - 1) as f32 * 360.0;
-            let [red, green, blue] = hsv_to_rgb(hue, 1.0, 1.0);
-            [red, green, blue, 255]
-        })
-        .collect();
-    caption_bridge_render::RgbaImage { width: WIDTH, height: HEIGHT, stride: WIDTH * 4, pixels }
-}
-
-fn square_rgb(bounds: Bounds<Pixels>, position: Point<Pixels>, hue: f32) -> [u8; 3] {
-    let saturation = ((position.x - bounds.origin.x) / bounds.size.width).clamp(0.0, 1.0);
-    let brightness = (1.0 - (position.y - bounds.origin.y) / bounds.size.height).clamp(0.0, 1.0);
-    hsv_to_rgb(hue, saturation, brightness)
-}
-
-fn hue_from_position(bounds: Bounds<Pixels>, position: Point<Pixels>) -> f32 {
-    ((position.x - bounds.origin.x) / bounds.size.width).clamp(0.0, 1.0) * 360.0
-}
-
-fn rgb_to_hsv([red, green, blue]: [u8; 3]) -> (f32, f32, f32) {
-    let red = f32::from(red) / 255.0;
-    let green = f32::from(green) / 255.0;
-    let blue = f32::from(blue) / 255.0;
-    let max = red.max(green).max(blue);
-    let min = red.min(green).min(blue);
-    let delta = max - min;
-    let hue = if delta == 0.0 {
-        0.0
-    } else if max == red {
-        60.0 * ((green - blue) / delta).rem_euclid(6.0)
-    } else if max == green {
-        60.0 * ((blue - red) / delta + 2.0)
-    } else {
-        60.0 * ((red - green) / delta + 4.0)
-    };
-    let saturation = if max == 0.0 { 0.0 } else { delta / max };
-    (hue, saturation, max)
-}
-
-fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> [u8; 3] {
-    let chroma = value * saturation;
-    let section = hue.rem_euclid(360.0) / 60.0;
-    let x = chroma * (1.0 - (section.rem_euclid(2.0) - 1.0).abs());
-    let (red, green, blue) = match section as u8 {
-        0 => (chroma, x, 0.0),
-        1 => (x, chroma, 0.0),
-        2 => (0.0, chroma, x),
-        3 => (0.0, x, chroma),
-        4 => (x, 0.0, chroma),
-        _ => (chroma, 0.0, x),
-    };
-    let match_value = value - chroma;
-    [
-        ((red + match_value) * 255.0).round() as u8,
-        ((green + match_value) * 255.0).round() as u8,
-        ((blue + match_value) * 255.0).round() as u8,
-    ]
-}
-
-fn rgb_hex([red, green, blue]: [u8; 3]) -> String {
-    format!("#{red:02x}{green:02x}{blue:02x}")
-}
-
 fn parse_rgb_channels(color: &str) -> [u8; 3] {
     let hex = color.trim().trim_start_matches('#');
     if hex.len() == 6 {
@@ -1483,10 +1077,10 @@ fn parse_rgb_channels(color: &str) -> [u8; 3] {
     [255, 255, 255]
 }
 
-pub(crate) fn normalize_hex_color(value: &str) -> Option<String> {
-    let digits = value.trim().strip_prefix('#').unwrap_or(value.trim());
-    (digits.len() == 6 && digits.chars().all(|character| character.is_ascii_hexdigit()))
-        .then(|| format!("#{}", digits.to_ascii_lowercase()))
+pub(crate) fn hsla_to_rgb_hex(color: gpui::Hsla) -> String {
+    let color = gpui::Rgba::from(color);
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", channel(color.r), channel(color.g), channel(color.b))
 }
 
 pub(crate) fn style_color_value<'a>(style: &'a NativeStyleSettings, id: &str) -> Option<&'a str> {
@@ -1529,9 +1123,9 @@ mod tests {
     use gpui::{point, px, size, Bounds};
 
     use super::{
-        color_square_image, hsv_to_rgb, localized_style_profile_name, normalize_hex_color,
-        parse_rgb, parse_rgb_channels, quantize_range_value, range_value, rgb_to_hsv,
-        set_style_color, step_rgb_channel, style_color_value, PREVIEW_HEIGHT_PX, PREVIEW_WIDTH_PX,
+        hsla_to_rgb_hex, localized_style_profile_name, parse_rgb, parse_rgb_channels,
+        quantize_range_value, range_value, set_style_color, style_color_value, StylePointerDrag,
+        PREVIEW_HEIGHT_PX, PREVIEW_WIDTH_PX,
     };
     use crate::domain::{NativeStyleProfile, NativeStyleSettings, UiLanguage};
 
@@ -1559,11 +1153,26 @@ mod tests {
     }
 
     #[test]
+    fn drag_payload_updates_only_its_owner_control() {
+        let source_font_size = StylePointerDrag::new("source-font-size");
+
+        assert!(source_font_size.is_owned_by("source-font-size"));
+        assert!(!source_font_size.is_owned_by("translation-font-size"));
+        assert!(!source_font_size.is_owned_by("source-color-square"));
+    }
+
+    #[test]
     fn range_value_tracks_and_quantizes_pointer_position() {
         let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(200.0), px(24.0)));
         assert_eq!(range_value(bounds, point(px(110.0), px(30.0)), 0.0, 100.0, 1.0), 50.0);
         assert_eq!(range_value(bounds, point(px(-5.0), px(30.0)), 0.0, 100.0, 1.0), 0.0);
         assert_eq!(range_value(bounds, point(px(250.0), px(30.0)), 0.0, 100.0, 1.0), 100.0);
+        assert_eq!(
+            [60.0, 110.0, 160.0]
+                .map(|x| { range_value(bounds, point(px(x), px(30.0)), 0.0, 100.0, 1.0) }),
+            [25.0, 50.0, 75.0],
+            "each drag move must produce a new value before pointer release"
+        );
     }
 
     #[test]
@@ -1574,13 +1183,6 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_color_steps_one_channel_and_clamps_at_rgb_bounds() {
-        assert_eq!(step_rgb_channel([0, 20, 255], 1, 1), [0, 21, 255]);
-        assert_eq!(step_rgb_channel([0, 20, 255], 0, -1), [0, 20, 255]);
-        assert_eq!(step_rgb_channel([0, 20, 255], 2, 1), [0, 20, 255]);
-    }
-
-    #[test]
     fn color_picker_parses_all_rgb_channels() {
         assert_eq!(parse_rgb_channels("#1a80ff"), [26, 128, 255]);
         assert_eq!(parse_rgb_channels("invalid"), [255, 255, 255]);
@@ -1588,12 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn color_codes_validate_and_update_every_editable_style_color() {
-        assert_eq!(normalize_hex_color("#1A80fF"), Some("#1a80ff".to_string()));
-        assert_eq!(normalize_hex_color("1A80fF"), Some("#1a80ff".to_string()));
-        assert_eq!(normalize_hex_color("#12345"), None);
-        assert_eq!(normalize_hex_color("#12345g"), None);
-
+    fn color_codes_update_every_editable_style_color() {
         let mut style = NativeStyleSettings::default();
         assert!(set_style_color(&mut style, "source-color", "#102030"));
         assert!(set_style_color(&mut style, "translation-color", "#203040"));
@@ -1608,24 +1205,13 @@ mod tests {
     }
 
     #[test]
-    fn color_picker_uses_hsv_primary_colors() {
-        assert_eq!(hsv_to_rgb(0.0, 1.0, 1.0), [255, 0, 0]);
-        assert_eq!(hsv_to_rgb(120.0, 1.0, 1.0), [0, 255, 0]);
-        assert_eq!(hsv_to_rgb(240.0, 1.0, 1.0), [0, 0, 255]);
-        assert_eq!(rgb_to_hsv([255, 0, 0]), (0.0, 1.0, 1.0));
+    fn component_color_picker_is_normalized_to_opaque_rgb() {
+        assert_eq!(hsla_to_rgb_hex(gpui::hsla(0.0, 1.0, 0.5, 0.25)), "#ff0000");
     }
 
     #[test]
     fn preview_keeps_a_compact_widescreen_display_area() {
         assert_eq!(PREVIEW_WIDTH_PX, 560.0);
         assert_eq!(PREVIEW_HEIGHT_PX, 157.5);
-    }
-
-    #[test]
-    fn color_square_renders_at_hidpi_resolution() {
-        let image = color_square_image(0.0, 1.0, 1.0);
-        assert_eq!(image.width, 480);
-        assert_eq!(image.height, 360);
-        assert_eq!(image.pixels.len(), 691_200);
     }
 }

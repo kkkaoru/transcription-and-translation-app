@@ -1045,6 +1045,7 @@ dependencies = [
 name = "caption-bridge-browser-source"
 version = "0.1.0"
 dependencies = [
+ "caption-bridge-fonts",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -1070,6 +1071,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "caption-bridge-fonts"
+version = "0.1.0"
+
+[[package]]
 name = "caption-bridge-identity"
 version = "0.1.0"
 
@@ -1081,6 +1086,7 @@ version = "0.1.0"
 name = "caption-bridge-render"
 version = "0.1.0"
 dependencies = [
+ "caption-bridge-fonts",
  "cosmic-text",
 ]
 
@@ -4129,6 +4135,7 @@ dependencies = [
  "image",
  "mdns-sd",
  "parapper-engine",
+ "qrcode",
  "rust_lib_kotoba_beacon_companion",
  "serde",
  "serde_json",
@@ -6127,6 +6134,12 @@ checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

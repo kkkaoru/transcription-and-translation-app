@@ -13,15 +13,18 @@ use caption_bridge_dictionary::CustomDictionaryEntry;
 use gpui::prelude::*;
 use gpui::{
     div, point, px, size, transparent_black, App, Bounds, ClipboardItem, Context, Entity,
-    FocusHandle, Focusable as _, IntoElement, KeyDownEvent, Pixels, Render, RenderImage, Size,
-    Subscription, Task, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions,
+    FocusHandle, IntoElement, KeyDownEvent, Pixels, Render, RenderImage, Size, Subscription, Task,
+    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowOptions,
 };
+use gpui_component::color_picker::ColorPickerEvent;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::Root;
 use rust_lib_kotoba_beacon_companion::api::simple::{ExecutionDevice, PipelineRoute};
 
 use crate::capture::CaptureController;
+use crate::companion::{
+    companion_pairing_link, companion_pairing_qr_rgba, CompanionConnectionSnapshot,
+};
 use crate::debug_surfaces::{
     print_debug_status, start_debug_surfaces, start_syphon, stop_syphon, DebugSurfaces,
 };
@@ -46,8 +49,8 @@ use crate::live::{render_live, LiveCallbacks};
 use crate::output::{render_output, OutputCallbacks};
 use crate::settings::{render_settings, SettingsCallbacks, SettingsRuntimeInfo};
 use crate::style::{
-    normalize_hex_color, parse_rgb, render_style, set_style_color, style_color_value,
-    StyleCallbacks, StyleTextTarget, StyleViewState,
+    hsla_to_rgb_hex, parse_rgb, render_style, set_style_color, StyleCallbacks, StyleColorPickers,
+    StyleTextTarget, StyleViewState,
 };
 use crate::ui::{image_view, render_image, sky_page, tab_bar};
 
@@ -75,32 +78,25 @@ pub struct MainView {
     capture: CaptureController,
     dictionary_catalog: NativeDictionaryCatalog,
     query: String,
-    query_caret: usize,
     draft_reading: String,
-    reading_caret: usize,
     draft_word: String,
-    word_caret: usize,
+    query_input: Entity<InputState>,
+    reading_input: Entity<InputState>,
+    word_input: Entity<InputState>,
     fonts: Vec<String>,
     show_settings_details: bool,
-    active_color_picker: Option<String>,
-    color_code_input: Entity<InputState>,
+    style_color_pickers: StyleColorPickers,
     persist_error: Option<String>,
     active_companion_device_id: Option<String>,
-    focused_field: Option<FocusField>,
     focus_handle: FocusHandle,
-    query_focus_handle: FocusHandle,
-    reading_focus_handle: FocusHandle,
-    word_focus_handle: FocusHandle,
-    preview_source_focus_handle: FocusHandle,
-    preview_translation_focus_handle: FocusHandle,
+    preview_source_input: Entity<InputState>,
+    preview_translation_input: Entity<InputState>,
     surfaces: Rc<RefCell<DebugSurfaces>>,
     preview_source: String,
     preview_translation: String,
     style_preview_image: Option<Arc<RenderImage>>,
+    companion_pairing_qr: Option<(String, Arc<RenderImage>)>,
     stale_render_images: Vec<Arc<RenderImage>>,
-    preview_source_caret: usize,
-    preview_translation_caret: usize,
-    device_select_open: bool,
     last_published_caption: Option<(String, String)>,
     last_browser_caption: Option<(String, String)>,
     last_output_window_check: Instant,
@@ -109,23 +105,7 @@ pub struct MainView {
     capture_view_compact: bool,
     pre_capture_window_size: Option<Size<Pixels>>,
     _quit_subscription: Subscription,
-    _color_code_subscription: Subscription,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FocusField {
-    Query,
-    Reading,
-    Word,
-    PreviewSource,
-    PreviewTranslation,
-}
-
-fn dismissible_keyboard_context(
-    focused_field: Option<FocusField>,
-    device_select_open: bool,
-) -> bool {
-    focused_field.is_some() || device_select_open
+    _input_subscriptions: Vec<Subscription>,
 }
 
 fn adjacent_app_tab(tab: AppTab, reverse: bool) -> AppTab {
@@ -138,19 +118,6 @@ fn adjacent_app_tab(tab: AppTab, reverse: bool) -> AppTab {
         (AppTab::Style, true) => AppTab::Live,
         (AppTab::Dictionary, true) => AppTab::Style,
         (AppTab::Settings, true) => AppTab::Dictionary,
-    }
-}
-
-fn adjacent_text_field(field: FocusField, reverse: bool) -> Option<FocusField> {
-    match (field, reverse) {
-        (FocusField::Query | FocusField::PreviewSource, true)
-        | (FocusField::Word | FocusField::PreviewTranslation, false) => None,
-        (FocusField::Query, false) => Some(FocusField::Reading),
-        (FocusField::Reading, false) => Some(FocusField::Word),
-        (FocusField::Reading, true) => Some(FocusField::Query),
-        (FocusField::Word, true) => Some(FocusField::Reading),
-        (FocusField::PreviewSource, false) => Some(FocusField::PreviewTranslation),
-        (FocusField::PreviewTranslation, true) => Some(FocusField::PreviewSource),
     }
 }
 
@@ -222,10 +189,13 @@ impl MainView {
         app_settings: NativeAppSettings,
     ) -> Self {
         let style = style_catalog.selected().style.clone();
-        let color_code_input =
-            cx.new(|cx| InputState::new(window, cx).default_value(style.source_color.clone()));
-        let color_code_subscription =
-            cx.subscribe_in(&color_code_input, window, Self::on_color_code_input_event);
+        let style_color_pickers = StyleColorPickers::new(&style, window, cx);
+        // Text must be owned by GPUI's input handler so macOS can deliver IME marked text,
+        // candidate selection, and committed replacements. KeyDownEvent::key_char is not an
+        // IME text-editing API and must not be used to implement these fields.
+        let query_input = cx.new(|cx| InputState::new(window, cx));
+        let reading_input = cx.new(|cx| InputState::new(window, cx));
+        let word_input = cx.new(|cx| InputState::new(window, cx));
         let fixture = ingest_fixture_caption().ok();
         let preview_source = fixture
             .as_ref()
@@ -242,11 +212,29 @@ impl MainView {
         browser_source.set_style(browser_style(&style));
         let fonts = Vec::new();
         let preview_translation = DEFAULT_PREVIEW_TRANSLATION.to_string();
+        let preview_source_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(preview_source.clone()));
+        let preview_translation_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(preview_translation.clone()));
+        let mut input_subscriptions = vec![
+            cx.subscribe_in(&query_input, window, Self::on_query_input_event),
+            cx.subscribe_in(&reading_input, window, Self::on_reading_input_event),
+            cx.subscribe_in(&word_input, window, Self::on_word_input_event),
+            cx.subscribe_in(&preview_source_input, window, Self::on_preview_source_input_event),
+            cx.subscribe_in(
+                &preview_translation_input,
+                window,
+                Self::on_preview_translation_input_event,
+            ),
+        ];
+        input_subscriptions.extend(style_color_pickers.entries().map(|(id, picker)| {
+            cx.subscribe_in(picker, window, move |view, _, event, _window, _cx| {
+                view.on_style_color_event(id, event);
+            })
+        }));
         // The HiDPI preview is only needed on the Style tab. Avoid retaining its
         // multi-megabyte RGBA image throughout normal Live capture.
         let style_preview_image = None;
-        let preview_source_caret = preview_source.len();
-        let preview_translation_caret = preview_translation.len();
         let mut capture = CaptureController::new();
         capture
             .set_translation_enabled(app_settings.translation_enabled)
@@ -265,32 +253,25 @@ impl MainView {
             capture,
             dictionary_catalog,
             query: String::new(),
-            query_caret: 0,
             draft_reading: String::new(),
-            reading_caret: 0,
             draft_word: String::new(),
-            word_caret: 0,
+            query_input,
+            reading_input,
+            word_input,
             fonts,
             show_settings_details: false,
-            active_color_picker: None,
-            color_code_input,
+            style_color_pickers,
             persist_error,
             active_companion_device_id: None,
-            focused_field: None,
             focus_handle: cx.focus_handle(),
-            query_focus_handle: cx.focus_handle(),
-            reading_focus_handle: cx.focus_handle(),
-            word_focus_handle: cx.focus_handle(),
-            preview_source_focus_handle: cx.focus_handle(),
-            preview_translation_focus_handle: cx.focus_handle(),
+            preview_source_input,
+            preview_translation_input,
             surfaces,
             preview_source,
             preview_translation,
             style_preview_image,
+            companion_pairing_qr: None,
             stale_render_images: Vec::new(),
-            preview_source_caret,
-            preview_translation_caret,
-            device_select_open: false,
             last_published_caption: None,
             last_browser_caption: None,
             last_output_window_check: Instant::now() - OUTPUT_WINDOW_HEALTH_INTERVAL,
@@ -299,7 +280,7 @@ impl MainView {
             capture_view_compact: false,
             pre_capture_window_size: None,
             _quit_subscription: quit_subscription,
-            _color_code_subscription: color_code_subscription,
+            _input_subscriptions: input_subscriptions,
         }
     }
 
@@ -334,7 +315,6 @@ impl MainView {
 
     fn select_tab(&mut self, tab: AppTab) {
         self.tab = tab;
-        self.focused_field = None;
         if tab == AppTab::Style {
             if self.fonts.is_empty() {
                 self.fonts = caption_bridge_render::font_families();
@@ -359,7 +339,6 @@ impl MainView {
         self.capture_view_compact = capture_active;
         if capture_active {
             self.select_tab(AppTab::Live);
-            self.active_color_picker = None;
             self.fonts.clear();
             self.fonts.shrink_to_fit();
             self.pre_capture_window_size = Some(window.viewport_size());
@@ -371,68 +350,83 @@ impl MainView {
         }
     }
 
-    fn toggle_device_select(&mut self) {
-        if !self.device_select_open {
-            self.capture.refresh_devices();
-        }
-        self.device_select_open = !self.device_select_open;
-    }
-
     fn select_device(&mut self, id: &str) {
         self.capture.select_device(id);
-        self.device_select_open = false;
     }
 
-    fn on_color_code_input_event(
+    fn on_style_color_event(&mut self, id: &str, event: &ColorPickerEvent) {
+        let ColorPickerEvent::Change(Some(color)) = event else {
+            return;
+        };
+        // Caption colors remain opaque RGB because opacity is controlled by dedicated style
+        // fields. This also keeps Native raster and Browser Source serialization identical.
+        let mut next = self.style.clone();
+        if set_style_color(&mut next, id, &hsla_to_rgb_hex(*color)) {
+            self.set_style(next);
+        }
+    }
+
+    fn on_query_input_event(
         &mut self,
         input: &Entity<InputState>,
         event: &InputEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(event, InputEvent::Change) {
-            return;
-        }
-        let Some(id) = self.active_color_picker.as_deref() else {
-            return;
-        };
-        let value = input.read(cx).value();
-        let Some(color) = normalize_hex_color(value.as_ref()) else {
-            return;
-        };
-        let mut next = self.style.clone();
-        if set_style_color(&mut next, id, &color) {
-            self.set_style(next);
+        if matches!(event, InputEvent::Change) {
+            self.query = input.read(cx).value().to_string();
+            cx.notify();
         }
     }
 
-    fn toggle_color_picker(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_color_picker.as_deref() == Some(id) {
-            self.active_color_picker = None;
-            return;
-        }
-        self.active_color_picker = Some(id.to_string());
-        if let Some(value) = style_color_value(&self.style, id) {
-            self.color_code_input.update(cx, |input, cx| {
-                input.set_value(value, window, cx);
-            });
+    fn on_reading_input_event(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.draft_reading = input.read(cx).value().to_string();
         }
     }
 
-    fn sync_color_code_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.active_color_picker.as_deref() else {
-            return;
-        };
-        let Some(value) = style_color_value(&self.style, id) else {
-            return;
-        };
-        let input = self.color_code_input.read(cx);
-        if input.focus_handle(cx).is_focused(window) || input.value().as_ref() == value {
-            return;
+    fn on_word_input_event(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.draft_word = input.read(cx).value().to_string();
         }
-        self.color_code_input.update(cx, |input, cx| {
-            input.set_value(value, window, cx);
-        });
+    }
+
+    fn on_preview_source_input_event(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.preview_source = input.read(cx).value().to_string();
+            self.refresh_style_preview();
+        }
+    }
+
+    fn on_preview_translation_input_event(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.preview_translation = input.read(cx).value().to_string();
+            self.refresh_style_preview();
+        }
     }
 
     fn set_style(&mut self, next: NativeStyleSettings) {
@@ -657,8 +651,6 @@ impl MainView {
         match save_dictionary_catalog(&self.config_dir, &catalog) {
             Ok(()) => {
                 self.dictionary_catalog = catalog;
-                self.query.clear();
-                self.query_caret = 0;
                 self.persist_error = None;
             }
             Err(error) => self.persist_error = Some(error),
@@ -710,132 +702,11 @@ impl MainView {
         .detach();
     }
 
-    fn focused_text_field(&self, window: &Window) -> Option<FocusField> {
-        [
-            (FocusField::Query, &self.query_focus_handle),
-            (FocusField::Reading, &self.reading_focus_handle),
-            (FocusField::Word, &self.word_focus_handle),
-            (FocusField::PreviewSource, &self.preview_source_focus_handle),
-            (FocusField::PreviewTranslation, &self.preview_translation_focus_handle),
-        ]
-        .into_iter()
-        .find_map(|(field, handle)| handle.is_focused(window).then_some(field))
-    }
-
-    fn text_field_focus_handle(&self, field: FocusField) -> &FocusHandle {
-        match field {
-            FocusField::Query => &self.query_focus_handle,
-            FocusField::Reading => &self.reading_focus_handle,
-            FocusField::Word => &self.word_focus_handle,
-            FocusField::PreviewSource => &self.preview_source_focus_handle,
-            FocusField::PreviewTranslation => &self.preview_translation_focus_handle,
-        }
-    }
-
-    fn activate_text_field(&mut self, field: FocusField) {
-        self.focused_field = Some(field);
-        match field {
-            FocusField::Query => self.query_caret = self.query.len(),
-            FocusField::Reading => self.reading_caret = self.draft_reading.len(),
-            FocusField::Word => self.word_caret = self.draft_word.len(),
-            FocusField::PreviewSource => self.preview_source_caret = self.preview_source.len(),
-            FocusField::PreviewTranslation => {
-                self.preview_translation_caret = self.preview_translation.len();
-            }
-        }
-    }
-
-    fn apply_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(field) = self.focused_text_field(window) {
-            if self.focused_field != Some(field) {
-                self.activate_text_field(field);
-            }
-        }
-
-        if event.keystroke.key == "escape"
-            && dismissible_keyboard_context(self.focused_field, self.device_select_open)
-        {
-            self.focused_field = None;
-            self.device_select_open = false;
-            window.focus(&self.focus_handle, cx);
-            cx.notify();
-            cx.stop_propagation();
-            return;
-        }
-
+    fn apply_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key == "tab" && event.keystroke.modifiers.control {
             self.select_tab(adjacent_app_tab(self.tab, event.keystroke.modifiers.shift));
             cx.notify();
             cx.stop_propagation();
-            return;
-        }
-
-        let accepts_input = match self.tab {
-            AppTab::Dictionary => matches!(
-                self.focused_field,
-                Some(FocusField::Query | FocusField::Reading | FocusField::Word)
-            ),
-            AppTab::Style => matches!(
-                self.focused_field,
-                Some(FocusField::PreviewSource | FocusField::PreviewTranslation)
-            ),
-            _ => false,
-        };
-        if !accepts_input {
-            return;
-        }
-        if event.keystroke.key == "tab" {
-            let reverse = event.keystroke.modifiers.shift;
-            let field = self.focused_field.expect("accepts_input requires a focused text field");
-            if let Some(next) = adjacent_text_field(field, reverse) {
-                self.activate_text_field(next);
-                window.focus(self.text_field_focus_handle(next), cx);
-                cx.notify();
-            } else if reverse {
-                window.focus_prev(cx);
-            } else {
-                window.focus_next(cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
-        self.apply_focused_text_key(event);
-        cx.notify();
-    }
-
-    fn apply_focused_text_key(&mut self, event: &KeyDownEvent) {
-        let Some(focused_field) = self.focused_field else {
-            return;
-        };
-        let preview_text_field =
-            matches!(focused_field, FocusField::PreviewSource | FocusField::PreviewTranslation);
-        let (buffer, caret) = match focused_field {
-            FocusField::Query => (&mut self.query, &mut self.query_caret),
-            FocusField::Reading => (&mut self.draft_reading, &mut self.reading_caret),
-            FocusField::Word => (&mut self.draft_word, &mut self.word_caret),
-            FocusField::PreviewSource => (&mut self.preview_source, &mut self.preview_source_caret),
-            FocusField::PreviewTranslation => {
-                (&mut self.preview_translation, &mut self.preview_translation_caret)
-            }
-        };
-        let previous_text = preview_text_field.then(|| buffer.clone());
-        match event.keystroke.key.as_str() {
-            "backspace" => erase_editable_text(buffer, caret),
-            "delete" => delete_editable_text(buffer, caret),
-            "left" => *caret = previous_caret(buffer, *caret),
-            "right" => *caret = next_caret(buffer, *caret),
-            "home" => *caret = 0,
-            "end" => *caret = buffer.len(),
-            _ => {
-                if let Some(value) = event.keystroke.key_char.as_deref() {
-                    if !value.is_empty() && !matches!(value, "\u{8}" | "\r" | "\n" | "\t") {
-                        insert_editable_text(buffer, caret, value);
-                    }
-                }
-            }
-        }
-        if previous_text.as_ref().is_some_and(|text| text != buffer) {
-            self.refresh_style_preview();
         }
     }
 
@@ -855,43 +726,49 @@ impl MainView {
     }
 }
 
-pub(crate) fn erase_editable_text(buffer: &mut String, caret: &mut usize) {
-    let previous = previous_caret(buffer, *caret);
-    if previous < *caret {
-        buffer.replace_range(previous..*caret, "");
-        *caret = previous;
+impl MainView {
+    fn companion_pairing_qr_image(
+        &mut self,
+        snapshot: Option<&CompanionConnectionSnapshot>,
+    ) -> Option<Arc<RenderImage>> {
+        let Some(snapshot) = snapshot else {
+            if let Some((_, image)) = self.companion_pairing_qr.take() {
+                self.stale_render_images.push(image);
+            }
+            return None;
+        };
+        let link = companion_pairing_link(&snapshot.endpoint, &snapshot.pairing_token);
+        if let Some((cached_link, image)) = &self.companion_pairing_qr {
+            if *cached_link == link {
+                return Some(Arc::clone(image));
+            }
+        }
+        let Ok((width, height, pixels)) = companion_pairing_qr_rgba(&link) else {
+            return None;
+        };
+        let image = render_image(caption_bridge_render::RgbaImage {
+            width,
+            height,
+            stride: width.saturating_mul(4),
+            pixels,
+        });
+        if let Some((_, previous)) = self.companion_pairing_qr.replace((link, Arc::clone(&image))) {
+            self.stale_render_images.push(previous);
+        }
+        Some(image)
     }
-}
-
-pub(crate) fn delete_editable_text(buffer: &mut String, caret: &mut usize) {
-    let next = next_caret(buffer, *caret);
-    if *caret < next {
-        buffer.replace_range(*caret..next, "");
-    }
-}
-
-pub(crate) fn insert_editable_text(buffer: &mut String, caret: &mut usize, value: &str) {
-    buffer.insert_str(*caret, value);
-    *caret += value.len();
-}
-
-pub(crate) fn previous_caret(buffer: &str, caret: usize) -> usize {
-    buffer[..caret].char_indices().next_back().map_or(0, |(index, _)| index)
-}
-
-pub(crate) fn next_caret(buffer: &str, caret: usize) -> usize {
-    buffer[caret..].chars().next().map_or(buffer.len(), |character| caret + character.len_utf8())
 }
 
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_color_code_input(window, cx);
+        self.style_color_pickers.sync(&self.style, window, cx);
         for image in self.stale_render_images.drain(..) {
             let _ = window.drop_image(image);
         }
         let language = self.app_settings.ui_language;
         let persist = self.persist_error.clone();
         let companion_snapshot = self.capture.companion_snapshot();
+        let companion_pairing_qr = self.companion_pairing_qr_image(companion_snapshot.as_ref());
         let settings_error = persist.as_deref().or_else(|| {
             companion_snapshot.as_ref().and_then(|snapshot| snapshot.last_error.as_deref())
         });
@@ -900,11 +777,9 @@ impl Render for MainView {
                 .gap_3()
                 .child(render_live(
                     &self.capture,
-                    self.device_select_open,
                     &self.app_settings,
                     cx,
                     &LiveCallbacks {
-                        on_toggle_select: MainView::toggle_device_select,
                         on_refresh_devices: |view| {
                             view.capture.refresh_devices();
                         },
@@ -948,8 +823,8 @@ impl Render for MainView {
                 StyleViewState {
                     profiles: &self.style_catalog.profiles,
                     selected_profile_id: &self.style_catalog.selected_id,
-                    preview_source: &self.preview_source,
-                    preview_translation: &self.preview_translation,
+                    preview_source_input: &self.preview_source_input,
+                    preview_translation_input: &self.preview_translation_input,
                     preview_image: Arc::clone(
                         self.style_preview_image
                             .as_ref()
@@ -957,15 +832,7 @@ impl Render for MainView {
                     ),
                     fonts: &self.fonts,
                     language,
-                    active_color_picker: self.active_color_picker.as_deref(),
-                    color_code_input: &self.color_code_input,
-                    preview_source_caret: (self.focused_field == Some(FocusField::PreviewSource))
-                        .then_some(self.preview_source_caret),
-                    preview_translation_caret: (self.focused_field
-                        == Some(FocusField::PreviewTranslation))
-                    .then_some(self.preview_translation_caret),
-                    preview_source_focus: &self.preview_source_focus_handle,
-                    preview_translation_focus: &self.preview_translation_focus_handle,
+                    color_pickers: &self.style_color_pickers,
                     persist_error: persist.as_deref(),
                 },
                 cx,
@@ -1006,18 +873,6 @@ impl Render for MainView {
                         }
                         view.set_style(next);
                     },
-                    on_preview_source_focus: |view, window, cx| {
-                        view.focused_field = Some(FocusField::PreviewSource);
-                        view.preview_source_caret = view.preview_source.len();
-                        window.focus(&view.focus_handle, cx);
-                        cx.notify();
-                    },
-                    on_preview_translation_focus: |view, window, cx| {
-                        view.focused_field = Some(FocusField::PreviewTranslation);
-                        view.preview_translation_caret = view.preview_translation.len();
-                        window.focus(&view.focus_handle, cx);
-                        cx.notify();
-                    },
                     on_preview_image_paths: |view, paths| {
                         view.set_preview_background_image(paths);
                     },
@@ -1031,9 +886,6 @@ impl Render for MainView {
                         view.set_style(next);
                     },
                     on_delete_preview_image: |view| view.remove_preview_background_image(),
-                    on_color_toggle: |view, id, window, cx| {
-                        view.toggle_color_picker(id, window, cx);
-                    },
                 },
             )
             .into_any_element(),
@@ -1042,18 +894,9 @@ impl Render for MainView {
                     dictionaries: &self.dictionary_catalog.dictionaries,
                     selected_dictionary_id: &self.dictionary_catalog.selected_id,
                     entries: &self.visible_entries(),
-                    query: &self.query,
-                    draft_reading: &self.draft_reading,
-                    draft_word: &self.draft_word,
-                    query_caret: (self.focused_field == Some(FocusField::Query))
-                        .then_some(self.query_caret),
-                    reading_caret: (self.focused_field == Some(FocusField::Reading))
-                        .then_some(self.reading_caret),
-                    word_caret: (self.focused_field == Some(FocusField::Word))
-                        .then_some(self.word_caret),
-                    query_focus: &self.query_focus_handle,
-                    reading_focus: &self.reading_focus_handle,
-                    word_focus: &self.word_focus_handle,
+                    query_input: &self.query_input,
+                    reading_input: &self.reading_input,
+                    word_input: &self.word_input,
                     language,
                     persist_error: persist.as_deref(),
                 },
@@ -1079,34 +922,20 @@ impl Render for MainView {
                     on_download_csv: |view, window, cx| {
                         view.download_selected_dictionary_csv(window, cx);
                     },
-                    on_focus_query: |view, window, cx| {
-                        view.focused_field = Some(FocusField::Query);
-                        view.query_caret = view.query.len();
-                        window.focus(&view.focus_handle, cx);
-                        cx.notify();
-                    },
-                    on_focus_reading: |view, window, cx| {
-                        view.focused_field = Some(FocusField::Reading);
-                        view.reading_caret = view.draft_reading.len();
-                        window.focus(&view.focus_handle, cx);
-                        cx.notify();
-                    },
-                    on_focus_word: |view, window, cx| {
-                        view.focused_field = Some(FocusField::Word);
-                        view.word_caret = view.draft_word.len();
-                        window.focus(&view.focus_handle, cx);
-                        cx.notify();
-                    },
-                    on_save: |view| match add_dictionary_entry(
+                    on_save: |view, window, cx| match add_dictionary_entry(
                         &view.dictionary_catalog.selected().entries,
                         &view.draft_reading,
                         &view.draft_word,
                     ) {
                         Ok(next) => {
                             view.draft_reading.clear();
-                            view.reading_caret = 0;
                             view.draft_word.clear();
-                            view.word_caret = 0;
+                            view.reading_input.update(cx, |input, cx| {
+                                input.set_value("", window, cx);
+                            });
+                            view.word_input.update(cx, |input, cx| {
+                                input.set_value("", window, cx);
+                            });
                             view.persist_dictionary(next);
                         }
                         Err(_) => {
@@ -1148,6 +977,7 @@ impl Render for MainView {
                     companion_capabilities: companion_snapshot
                         .as_ref()
                         .and_then(|snapshot| snapshot.capabilities.as_ref()),
+                    companion_pairing_qr,
                     persist_error: settings_error,
                 },
                 cx,
@@ -1559,18 +1389,8 @@ pub fn run() {
 }
 
 #[cfg(test)]
-mod focus_tests {
-    use super::{
-        adjacent_app_tab, adjacent_text_field, copy_text_style, dismissible_keyboard_context,
-        AppTab, FocusField, NativeStyleSettings, StyleTextTarget,
-    };
-
-    #[test]
-    fn escape_context_covers_text_fields_and_open_selection_menus() {
-        assert!(dismissible_keyboard_context(Some(FocusField::Query), false));
-        assert!(dismissible_keyboard_context(None, true));
-        assert!(!dismissible_keyboard_context(None, false));
-    }
+mod app_tests {
+    use super::{adjacent_app_tab, copy_text_style, AppTab, NativeStyleSettings, StyleTextTarget};
 
     #[test]
     fn control_tab_cycles_all_app_tabs_in_both_directions() {
@@ -1600,27 +1420,5 @@ mod focus_tests {
         assert_eq!(style.source_font_family, "Translation Font");
         assert_eq!(style.source_line_height, 1.8);
         assert_eq!(style.source_max_chars, 47);
-    }
-
-    #[test]
-    fn tab_navigation_leaves_custom_text_groups_at_each_edge() {
-        assert_eq!(adjacent_text_field(FocusField::Query, true), None);
-        assert_eq!(adjacent_text_field(FocusField::Word, false), None);
-        assert_eq!(adjacent_text_field(FocusField::PreviewSource, true), None);
-        assert_eq!(adjacent_text_field(FocusField::PreviewTranslation, false), None);
-    }
-
-    #[test]
-    fn tab_navigation_moves_forward_and_backward_between_custom_fields() {
-        assert_eq!(adjacent_text_field(FocusField::Query, false), Some(FocusField::Reading));
-        assert_eq!(adjacent_text_field(FocusField::Reading, true), Some(FocusField::Query));
-        assert_eq!(
-            adjacent_text_field(FocusField::PreviewSource, false),
-            Some(FocusField::PreviewTranslation)
-        );
-        assert_eq!(
-            adjacent_text_field(FocusField::PreviewTranslation, true),
-            Some(FocusField::PreviewSource)
-        );
     }
 }

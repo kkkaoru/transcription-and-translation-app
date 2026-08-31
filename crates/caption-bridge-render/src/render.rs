@@ -2,8 +2,9 @@
 //! RGBA buffer.
 
 use std::path::Path;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
+use caption_bridge_fonts::NOTO_SANS_JP_VARIABLE_TTF;
 use cosmic_text::fontdb;
 use cosmic_text::{
     Align, Attrs, AttrsOwned, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache,
@@ -23,6 +24,7 @@ struct RenderState {
 impl RenderState {
     fn new() -> Self {
         let mut db = fontdb::Database::new();
+        load_bundled_caption_font(&mut db);
         db.load_system_fonts();
         load_japanese_fonts(&mut db);
 
@@ -40,6 +42,10 @@ fn init_render_state() -> Mutex<RenderState> {
 }
 
 static RENDER_STATE: LazyLock<Mutex<RenderState>> = LazyLock::new(init_render_state);
+
+fn load_bundled_caption_font(db: &mut fontdb::Database) {
+    db.load_font_source(fontdb::Source::Binary(Arc::new(NOTO_SANS_JP_VARIABLE_TTF)));
+}
 
 /// Return the family names resolved by the same font database used for caption rasterization.
 pub fn font_families() -> Vec<String> {
@@ -231,13 +237,15 @@ pub fn rasterize(geometry: &OverlayGeometry, frame: &CaptionFrame) -> RgbaImage 
     let source_text = build_source_text(frame);
     let translation_text = frame.translation.clone();
 
-    // Blocks are always stored [source, translation].
-    let source_block = (&geometry.source, source_text.as_str());
-    let translation_block = (&geometry.translation, translation_text.as_str());
+    // Blocks are always stored [source, translation]. The translation block
+    // reserves one line even while empty, preventing the source from jumping
+    // when a one-line translation arrives asynchronously.
+    let source_block = (&geometry.source, source_text.as_str(), false);
+    let translation_block = (&geometry.translation, translation_text.as_str(), true);
 
     // DOM / paint order: first element is painted first, so later elements
     // visually overlay earlier ones if they overlap.
-    let blocks: [(&CaptionStyle, &str); 2] = match geometry.order {
+    let blocks: [(&CaptionStyle, &str, bool); 2] = match geometry.order {
         CaptionOrder::SourceFirst => [source_block, translation_block],
         CaptionOrder::TranslationFirst => [translation_block, source_block],
     };
@@ -247,10 +255,13 @@ pub fn rasterize(geometry: &OverlayGeometry, frame: &CaptionFrame) -> RgbaImage 
 
     let mut content_widths = [0.0_f32; 2];
     let mut heights = [0.0_f32; 2];
-    for (idx, (style, text)) in blocks.iter().enumerate() {
+    for (idx, (style, text, reserve_one_line)) in blocks.iter().enumerate() {
         content_widths[idx] = content_width(style, geometry);
         if !text.trim().is_empty() {
             heights[idx] = measure_block(font_system, style, text, content_widths[idx]);
+        }
+        if *reserve_one_line {
+            heights[idx] = heights[idx].max(style.font_size_px * style.line_height);
         }
     }
 
@@ -271,7 +282,7 @@ pub fn rasterize(geometry: &OverlayGeometry, frame: &CaptionFrame) -> RgbaImage 
     let mut output = PixelBuffer::new(geometry.width, geometry.height);
 
     // Paint in DOM order.
-    for (idx, (style, text)) in blocks.iter().enumerate() {
+    for (idx, (style, text, _reserve_one_line)) in blocks.iter().enumerate() {
         if heights[idx] > 0.0 {
             let left = center_x - content_widths[idx] / 2.0;
             let placement =
@@ -642,4 +653,30 @@ fn draw_pass(
             output.blend_rect(x, y, w, h, c, global_alpha);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use caption_bridge_fonts::NOTO_SANS_JP_FAMILY;
+    use cosmic_text::fontdb::{Family, Query, Source, Stretch, Style, Weight};
+
+    use super::load_bundled_caption_font;
+
+    #[test]
+    fn bundled_noto_sans_jp_resolves_without_system_fonts() {
+        let mut db = cosmic_text::fontdb::Database::new();
+        load_bundled_caption_font(&mut db);
+
+        let families = [Family::Name(NOTO_SANS_JP_FAMILY)];
+        let id = db
+            .query(&Query {
+                families: &families,
+                weight: Weight(750),
+                stretch: Stretch::Normal,
+                style: Style::Normal,
+            })
+            .expect("bundled Noto Sans JP must resolve by its real family name");
+
+        assert!(matches!(db.face_source(id), Some((Source::Binary(_), _))));
+    }
 }
