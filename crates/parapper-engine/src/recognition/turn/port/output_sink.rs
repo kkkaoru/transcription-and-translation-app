@@ -1,9 +1,8 @@
 use std::sync::mpsc::SyncSender;
 
 use crate::{
-    config::ParapperConfig, delivery::RecognizedTextOutput,
-    recognition::control::events::RecognizedTextUpdateMode, recognition::RecognitionStreamOutput,
-    CaptionUpdateMode, EngineEvent,
+    CaptionUpdateMode, EngineEvent, config::ParapperConfig, delivery::RecognizedTextOutput,
+    recognition::RecognitionStreamOutput, recognition::control::events::RecognizedTextUpdateMode,
 };
 
 pub(crate) trait TurnOutputSink: Send {
@@ -32,8 +31,21 @@ impl TurnOutputSink for ChannelTurnOutputSink {
     }
 
     fn emit(&mut self, output: RecognizedTextOutput) {
+        let speech_start_at = output.caption_latency.speech_start_at;
+        let speech_to_first_partial_millis = output
+            .caption_latency
+            .first_partial_at
+            .zip(speech_start_at)
+            .map(|(caption_at, speech_at)| caption_at.saturating_sub(speech_at));
+        let speech_to_final_millis = output
+            .caption_latency
+            .asr_final_at
+            .zip(speech_start_at)
+            .map(|(caption_at, speech_at)| caption_at.saturating_sub(speech_at));
         let event = EngineEvent::Caption {
             turn_id: output.meta.id.clone(),
+            turn_session_id: output.meta.source.turn_session_id,
+            logical_turn_id: output.meta.source.turn_id,
             text: output.text,
             azookey_input_text: output.azookey_input_text,
             is_final: output.meta.is_final,
@@ -42,13 +54,24 @@ impl TurnOutputSink for ChannelTurnOutputSink {
                 RecognizedTextUpdateMode::Replace => CaptionUpdateMode::Replace,
             },
             elapsed_millis: output.elapsed_millis,
+            speech_to_first_partial_millis,
+            speech_to_final_millis,
         };
         let _ = self.sender.send(event);
     }
 
     fn emit_partial_window(&mut self, output: RecognitionStreamOutput) {
+        let starts_turn = output.output.meta.source.previous_segment_id.is_none();
+        let turn_session_id = output.output.meta.source.turn_session_id;
+        let logical_turn_id = output.output.meta.source.turn_id;
         let text = output.source_text.unwrap_or(output.output.text);
-        let event = EngineEvent::PartialWindow { turn_id: output.output.meta.id, text };
+        let event = EngineEvent::PartialWindow {
+            turn_id: output.output.meta.id,
+            turn_session_id,
+            logical_turn_id,
+            text,
+            starts_turn,
+        };
         let _ = self.sender.try_send(event);
     }
 }
@@ -73,7 +96,7 @@ mod tests {
     use crate::config::{AsrLanguage, AsrModel};
     use crate::delivery::{RecognizedTextMeta, RecognizedTextOutput};
     use crate::recognition::control::events::RecognitionSourceMeta;
-    use crate::EngineEvent;
+    use crate::{EngineEvent, recognition::RecognitionStreamOutput};
 
     #[test]
     fn portable_caption_channel_does_not_request_discarded_pcm_copies() {
@@ -81,6 +104,50 @@ mod tests {
         let sink = ChannelTurnOutputSink::new(sender);
 
         assert!(!sink.requires_audio());
+    }
+
+    #[test]
+    fn partial_window_channel_marks_only_the_root_segment_as_turn_start() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let mut sink = ChannelTurnOutputSink::new(sender);
+        for (sequence, previous_segment_id) in [(1, None), (2, Some(7))] {
+            let source = RecognitionSourceMeta {
+                turn_session_id: 1,
+                turn_id: 2,
+                turn_revision: 0,
+                output_sequence: sequence,
+                segment_id: 8,
+                previous_segment_id,
+            };
+            let meta = RecognizedTextMeta::replace_turn_output(
+                "partial-window".to_string(),
+                source,
+                false,
+            );
+            let output = RecognizedTextOutput::new(
+                Vec::new(),
+                "長時間発話".to_string(),
+                AsrModel::ReazonSpeechK2V2,
+                AsrLanguage::Japanese,
+                None,
+                meta,
+                10,
+            );
+            sink.emit_partial_window(RecognitionStreamOutput {
+                output,
+                source_text: None,
+                azookey_input_text: None,
+            });
+        }
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(EngineEvent::PartialWindow { starts_turn: true, .. })
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(EngineEvent::PartialWindow { starts_turn: false, .. })
+        ));
     }
 
     #[test]
@@ -106,6 +173,9 @@ mod tests {
             10,
         );
         output.azookey_input_text = Some("こんにちはきこえますか".to_string());
+        output.caption_latency.speech_start_at = Some(1_000);
+        output.caption_latency.first_partial_at = Some(1_120);
+        output.caption_latency.asr_final_at = Some(1_480);
 
         sink.emit(output);
 
@@ -114,6 +184,8 @@ mod tests {
             Ok(EngineEvent::Caption {
                 text,
                 azookey_input_text: Some(reading),
+                speech_to_first_partial_millis: Some(120),
+                speech_to_final_millis: Some(480),
                 ..
             }) if text == "こんにちは聞超えますか" && reading == "こんにちはきこえますか"
         ));

@@ -293,6 +293,27 @@ fn japanese_morph_reading_uses_surface_kana_and_preserves_unknown_tokens() {
 }
 
 #[test]
+fn japanese_morph_reading_handles_quoted_commas_before_unidic_kana() {
+    let source = "六十度";
+    let tokens = vec![
+        JapaneseMorphToken {
+            surface: "六十".to_string(),
+            char_range: 0..2,
+            feature: "名詞,数詞,*,*,*,*,ロクジュウ,六十,六十,ロクジュー,六十,ロクジュー,漢,*,*,十促,基本形,Nj,*,数,ロクジュウ"
+                .to_string(),
+        },
+        JapaneseMorphToken {
+            surface: "度".to_string(),
+            char_range: 2..3,
+            feature: "名詞,普通名詞,助数詞可能,*,*,*,ド,度,度,ド,度,ド,漢,*,*,*,*,*,\"B,B4WB7G9G\",体,ド"
+                .to_string(),
+        },
+    ];
+
+    assert_eq!(hiragana_text_from_morph_tokens(source, &tokens), "ろくじゅうど");
+}
+
+#[test]
 fn japanese_morph_terminal_predicate_at_text_end_is_predicate_end() {
     let transcript = AsrTranscript::from_parts(
         "行きます".to_string(),

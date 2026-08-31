@@ -306,7 +306,7 @@ fn japanese_morph_terminal_nominal_particle_and_comma_classes_are_distinct() {
 }
 
 #[test]
-fn japanese_morph_fixed_greeting_stays_clause_weak_at_text_end() {
+fn japanese_morph_fixed_greeting_is_normal_end_after_turn_check_silence() {
     let transcript = AsrTranscript::from_parts(
         "こんにちは".to_string(),
         vec!["こんにちは".to_string()],
@@ -324,8 +324,8 @@ fn japanese_morph_fixed_greeting_stays_clause_weak_at_text_end() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(
         candidates[0].class,
-        GrammarBoundaryClass::ClauseWeak,
-        "greetings must not NormalEnd-finalize before a same-breath continuation"
+        GrammarBoundaryClass::NormalEnd,
+        "a complete greeting must finalize after turn-check silence instead of absorbing later speech"
     );
 }
 

@@ -25,38 +25,62 @@ fn verify_fixture(models_root: impl AsRef<Path>, fixture: impl AsRef<Path>) -> a
     let samples = read_pcm16_mono_16khz(fixture.as_ref())?;
     let mut engine = ParapperEngine::load(&EngineConfig::new(models_root.as_ref()))?;
     let mut caption = String::new();
+    let mut partials = Vec::new();
     let mut saw_final = false;
 
     for frame in samples.chunks(parapper_engine::VAD_FRAME_SAMPLES) {
-        collect_caption(engine.push_audio(frame)?, &mut caption, &mut saw_final);
+        collect_caption(engine.push_audio(frame)?, &mut caption, &mut partials, &mut saw_final);
     }
     let silence = vec![0.0; parapper_engine::SAMPLE_RATE as usize];
-    collect_caption(engine.push_audio(&silence)?, &mut caption, &mut saw_final);
+    collect_caption(engine.push_audio(&silence)?, &mut caption, &mut partials, &mut saw_final);
 
     let deadline = Instant::now() + FINAL_WAIT;
     while !saw_final && Instant::now() < deadline {
-        collect_caption(engine.tick(), &mut caption, &mut saw_final);
+        collect_caption(engine.tick(), &mut caption, &mut partials, &mut saw_final);
         thread::sleep(Duration::from_millis(10));
     }
     let (_, shutdown_events) = engine.shutdown();
-    collect_caption(shutdown_events, &mut caption, &mut saw_final);
+    collect_caption(shutdown_events, &mut caption, &mut partials, &mut saw_final);
     if !saw_final || caption.is_empty() {
         anyhow::bail!("engine produced no final caption");
     }
-    println!("{{\"result\":\"PASS\",\"caption\":{}}}", serde_json::to_string(&caption)?);
+    let stable_prefix = partials.windows(2).find_map(|pair| {
+        let earlier = normalize_caption(&pair[0]);
+        let later = normalize_caption(&pair[1]);
+        (earlier.chars().count() >= 2 && later.starts_with(earlier)).then_some(earlier)
+    });
+    if stable_prefix.is_some_and(|prefix| !normalize_caption(&caption).starts_with(prefix)) {
+        anyhow::bail!("final caption dropped a prefix already preserved by consecutive partials");
+    }
+    println!(
+        "{{\"result\":\"PASS\",\"caption\":{},\"stablePrefixPreserved\":true}}",
+        serde_json::to_string(&caption)?
+    );
     Ok(())
 }
 
-fn collect_caption(events: Vec<EngineEvent>, caption: &mut String, saw_final: &mut bool) {
+fn collect_caption(
+    events: Vec<EngineEvent>,
+    caption: &mut String,
+    partials: &mut Vec<String>,
+    saw_final: &mut bool,
+) {
     for event in events {
         if let EngineEvent::Caption { text, is_final, update_mode, .. } = event {
             match update_mode {
                 CaptionUpdateMode::Append => caption.push_str(&text),
                 CaptionUpdateMode::Replace => *caption = text,
             }
+            if !is_final {
+                partials.push(caption.clone());
+            }
             *saw_final |= is_final;
         }
     }
+}
+
+fn normalize_caption(text: &str) -> &str {
+    text.trim().trim_end_matches(['.', '。', '！', '？'])
 }
 
 fn read_pcm16_mono_16khz(path: &Path) -> anyhow::Result<Vec<f32>> {

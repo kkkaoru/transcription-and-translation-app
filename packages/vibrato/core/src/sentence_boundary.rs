@@ -3,7 +3,7 @@
 //! Tauri desktop is the source of truth. Overlay TypeScript keeps a heuristic
 //! fallback; WASM/Worker should call this module through vibrato-wasm.
 
-use caption_bridge_japanese_text::MorphFeature;
+use caption_bridge_japanese_text::{comma_separated_feature_field, MorphFeature};
 
 const SENTENCE_PUNCT: &[char] = &['。', '．', '！', '？', '!', '?'];
 
@@ -572,7 +572,7 @@ fn heuristic_offset_is_plausible(offset: usize, tokens: &[(String, String, usize
 }
 
 fn ipadic_lemma_is_unknown(feature: &str) -> bool {
-    feature.split(',').nth(6).unwrap_or("*").trim() == "*"
+    comma_separated_feature_field(feature, 6).unwrap_or("*") == "*"
 }
 
 /// Vibrato IPADIC POS combinations that complete a caption sentence.

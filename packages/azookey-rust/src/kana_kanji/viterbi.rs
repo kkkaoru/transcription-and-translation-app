@@ -268,6 +268,10 @@ const COMMA_LIST_KANJI_OVERLAP_BONUS: f32 = 3.5;
 /// Prefer currency orthography when the next clause is a spoken yen amount
 /// (`こうか、じゅうえん` → `硬貨` over `効果`).
 const FOLLOWING_YEN_AMOUNT_BONUS: f32 = 4.0;
+/// Preserve a lexicalized content-plus-particle dictionary row before a spoken
+/// quantity. The quantity's MID cost can otherwise overturn the better prefix
+/// (`今日は` / `温度が`) in favor of unrelated split homophones.
+const LEXICALIZED_PARTICLE_BEFORE_QUANTITY_BONUS: f32 = 4.5;
 const MIN_IDENTITY_FALLBACK_CHARS: usize = 2;
 const INFLECTIONAL_IDENTITY_FALLBACK_VALUE: f32 = -3.0;
 const PARTICLE_IDENTITY_FALLBACK_VALUE: f32 = -1.0;
@@ -1930,6 +1934,7 @@ fn convert_character_reading(
                             )
                             + comma_list_kanji_overlap_bonus(&state, entry)
                             + following_yen_amount_bonus(&chars, end, entry)
+                            + lexicalized_particle_before_quantity_bonus(&chars, end, entry)
                             + contextual_entry_bonus
                             + thickness_context_bonus(
                                 dictionary,
@@ -3625,6 +3630,35 @@ fn comma_list_kanji_overlap_bonus(state: &PathState, entry: &DictionaryEntry) ->
     };
     if entry.surface.contains(anchor) {
         COMMA_LIST_KANJI_OVERLAP_BONUS
+    } else {
+        NO_SCORE
+    }
+}
+
+fn lexicalized_particle_before_quantity_bonus(
+    chars: &[char],
+    end: usize,
+    entry: &DictionaryEntry,
+) -> f32 {
+    let Some(particle) = entry.reading.chars().last() else {
+        return NO_SCORE;
+    };
+    if entry.reading.chars().count() < MIN_LEXICAL_ENTRY_CHARS
+        || !is_particle(particle)
+        || !entry.surface.ends_with(particle)
+        || !contains_kanji(&entry.surface)
+    {
+        return NO_SCORE;
+    }
+    let suffix = chars.get(end..).unwrap_or_default();
+    let Some((numeric_length, _)) = numeric_surface_prefix(suffix) else {
+        return NO_SCORE;
+    };
+    let numeric_reading = suffix[..numeric_length].iter().collect::<String>();
+    if japanese_numeral_has_unit(&numeric_reading)
+        || japanese_counter_starts_at(&suffix[numeric_length..])
+    {
+        LEXICALIZED_PARTICLE_BEFORE_QUANTITY_BONUS
     } else {
         NO_SCORE
     }
@@ -5783,6 +5817,8 @@ mod tests {
             ("にゅうきん、しゅうし、かくにん", "入金、収支、確認"),
             ("もじ、かんじ、ぞくじ", "文字、漢字、俗字"),
             ("ごねん", "5年"),
+            ("ろくじゅうど", "60度"),
+            ("ろくじゅうえん", "60円"),
             ("しがつ", "4月"),
             ("じゅう、", "10、"),
             ("よっか", "4日"),
@@ -5800,6 +5836,40 @@ mod tests {
             .expect("public conversion should produce a candidate");
             assert_eq!(candidate.text, expected, "input: {input}");
         }
+    }
+
+    #[test]
+    fn prefers_lexicalized_particle_phrases_before_spoken_quantities() {
+        let root = crate::dictionary::test_system_dictionary_path();
+        let dictionary = AzooKeyDictionary::from_paths(&DictionaryPaths {
+            system: Some(root),
+            ..DictionaryPaths::default()
+        })
+        .expect("public conversion dictionary should load");
+
+        let weather = convert_with_dictionary(
+            "きょうはろくじゅうどです",
+            &dictionary,
+            ConversionOptions { n_best: 10, ..ConversionOptions::default() },
+        );
+        assert_eq!(
+            weather.first().map(|candidate| candidate.text.as_str()),
+            Some("今日は60度です"),
+            "lexicalized topic must beat split homophones: {:?}",
+            weather.iter().take(5).map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
+
+        let threshold = convert_with_dictionary(
+            "おんどがろくじゅうどをこえる",
+            &dictionary,
+            ConversionOptions { n_best: 10, ..ConversionOptions::default() },
+        );
+        assert_eq!(
+            threshold.first().map(|candidate| candidate.text.as_str()),
+            Some("温度が60度を超える"),
+            "lexicalized subject must beat split homophones: {:?}",
+            threshold.iter().take(5).map(|candidate| &candidate.text).collect::<Vec<_>>()
+        );
     }
 
     #[test]

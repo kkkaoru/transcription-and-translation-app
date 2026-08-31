@@ -1,7 +1,10 @@
 use std::{ops::Range, path::Path};
 
 use anyhow::{Context, Result};
-use caption_bridge_japanese_text::{katakana_to_hiragana_char, MorphFeatureHead};
+use caption_bridge_japanese_text::{
+    MorphFeatureHead, comma_separated_feature_field, is_japanese_kana_text,
+    katakana_to_hiragana_char,
+};
 use vibrato_rkyv::{Dictionary, LoadMode, Tokenizer};
 
 use super::{audio_window::audio_window_for_boundary, sample_end_for_char_end_or_ratio};
@@ -58,12 +61,8 @@ impl JapaneseMorphAnalyzer {
 fn canonical_reading(tokens: &[JapaneseMorphToken]) -> String {
     let mut reading = String::new();
     for token in tokens {
-        let token_reading = token
-            .feature
-            .split(',')
-            .nth(UNIDIC_KANA_FIELD_INDEX)
-            .map(str::trim)
-            .filter(|field| !field.is_empty() && *field != "*")
+        let token_reading = comma_separated_feature_field(&token.feature, UNIDIC_KANA_FIELD_INDEX)
+            .filter(|field| *field != "*" && is_japanese_kana_text(field))
             .unwrap_or(token.surface.as_str());
         reading.extend(token_reading.chars().map(katakana_to_hiragana_char));
     }
@@ -172,13 +171,12 @@ fn japanese_morph_boundary_class(
     if has_pos1(feature, "形状詞") {
         return is_terminal_token.then_some(GrammarBoundaryClass::NormalEnd);
     }
-    // Fixed greetings often sit alone before a same-breath continuation
-    // (こんにちはきこえますか). Treating them as NormalEnd finalizes the turn at
-    // turn-check silence and drops the continuation onto a new turn id. Keep the
-    // turn open (ClauseWeak) so completion ASR can still see the whole phrase;
-    // genuine end-of-speech still closes via the silence timeout path.
+    // A greeting at the text end is a complete utterance once turn-check silence
+    // has elapsed. Shorter same-breath pauses never reach this grammar check and
+    // remain in the same segment, while a genuine pause must not keep the greeting
+    // open long enough to absorb the next utterance.
     if is_fixed_greeting_surface(token.surface.as_str()) {
-        return is_terminal_token.then_some(GrammarBoundaryClass::ClauseWeak);
+        return is_terminal_token.then_some(GrammarBoundaryClass::NormalEnd);
     }
     if has_pos1(feature, "感動詞") {
         return if matches!(token.surface.as_str(), "はい" | "うん" | "ええ" | "いいえ") {
@@ -258,7 +256,7 @@ fn feature_pos2(feature: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod reading_tests {
-    use super::{canonical_reading, JapaneseMorphToken};
+    use super::{JapaneseMorphToken, canonical_reading};
 
     #[test]
     fn canonical_reading_uses_unidic_kana_instead_of_the_asr_surface() {
@@ -276,6 +274,64 @@ mod reading_tests {
         ];
 
         assert_eq!(canonical_reading(&tokens), "きこえますか");
+    }
+
+    #[test]
+    fn canonical_reading_preserves_numeric_counter_pronunciation() {
+        let tokens = vec![
+            JapaneseMorphToken {
+                surface: "六十".to_string(),
+                char_range: 0..2,
+                feature: "名詞,数詞,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,ロクジュウ".to_string(),
+            },
+            JapaneseMorphToken {
+                surface: "度".to_string(),
+                char_range: 2..3,
+                feature: "名詞,普通名詞,助数詞可能,*,*,*,ド,度,度,ド,度,ド,漢,*,*,*,*,*,\"B,B4WB7G9G\",体,ド,ド,ド,ド,0,C3,*,7407143582048768,26947"
+                    .to_string(),
+            },
+        ];
+
+        assert_eq!(canonical_reading(&tokens), "ろくじゅうど");
+    }
+
+    #[test]
+    fn canonical_reading_handles_quoted_feature_fields_across_units() {
+        let tokens = vec![
+            JapaneseMorphToken {
+                surface: "度".to_string(),
+                char_range: 0..1,
+                feature: "名詞,普通名詞,助数詞可能,*,*,*,ド,度,度,ド,度,ド,漢,*,*,*,*,*,\"B,B4WB7G9G\",体,ド"
+                    .to_string(),
+            },
+            JapaneseMorphToken {
+                surface: "℃".to_string(),
+                char_range: 1..2,
+                feature: "名詞,普通名詞,助数詞可能,*,*,*,ド,度,℃,ド,℃,ド,記号,*,*,*,*,*,\"B,B4WB7G9G\",体,ド"
+                    .to_string(),
+            },
+            JapaneseMorphToken {
+                surface: "円".to_string(),
+                char_range: 2..3,
+                feature: "名詞,普通名詞,助数詞可能,*,*,*,エン,円,円,エン,円,エン,漢,*,*,*,*,*,\"A,B,C\",体,エン"
+                    .to_string(),
+            },
+        ];
+
+        assert_eq!(canonical_reading(&tokens), "どどえん");
+    }
+
+    #[test]
+    fn canonical_reading_rejects_non_kana_fields_after_schema_drift() {
+        let tokens = vec![JapaneseMorphToken {
+            surface: "温度".to_string(),
+            char_range: 0..2,
+            feature:
+                "名詞,普通名詞,一般,*,*,*,オンド,温度,温度,オンド,温度,オンド,漢,*,*,*,*,*,*,体,体"
+                    .to_string(),
+        }];
+
+        assert_eq!(canonical_reading(&tokens), "温度");
     }
 
     #[test]

@@ -120,6 +120,9 @@ dependencies = [
 [[package]]
 name = "caption-bridge-azookey-rust"
 version = "0.1.0"
+dependencies = [
+ "caption-bridge-japanese-text",
+]
 
 [[package]]
 name = "caption-bridge-azookey-wasm"
@@ -134,6 +137,10 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
 ]
+
+[[package]]
+name = "caption-bridge-japanese-text"
+version = "0.1.0"
 
 [[package]]
 name = "caption-bridge-zenz-verifier"

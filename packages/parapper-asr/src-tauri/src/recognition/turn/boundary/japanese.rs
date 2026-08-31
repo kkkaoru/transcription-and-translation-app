@@ -1,7 +1,9 @@
 use std::{ops::Range, path::Path};
 
 use anyhow::{Context, Result};
-use caption_bridge_japanese_text::MorphFeatureHead;
+use caption_bridge_japanese_text::{
+    MorphFeatureHead, comma_separated_feature_field, is_japanese_kana_text,
+};
 use tauri::AppHandle;
 use vibrato_rkyv::{Dictionary, LoadMode, Tokenizer};
 
@@ -106,13 +108,8 @@ fn byte_index_for_char_offset(source: &str, offset: usize) -> Option<usize> {
 
 fn surface_hiragana_reading(feature: &str) -> Option<String> {
     const UNIDIC_SURFACE_KANA_FIELD: usize = 20;
-    let kana = feature.split(',').nth(UNIDIC_SURFACE_KANA_FIELD)?.trim();
-    (!kana.is_empty() && kana != "*" && kana.chars().all(is_japanese_kana))
-        .then(|| katakana_to_hiragana(kana))
-}
-
-fn is_japanese_kana(character: char) -> bool {
-    matches!(character, '\u{3041}'..='\u{3096}' | '\u{30a1}'..='\u{30fa}' | 'ー')
+    let kana = comma_separated_feature_field(feature, UNIDIC_SURFACE_KANA_FIELD)?;
+    (kana != "*" && is_japanese_kana_text(kana)).then(|| katakana_to_hiragana(kana))
 }
 
 fn katakana_to_hiragana(kana: &str) -> String {

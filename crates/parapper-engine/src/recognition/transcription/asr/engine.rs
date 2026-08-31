@@ -577,6 +577,8 @@ fn nemotron_35_multilingual_language_option() -> &'static str {
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::map_unwrap_or, clippy::too_many_lines)]
 
+    #[cfg(feature = "real-asr-tests")]
+    use super::{AsrEngine, SherpaOnnxAsrEngine};
     use super::{AsrTranscript, SherpaOnnxNemoCtcModelFiles, SherpaOnnxTransducerModelFiles};
     use crate::config::{AsrModel, AsrPrecision};
 
@@ -749,12 +751,10 @@ mod tests {
         }
 
         let models_root = models_root();
-        let nemotron_dir = models_root.join(crate::model::catalog::asr_model_dir_name(
-            AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8,
-        ));
-        let parakeet_dir = models_root.join(crate::model::catalog::asr_model_dir_name(
-            AsrModel::NemoParakeetTdtCtc0_6BJa35000Int8,
-        ));
+        let nemotron_dir = models_root
+            .join(crate::model::asr_model_dir_name(AsrModel::Nemotron3_5AsrStreaming0_6B160MsInt8));
+        let parakeet_dir = models_root
+            .join(crate::model::asr_model_dir_name(AsrModel::NemoParakeetTdtCtc0_6BJa35000Int8));
         let wav_path = std::env::var_os("PARAPPER_ASR_RTF_WAV")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| nemotron_dir.join("test_wavs").join("ja.wav"));

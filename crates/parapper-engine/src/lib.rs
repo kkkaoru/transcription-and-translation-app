@@ -70,15 +70,22 @@ pub enum CaptionUpdateMode {
 pub enum EngineEvent {
     Caption {
         turn_id: String,
+        turn_session_id: u64,
+        logical_turn_id: u64,
         text: String,
         azookey_input_text: Option<String>,
         is_final: bool,
         update_mode: CaptionUpdateMode,
         elapsed_millis: u128,
+        speech_to_first_partial_millis: Option<u64>,
+        speech_to_final_millis: Option<u64>,
     },
     PartialWindow {
         turn_id: String,
+        turn_session_id: u64,
+        logical_turn_id: u64,
         text: String,
+        starts_turn: bool,
     },
 }
 
