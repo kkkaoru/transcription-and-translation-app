@@ -1,4 +1,5 @@
 // Runs with Bun in the Cloudflare Workers runtime.
+import { releaseRustTracker, requestRustTracker } from "./container-backend";
 import type { EcapaPattern } from "./language-api";
 
 const METHOD_PREFIX: string = "/api/language/workers-ai-nova-3/";
@@ -6,6 +7,7 @@ const SESSION_HEADER: string = "x-kotoba-session-id";
 const SAMPLE_RATE: number = 16_000;
 const MAXIMUM_BYTES: number = SAMPLE_RATE * 30 * Float32Array.BYTES_PER_ELEMENT;
 const METHOD_MODEL = "@cf/deepgram/nova-3";
+const NOVA_HTTP_USD_PER_AUDIO_MINUTE: number = 0.0052;
 
 interface WorkersAiEnvironment {
   AI: {
@@ -19,6 +21,7 @@ interface WorkersAiEnvironment {
       },
     ): Promise<unknown>;
   };
+  SPEECHBRAIN_ECAPA_BASIC: Env["SPEECHBRAIN_ECAPA_BASIC"];
 }
 
 interface NovaDetection {
@@ -110,10 +113,26 @@ export const handleWorkersAiLanguageRequest = async (
     );
   }
   if (operation === "health" || operation === "warmup") {
-    return Response.json({ ok: true, model: METHOD_MODEL, provider: "workers-ai" });
+    const tracker = await requestRustTracker({
+      env,
+      sessionId,
+      operation: "health",
+    });
+    if (!tracker.ok) return tracker;
+    await tracker.body?.cancel();
+    return Response.json({
+      ok: true,
+      model: METHOD_MODEL,
+      provider: "workers-ai",
+      tracker: "rust-online-hsmm-sprt-hysteresis",
+    });
+  }
+  if (operation === "reset") {
+    return requestRustTracker({ env, sessionId, operation: "reset" });
   }
   if (operation === "release") {
-    return Response.json({ ok: true, state: "stateless", idleTimeout: null });
+    await releaseRustTracker(env, sessionId);
+    return Response.json({ ok: true, state: "destroyed", idleTimeout: "30s" });
   }
   if (operation !== "infer" || request.method !== "POST") {
     return Response.json({ error: "Unknown Workers AI operation" }, { status: 404 });
@@ -143,25 +162,35 @@ export const handleWorkersAiLanguageRequest = async (
     return Response.json({ error: message }, { status: 502 });
   }
   const detection: NovaDetection = parseNovaLanguage(result);
-  const probability = { language: detection.language, probability: detection.confidence };
-  const atMs: number = timestampFromUrl(url);
+  const speechSeconds: number = body.byteLength / Float32Array.BYTES_PER_ELEMENT / SAMPLE_RATE;
+  const providerInferenceMs: number = performance.now() - startedAt;
+  const trackerResponse: Response = await requestRustTracker({
+    env,
+    sessionId,
+    operation: "track",
+    body: JSON.stringify({
+      at_ms: timestampFromUrl(url),
+      pattern: patternFromUrl(url),
+      raw_languages: [{ language: detection.language, probability: detection.confidence }],
+      quality: detection.confidence,
+      speech_seconds: speechSeconds,
+      inference_ms: providerInferenceMs,
+      model: METHOD_MODEL,
+    }),
+  });
+  if (!trackerResponse.ok) return trackerResponse;
+  const tracked: unknown = await trackerResponse.json();
+  if (!isRecord(tracked)) {
+    return Response.json({ error: "Rust tracker returned an invalid response" }, { status: 502 });
+  }
   return Response.json({
-    session_id: sessionId,
-    stable_language: detection.language,
-    stable_confidence: detection.confidence,
-    raw_languages: [probability],
-    hsmm: { duration_ticks: 0, transition_hazard: 0, posterior: [probability] },
-    sprt: { candidate_language: null, llr: 0, accept_llr: 0, reject_llr: 0 },
-    hysteresis: {
-      stable_posterior: detection.confidence,
-      enter_posterior: 0,
-      retain_posterior: 0,
-    },
-    quality: detection.confidence,
-    speech_seconds: body.byteLength / Float32Array.BYTES_PER_ELEMENT / SAMPLE_RATE,
+    ...tracked,
     inference_ms: performance.now() - startedAt,
-    model: METHOD_MODEL,
-    pattern: patternFromUrl(url),
-    observed_at_ms: atMs,
+    provider_billing: {
+      audio_seconds: speechSeconds,
+      usd_per_audio_minute: NOVA_HTTP_USD_PER_AUDIO_MINUTE,
+      estimated_usd: (speechSeconds / 60) * NOVA_HTTP_USD_PER_AUDIO_MINUTE,
+      transport: "regular-http",
+    },
   });
 };

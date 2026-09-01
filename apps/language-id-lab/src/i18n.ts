@@ -11,6 +11,7 @@ export interface UiMessages {
   heroTitle: string;
   heroDescription: string;
   stableHeading: string;
+  resetInference: string;
   waitingForSpeech: string;
   listening: string;
   processing: string;
@@ -62,6 +63,11 @@ export interface UiMessages {
   stablePosterior: string;
   noCandidate: string;
   containerCost: string;
+  workersAiCost: string;
+  workersAiSessionEstimate: string;
+  workersAiRate: string;
+  rustTrackerCost: string;
+  combinedSessionEstimate: string;
   actualUsage: string;
   grossResourceCost: string;
   estimatedOverage: string;
@@ -77,7 +83,7 @@ export interface UiMessages {
   voiceTestTitle: string;
   voiceTestDetail: string;
   sourceText: string;
-  sourceLanguage: string;
+  detectedSourceLanguage: string;
   targetLanguage: string;
   generateVoice: string;
   generatingVoice: string;
@@ -105,6 +111,7 @@ const ENGLISH_MESSAGES: UiMessages = {
   heroDescription:
     "Your voiced segments are sent to a private Cloudflare Container. SpeechBrain ECAPA identifies across 107 languages, while Rust HSMM, SPRT, and hysteresis stabilize the result.",
   stableHeading: "Current stable language",
+  resetInference: "Reset language state",
   waitingForSpeech: "Waiting for speech",
   listening: "Listening",
   processing: "Running inference",
@@ -156,6 +163,11 @@ const ENGLISH_MESSAGES: UiMessages = {
   stablePosterior: "Stable posterior",
   noCandidate: "None",
   containerCost: "Cloudflare Container cost",
+  workersAiCost: "Cloudflare Workers AI cost",
+  workersAiSessionEstimate: "Current Workers AI audio estimate",
+  workersAiRate: "Nova-3 regular HTTP rate",
+  rustTrackerCost: "Rust tracker Container estimate",
+  combinedSessionEstimate: "Combined current session estimate",
   actualUsage: "Account month-to-date usage estimate",
   grossResourceCost: "Gross resource cost",
   estimatedOverage: "Estimated overage after included usage",
@@ -172,7 +184,7 @@ const ENGLISH_MESSAGES: UiMessages = {
   voiceTestDetail:
     "Translate with Workers AI, synthesize with Fish Audio, play the result, then identify it with the selected method.",
   sourceText: "Text to speak",
-  sourceLanguage: "Text language",
+  detectedSourceLanguage: "Detected text language",
   targetLanguage: "Voice language",
   generateVoice: "Translate and synthesize",
   generatingVoice: "Generating…",
@@ -185,7 +197,7 @@ const ENGLISH_MESSAGES: UiMessages = {
   realtimeDiagramDetail:
     "D3 renders raw evidence, the HSMM state posterior, and thresholds after every voiced segment.",
   providerDiagnostics:
-    "Workers AI returns provider language detection without the Rust state tracker.",
+    "Workers AI evidence is stabilized by the Rust HSMM, two-sided SPRT, and hysteresis tracker.",
   seconds: (value) => `${value} s`,
   milliseconds: (value) => `${value} ms`,
   dollars: (value) => `$${value}`,
@@ -202,6 +214,7 @@ const JAPANESE_MESSAGES: UiMessages = {
   heroDescription:
     "有声区間をprivate Cloudflare Containerへ送信します。SpeechBrain ECAPAが107言語を識別し、RustのHSMM・SPRT・Hysteresisが結果を安定化します。",
   stableHeading: "現在の安定言語",
+  resetInference: "言語認識の状態を初期化",
   waitingForSpeech: "発話待ち",
   listening: "入力中",
   processing: "推論中",
@@ -253,6 +266,11 @@ const JAPANESE_MESSAGES: UiMessages = {
   stablePosterior: "安定言語の事後確率",
   noCandidate: "なし",
   containerCost: "Cloudflare Container費用",
+  workersAiCost: "Cloudflare Workers AI費用",
+  workersAiSessionEstimate: "現在のWorkers AI音声見積",
+  workersAiRate: "Nova-3 通常HTTP単価",
+  rustTrackerCost: "Rust tracker Container見積",
+  combinedSessionEstimate: "現在セッションの合計見積",
   actualUsage: "アカウント月初来の利用見積",
   grossResourceCost: "リソース総額",
   estimatedOverage: "無料枠適用後の超過見積",
@@ -269,7 +287,7 @@ const JAPANESE_MESSAGES: UiMessages = {
   voiceTestDetail:
     "Workers AIで翻訳し、Fish Audioで音声を合成・再生した後、選択中の方法で言語を識別します。",
   sourceText: "読み上げるテキスト",
-  sourceLanguage: "テキストの言語",
+  detectedSourceLanguage: "自動判別したテキスト言語",
   targetLanguage: "合成音声の言語",
   generateVoice: "翻訳して音声を生成",
   generatingVoice: "生成中…",
@@ -280,7 +298,7 @@ const JAPANESE_MESSAGES: UiMessages = {
   detectedLanguage: "識別結果",
   realtimeDiagram: "リアルタイム判定の仕組み",
   realtimeDiagramDetail: "有声区間ごとに、生の証拠・HSMM状態事後確率・判定閾値をD3で描画します。",
-  providerDiagnostics: "Workers AIはRust状態trackerを介さず、providerの言語検出結果を返します。",
+  providerDiagnostics: "Workers AIの証拠をRustのHSMM・両側SPRT・Hysteresis trackerで安定化します。",
   seconds: (value) => `${value}秒`,
   milliseconds: (value) => `${value} ms`,
   dollars: (value) => `$${value}`,

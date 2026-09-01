@@ -8,16 +8,16 @@ TanStack Start UI with private Cloudflare Containers and Workers AI for realtime
 - The input-level meter uses the live microphone waveform; the speech meter uses Silero probability.
 - Select one method: SpeechBrain ECAPA or NVIDIA LangID AmberNet in an independent Basic/Standard Container, or Cloudflare Workers AI Deepgram Nova-3.
 - Container methods return probabilities across all 107 model languages. Rust `language-harness-core` owns their Online HSMM, two-sided SPRT, and hysteresis state; the UI only renders returned diagnostics.
-- Workers AI is stateless and returns Nova-3's provider language detection without duplicating the Rust tracker in TypeScript.
-- **Per utterance** classifies each VAD segment independently. **Rolling 6 s context** retains voiced context across short segments for Container methods.
-- Stopping the microphone explicitly destroys the selected Container. Idle instances are destroyed after 30 seconds.
+- Nova-3 supplies provider language evidence to the same Rust Online HSMM, two-sided SPRT, and hysteresis implementation through a private Basic tracker Container; TypeScript does not duplicate the state machine.
+- **Per utterance** classifies each VAD segment independently. **Rolling 6 s context** retains voiced context across short segments for acoustic Container methods while every method retains language-state evidence in Rust.
+- The reset action removes only the active session's Rust inference state. Stopping the microphone explicitly destroys the selected acoustic or tracker Container. Idle instances are destroyed after 30 seconds.
 - A D3.js timeline renders live raw evidence, stable posterior, and Rust enter/retain thresholds.
 
 The interface is localized in Japanese and English. Language inference is not restricted to those UI locales.
 
 ## Translation and synthesized-voice check
 
-The verification panel translates arbitrary text with Workers AI `@cf/meta/m2m100-1.2b`, synthesizes 16 kHz WAV with Fish Audio `s2.1-pro-free`, plays it, and submits that exact audio to the selected identification method. Configure Fish Audio only as a Worker secret:
+The verification panel automatically identifies arbitrary input text with Workers AI `@cf/meta/llama-3.2-1b-instruct`, translates it with `@cf/meta/m2m100-1.2b`, synthesizes 16 kHz WAV with Fish Audio `s2.1-pro-free`, plays it, and automatically submits that exact audio to the selected identification method. Only the synthesized target language is selected manually. Configure Fish Audio only as a Worker secret:
 
 ```sh
 cd apps/language-id-lab
@@ -36,6 +36,8 @@ wrangler secret put CLOUDFLARE_ANALYTICS_TOKEN
 ```
 
 Without that secret, the UI states that live usage is unavailable while still showing published hourly rates. The usage figure is not an invoice: Workers, Durable Objects, logs, regional egress, negotiated pricing, and reporting delay can change the final charge.
+
+Nova-3 regular HTTP inference is estimated from actual submitted audio duration at the published `$0.0052 / audio minute`. The UI reports this provider estimate separately from the Basic Rust tracker Container time range and also displays their combined session range.
 
 Hourly rows distinguish provisioned memory+disk cost from the upper bound at 100% allocated CPU. Month-to-date overage applies the published Workers Paid Container inclusions before calculating the estimate.
 

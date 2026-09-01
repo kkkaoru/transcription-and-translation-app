@@ -201,6 +201,10 @@ button {
   padding: 27px;
 }
 
+.reset-inference-button {
+  margin-top: 16px;
+}
+
 .stable-header,
 .latest-strip span,
 .diagnostic-metric > span,

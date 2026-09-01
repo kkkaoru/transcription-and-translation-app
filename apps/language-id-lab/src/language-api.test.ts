@@ -4,6 +4,7 @@ import {
   inferLanguage,
   parseLanguageInference,
   releaseLanguageContainer,
+  resetLanguageInference,
   warmLanguageContainer,
 } from "./language-api";
 
@@ -57,7 +58,30 @@ it("validates a multilingual Rust inference response", () => {
     inferenceMs: 37.2,
     model: "speechbrain/lang-id-voxlingua107-ecapa",
     pattern: "rolling-context",
+    providerBilling: null,
   });
+});
+
+it("parses and validates Workers AI provider billing", () => {
+  expect(
+    parseLanguageInference({
+      ...RESPONSE,
+      provider_billing: {
+        audio_seconds: 2.4,
+        usd_per_audio_minute: 0.0052,
+        estimated_usd: 0.000_208,
+        transport: "regular-http",
+      },
+    }).providerBilling,
+  ).toStrictEqual({
+    audioSeconds: 2.4,
+    usdPerAudioMinute: 0.0052,
+    estimatedUsd: 0.000_208,
+    transport: "regular-http",
+  });
+  expect(() => parseLanguageInference({ ...RESPONSE, provider_billing: null })).toThrow(
+    "Provider billing is invalid",
+  );
 });
 
 it("rejects malformed inference diagnostics", () => {
@@ -169,10 +193,12 @@ it("warms and releases a session, and propagates lifecycle errors", async () => 
     }),
   );
   await warmLanguageContainer({ method: "speechbrain-ecapa-basic", sessionId: "session-1" });
+  await resetLanguageInference({ method: "workers-ai-nova-3", sessionId: "session-1" });
   await releaseLanguageContainer({ method: "nvidia-ambernet-standard", sessionId: "session-1" });
   expect(requests[0].input).toBe("/api/language/speechbrain-ecapa-basic/warmup");
-  expect(requests[1].input).toBe("/api/language/nvidia-ambernet-standard/release");
-  expect(requests[1].init?.keepalive).toBe(true);
+  expect(requests[1].input).toBe("/api/language/workers-ai-nova-3/reset");
+  expect(requests[2].input).toBe("/api/language/nvidia-ambernet-standard/release");
+  expect(requests[2].init?.keepalive).toBe(true);
 
   vi.stubGlobal(
     "fetch",
@@ -180,6 +206,9 @@ it("warms and releases a session, and propagates lifecycle errors", async () => 
   );
   await expect(
     warmLanguageContainer({ method: "workers-ai-nova-3", sessionId: "session-1" }),
+  ).rejects.toThrow("unavailable");
+  await expect(
+    resetLanguageInference({ method: "workers-ai-nova-3", sessionId: "session-1" }),
   ).rejects.toThrow("unavailable");
   await expect(
     releaseLanguageContainer({ method: "nvidia-ambernet-standard", sessionId: "session-1" }),

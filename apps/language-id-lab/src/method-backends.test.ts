@@ -1,5 +1,45 @@
 // Runs with Bun during test.
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+const containerMocks = vi.hoisted(() => ({
+  destroy: vi.fn(() => Promise.resolve()),
+  fetch: vi.fn((request: Request) => {
+    const pathname: string = new URL(request.url).pathname;
+    if (pathname === "/health") {
+      return Promise.resolve(Response.json({ ok: true }));
+    }
+    if (pathname === "/reset") {
+      return Promise.resolve(Response.json({ ok: true, state: "reset" }));
+    }
+    return Promise.resolve(
+      Response.json({
+        session_id: "test-session",
+        stable_language: "fr",
+        stable_confidence: 0.88,
+        raw_languages: [{ language: "fr", probability: 0.91 }],
+        hsmm: {
+          duration_ticks: 2,
+          transition_hazard: 0.1,
+          posterior: [{ language: "fr", probability: 0.88 }],
+        },
+        sprt: { candidate_language: null, llr: 1.2, accept_llr: 3, reject_llr: -1.5 },
+        hysteresis: { stable_posterior: 0.88, enter_posterior: 0.72, retain_posterior: 0.42 },
+        quality: 0.91,
+        speech_seconds: 0.00025,
+        inference_ms: 12,
+        model: "@cf/deepgram/nova-3",
+        pattern: "utterance",
+      }),
+    );
+  }),
+  startAndWaitForPorts: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("@cloudflare/containers", () => ({
+  Container: class {},
+  getContainer: vi.fn(() => containerMocks),
+}));
+
 import {
   INFERENCE_METHODS,
   inferenceMethod,
@@ -9,11 +49,35 @@ import {
 import { handleVoiceTestRequest, parseVoiceTestRequest } from "./voice-test-backend";
 import { handleWorkersAiLanguageRequest, parseNovaLanguage } from "./workers-ai-language";
 
+const trackerNamespace = {
+  newUniqueId: (): never => {
+    throw new Error("not used");
+  },
+  idFromName: (): never => {
+    throw new Error("not used");
+  },
+  idFromString: (): never => {
+    throw new Error("not used");
+  },
+  get: (): never => {
+    throw new Error("not used");
+  },
+  jurisdiction: (): never => {
+    throw new Error("not used");
+  },
+} satisfies Env["SPEECHBRAIN_ECAPA_BASIC"];
+
 const sessionRequest = (path: string, init: RequestInit = {}): Request =>
   new Request(`https://lab.test${path}`, {
     ...init,
     headers: { "x-kotoba-session-id": "test-session", ...init.headers },
   });
+
+beforeEach(() => {
+  vi.stubGlobal("scheduler", {
+    wait: vi.fn(() => new Promise<never>(() => {})),
+  });
+});
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -38,6 +102,23 @@ it("defensively parses Nova language detection responses", () => {
     }),
   ).toStrictEqual({ language: "en", confidence: 0.8 });
   expect(parseNovaLanguage(null)).toStrictEqual({ language: "unknown", confidence: 0 });
+  expect(parseNovaLanguage({ results: null })).toStrictEqual({
+    language: "unknown",
+    confidence: 0,
+  });
+  expect(parseNovaLanguage({ results: { channels: null } })).toStrictEqual({
+    language: "unknown",
+    confidence: 0,
+  });
+  expect(parseNovaLanguage({ results: { channels: [null] } })).toStrictEqual({
+    language: "unknown",
+    confidence: 0,
+  });
+  expect(
+    parseNovaLanguage({
+      results: { channels: [{ detected_language: "en", language_confidence: "high" }] },
+    }),
+  ).toStrictEqual({ language: "en", confidence: 0 });
   expect(parseNovaLanguage({ results: { channels: [{}] } })).toStrictEqual({
     language: "unknown",
     confidence: 0,
@@ -51,13 +132,13 @@ it("defensively parses Nova language detection responses", () => {
   });
 });
 
-it("runs Workers AI language detection and exposes stateless lifecycle operations", async () => {
+it("runs Workers AI language detection with Rust-tracked lifecycle operations", async () => {
   const run = vi.fn(() =>
     Promise.resolve({
       results: { channels: [{ detected_language: "fr", language_confidence: 0.91 }] },
     }),
   );
-  const environment = { AI: { run } };
+  const environment = { AI: { run }, SPEECHBRAIN_ECAPA_BASIC: trackerNamespace };
   const samples = new Float32Array([0.1, -0.1, 0.2, -0.2]);
   const response = await handleWorkersAiLanguageRequest(
     sessionRequest("/api/language/workers-ai-nova-3/infer?at_ms=42&pattern=utterance", {
@@ -69,8 +150,13 @@ it("runs Workers AI language detection and exposes stateless lifecycle operation
   expect(response?.status).toBe(200);
   await expect(response?.json()).resolves.toMatchObject({
     stable_language: "fr",
-    stable_confidence: 0.91,
+    stable_confidence: 0.88,
     model: "@cf/deepgram/nova-3",
+    provider_billing: {
+      audio_seconds: 0.00025,
+      usd_per_audio_minute: 0.0052,
+      transport: "regular-http",
+    },
     pattern: "utterance",
   });
   expect(run).toHaveBeenCalledOnce();
@@ -80,14 +166,35 @@ it("runs Workers AI language detection and exposes stateless lifecycle operation
     environment,
   );
   await expect(health?.json()).resolves.toMatchObject({ ok: true, provider: "workers-ai" });
+  const warmup = await handleWorkersAiLanguageRequest(
+    sessionRequest("/api/language/workers-ai-nova-3/warmup"),
+    environment,
+  );
+  await expect(warmup?.json()).resolves.toMatchObject({ ok: true, provider: "workers-ai" });
+  const reset = await handleWorkersAiLanguageRequest(
+    sessionRequest("/api/language/workers-ai-nova-3/reset"),
+    environment,
+  );
+  await expect(reset?.json()).resolves.toMatchObject({ state: "reset" });
   const release = await handleWorkersAiLanguageRequest(
     sessionRequest("/api/language/workers-ai-nova-3/release"),
     environment,
   );
-  await expect(release?.json()).resolves.toMatchObject({ state: "stateless" });
+  await expect(release?.json()).resolves.toMatchObject({ state: "destroyed" });
   expect(
     await handleWorkersAiLanguageRequest(new Request("https://lab.test/not-language"), environment),
   ).toBeUndefined();
+});
+
+it("propagates Rust tracker health failures", async () => {
+  containerMocks.fetch.mockImplementationOnce(() =>
+    Promise.resolve(Response.json({ error: "invalid tracker session" }, { status: 400 })),
+  );
+  const response = await handleWorkersAiLanguageRequest(
+    sessionRequest("/api/language/workers-ai-nova-3/health"),
+    { AI: { run: vi.fn(() => Promise.resolve({})) }, SPEECHBRAIN_ECAPA_BASIC: trackerNamespace },
+  );
+  expect(response?.status).toBe(400);
 });
 
 it("surfaces Workers AI provider failures as structured responses", async () => {
@@ -96,19 +203,46 @@ it("surfaces Workers AI provider failures as structured responses", async () => 
       method: "POST",
       body: new Float32Array([0.1, -0.1]).buffer,
     }),
-    { AI: { run: vi.fn(() => Promise.reject(new Error("provider unavailable"))) } },
+    {
+      AI: { run: vi.fn(() => Promise.reject(new Error("provider unavailable"))) },
+      SPEECHBRAIN_ECAPA_BASIC: trackerNamespace,
+    },
   );
   expect(response?.status).toBe(502);
   await expect(response?.json()).resolves.toMatchObject({ error: "provider unavailable" });
+
+  const nonErrorResponse = await handleWorkersAiLanguageRequest(
+    sessionRequest("/api/language/workers-ai-nova-3/infer", {
+      method: "POST",
+      body: new Float32Array([0.1, -0.1]).buffer,
+    }),
+    {
+      AI: { run: vi.fn(() => Promise.reject("offline")) },
+      SPEECHBRAIN_ECAPA_BASIC: trackerNamespace,
+    },
+  );
+  await expect(nonErrorResponse?.json()).resolves.toMatchObject({
+    error: "Workers AI request failed",
+  });
 });
 
 it("rejects invalid Workers AI audio and session identifiers", async () => {
-  const environment = { AI: { run: vi.fn(() => Promise.resolve({})) } };
+  const environment = {
+    AI: { run: vi.fn(() => Promise.resolve({})) },
+    SPEECHBRAIN_ECAPA_BASIC: trackerNamespace,
+  };
   const missingSession = await handleWorkersAiLanguageRequest(
     new Request("https://lab.test/api/language/workers-ai-nova-3/infer"),
     environment,
   );
   expect(missingSession?.status).toBe(400);
+  const invalidSession = await handleWorkersAiLanguageRequest(
+    new Request("https://lab.test/api/language/workers-ai-nova-3/infer", {
+      headers: { "x-kotoba-session-id": "contains spaces" },
+    }),
+    environment,
+  );
+  expect(invalidSession?.status).toBe(400);
   const invalidAudio = await handleWorkersAiLanguageRequest(
     sessionRequest("/api/language/workers-ai-nova-3/infer", {
       method: "POST",
@@ -138,7 +272,7 @@ it("handles voice API routing and invalid request payloads", async () => {
     new Request("https://lab.test/api/voice-test", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "", sourceLanguage: "en", targetLanguage: "ja" }),
+      body: JSON.stringify({ text: "", targetLanguage: "ja" }),
     }),
     environment,
   );
@@ -146,23 +280,30 @@ it("handles voice API routing and invalid request payloads", async () => {
 });
 
 it("validates voice test text and language codes", () => {
-  expect(
-    parseVoiceTestRequest({ text: " hello ", sourceLanguage: "en", targetLanguage: "ja" }),
-  ).toStrictEqual({ text: "hello", sourceLanguage: "en", targetLanguage: "ja" });
+  expect(parseVoiceTestRequest({ text: " hello ", targetLanguage: "ja" })).toStrictEqual({
+    text: "hello",
+    targetLanguage: "ja",
+  });
   expect(() => parseVoiceTestRequest(null)).toThrow("must be an object");
-  expect(() =>
-    parseVoiceTestRequest({ text: "", sourceLanguage: "en", targetLanguage: "ja" }),
-  ).toThrow("between 1 and 500");
-  expect(() =>
-    parseVoiceTestRequest({ text: "hi", sourceLanguage: "english", targetLanguage: "ja" }),
-  ).toThrow("Source language");
-  expect(() =>
-    parseVoiceTestRequest({ text: "hi", sourceLanguage: "en", targetLanguage: "japanese" }),
-  ).toThrow("Target language");
+  expect(() => parseVoiceTestRequest({ text: "", targetLanguage: "ja" })).toThrow(
+    "between 1 and 500",
+  );
+  expect(() => parseVoiceTestRequest({ text: "hi", targetLanguage: "japanese" })).toThrow(
+    "Target language",
+  );
+  expect(() => parseVoiceTestRequest({ text: "hi", targetLanguage: null })).toThrow(
+    "Target language",
+  );
 });
 
 it("translates text and returns Fish Audio bytes without exposing its secret", async () => {
-  const translate = vi.fn(() => Promise.resolve({ translated_text: "こんにちは" }));
+  const translate = vi.fn((model: string) =>
+    Promise.resolve(
+      model === "@cf/meta/llama-3.2-1b-instruct"
+        ? { response: "en" }
+        : { translated_text: "こんにちは" },
+    ),
+  );
   vi.stubGlobal(
     "fetch",
     vi.fn(() =>
@@ -178,21 +319,28 @@ it("translates text and returns Fish Audio bytes without exposing its secret", a
     new Request("https://lab.test/api/voice-test", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "hello", sourceLanguage: "en", targetLanguage: "ja" }),
+      body: JSON.stringify({ text: "hello", targetLanguage: "ja" }),
     }),
     { AI: { run: translate }, FISH_AUDIO_API_KEY: "secret" },
   );
   expect(response?.status).toBe(200);
   await expect(response?.json()).resolves.toMatchObject({
     translatedText: "こんにちは",
+    sourceLanguage: "en",
     audioBase64: "UklGRg==",
     ttsModel: "fish-audio/s2.1-pro-free",
   });
-  expect(translate).toHaveBeenCalledOnce();
+  expect(translate).toHaveBeenCalledTimes(2);
 });
 
 it("skips translation for matching languages and reports Fish or translation failures", async () => {
-  const translate = vi.fn(() => Promise.resolve({ translated_text: "unused" }));
+  const translate = vi.fn((model: string) =>
+    Promise.resolve(
+      model === "@cf/meta/llama-3.2-1b-instruct"
+        ? { response: "en" }
+        : { translated_text: "unused" },
+    ),
+  );
   vi.stubGlobal(
     "fetch",
     vi.fn(() => Promise.resolve(new Response("failed", { status: 429 }))),
@@ -201,20 +349,27 @@ it("skips translation for matching languages and reports Fish or translation fai
     new Request("https://lab.test/api/voice-test", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "hello", sourceLanguage: "en", targetLanguage: "en" }),
+      body: JSON.stringify({ text: "hello", targetLanguage: "en" }),
     }),
     { AI: { run: translate }, FISH_AUDIO_API_KEY: "secret" },
   );
   expect(sameLanguage?.status).toBe(502);
-  expect(translate).not.toHaveBeenCalled();
+  expect(translate).toHaveBeenCalledOnce();
 
   const translationFailure = await handleVoiceTestRequest(
     new Request("https://lab.test/api/voice-test", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "hello", sourceLanguage: "en", targetLanguage: "ja" }),
+      body: JSON.stringify({ text: "hello", targetLanguage: "ja" }),
     }),
-    { AI: { run: vi.fn(() => Promise.resolve({})) }, FISH_AUDIO_API_KEY: "secret" },
+    {
+      AI: {
+        run: vi.fn((model: string) =>
+          Promise.resolve(model === "@cf/meta/llama-3.2-1b-instruct" ? { response: "en" } : {}),
+        ),
+      },
+      FISH_AUDIO_API_KEY: "secret",
+    },
   );
   expect(translationFailure?.status).toBe(502);
   await expect(translationFailure?.json()).resolves.toMatchObject({
@@ -226,7 +381,7 @@ it("makes the Fish Audio secret optional at deployment but explicit at runtime",
   const request = new Request("https://lab.test/api/voice-test", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: "hello", sourceLanguage: "en", targetLanguage: "ja" }),
+    body: JSON.stringify({ text: "hello", targetLanguage: "ja" }),
   });
   const response = await handleVoiceTestRequest(request, {
     AI: { run: vi.fn(() => Promise.resolve({ translated_text: "こんにちは" })) },

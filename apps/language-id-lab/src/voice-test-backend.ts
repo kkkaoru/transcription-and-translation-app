@@ -2,6 +2,7 @@
 
 const VOICE_TEST_PATH: string = "/api/voice-test";
 const TRANSLATION_MODEL = "@cf/meta/m2m100-1.2b";
+const LANGUAGE_DETECTION_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const FISH_TTS_URL: string = "https://api.fish.audio/v1/tts";
 const MAXIMUM_TEXT_LENGTH: number = 500;
 const LANGUAGE_CODE: RegExp = /^[a-z]{2,3}$/u;
@@ -12,13 +13,16 @@ interface VoiceTestEnvironment {
       model: typeof TRANSLATION_MODEL,
       input: { text: string; source_lang: string; target_lang: string },
     ): Promise<unknown>;
+    run(
+      model: typeof LANGUAGE_DETECTION_MODEL,
+      input: { messages: readonly { role: "system" | "user"; content: string }[]; max_tokens: 8 },
+    ): Promise<unknown>;
   };
   FISH_AUDIO_API_KEY?: string;
 }
 
 interface VoiceTestRequest {
   text: string;
-  sourceLanguage: string;
   targetLanguage: string;
 }
 
@@ -28,28 +32,50 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const parseVoiceTestRequest = (value: unknown): VoiceTestRequest => {
   if (!isRecord(value)) throw new Error("Voice test request must be an object");
   const text: unknown = value.text;
-  const sourceLanguage: unknown = value.sourceLanguage;
   const targetLanguage: unknown = value.targetLanguage;
   if (typeof text !== "string" || text.trim() === "" || text.length > MAXIMUM_TEXT_LENGTH) {
     throw new Error("Text must contain between 1 and 500 characters");
   }
-  if (typeof sourceLanguage !== "string" || !LANGUAGE_CODE.test(sourceLanguage)) {
-    throw new Error("Source language is invalid");
-  }
   if (typeof targetLanguage !== "string" || !LANGUAGE_CODE.test(targetLanguage)) {
     throw new Error("Target language is invalid");
   }
-  return { text: text.trim(), sourceLanguage, targetLanguage };
+  return { text: text.trim(), targetLanguage };
+};
+
+const detectedLanguage = async (
+  input: VoiceTestRequest,
+  env: VoiceTestEnvironment,
+): Promise<string> => {
+  const result: unknown = await env.AI.run(LANGUAGE_DETECTION_MODEL, {
+    messages: [
+      {
+        role: "system",
+        content:
+          "Identify the dominant language of the user text. Return only its lowercase ISO 639-1 or ISO 639-3 code, with no punctuation or explanation.",
+      },
+      { role: "user", content: input.text },
+    ],
+    max_tokens: 8,
+  });
+  if (!isRecord(result) || typeof result.response !== "string") {
+    throw new Error("Workers AI language detection returned no result");
+  }
+  const language: string = result.response.trim().toLowerCase();
+  if (!LANGUAGE_CODE.test(language)) {
+    throw new Error("Workers AI language detection returned an invalid language code");
+  }
+  return language;
 };
 
 const translatedText = async (
   input: VoiceTestRequest,
+  sourceLanguage: string,
   env: VoiceTestEnvironment,
 ): Promise<string> => {
-  if (input.sourceLanguage === input.targetLanguage) return input.text;
+  if (sourceLanguage === input.targetLanguage) return input.text;
   const result: unknown = await env.AI.run(TRANSLATION_MODEL, {
     text: input.text,
-    source_lang: input.sourceLanguage,
+    source_lang: sourceLanguage,
     target_lang: input.targetLanguage,
   });
   if (!isRecord(result) || typeof result.translated_text !== "string") {
@@ -89,7 +115,8 @@ export const handleVoiceTestRequest = async (
     );
   }
   try {
-    const translated: string = await translatedText(input, env);
+    const sourceLanguage: string = await detectedLanguage(input, env);
+    const translated: string = await translatedText(input, sourceLanguage, env);
     const fishResponse: Response = await fetch(FISH_TTS_URL, {
       method: "POST",
       headers: {
@@ -114,6 +141,7 @@ export const handleVoiceTestRequest = async (
     const audio = new Uint8Array(await fishResponse.arrayBuffer());
     return Response.json({
       translatedText: translated,
+      sourceLanguage,
       targetLanguage: input.targetLanguage,
       audioBase64: base64(audio),
       contentType: fishResponse.headers.get("content-type") ?? "audio/wav",

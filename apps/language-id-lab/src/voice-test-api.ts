@@ -4,6 +4,7 @@ const MAXIMUM_INFERENCE_SAMPLES: number = 16_000 * 30;
 
 export interface VoiceTestResult {
   translatedText: string;
+  sourceLanguage: string;
   targetLanguage: string;
   audioBase64: string;
   contentType: string;
@@ -13,7 +14,6 @@ export interface VoiceTestResult {
 
 interface VoiceTestInput {
   text: string;
-  sourceLanguage: string;
   targetLanguage: string;
 }
 
@@ -30,6 +30,7 @@ export const parseVoiceTestResult = (value: unknown): VoiceTestResult => {
   if (!isRecord(value)) throw new Error("Voice test response is invalid");
   return {
     translatedText: requiredString(value, "translatedText"),
+    sourceLanguage: requiredString(value, "sourceLanguage"),
     targetLanguage: requiredString(value, "targetLanguage"),
     audioBase64: requiredString(value, "audioBase64"),
     contentType: requiredString(value, "contentType"),

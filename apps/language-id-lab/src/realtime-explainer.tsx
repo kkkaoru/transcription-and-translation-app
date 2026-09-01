@@ -89,11 +89,9 @@ export function RealtimeExplainer({
     };
     draw("raw", "timeline-line timeline-raw");
     draw("state", "timeline-line timeline-state");
-    if (!providerOnly) {
-      draw("enter", "timeline-line timeline-enter");
-      draw("retain", "timeline-line timeline-retain");
-    }
-  }, [history, providerOnly]);
+    draw("enter", "timeline-line timeline-enter");
+    draw("retain", "timeline-line timeline-retain");
+  }, [history]);
 
   return (
     <section className="explainer-section panel">
@@ -111,13 +109,13 @@ export function RealtimeExplainer({
         <i>→</i>
         <span>{providerOnly ? "Workers AI · Nova-3" : "ECAPA / AmberNet"}</span>
         <i>→</i>
-        <span>{providerOnly ? "Language detection" : "Rust HSMM → SPRT → Hysteresis"}</span>
+        <span>Rust HSMM → SPRT → Hysteresis</span>
       </div>
       <div className="timeline-legend">
         <span className="legend-raw">Raw top probability</span>
         <span className="legend-state">Stable posterior</span>
-        {!providerOnly ? <span className="legend-enter">Enter threshold</span> : null}
-        {!providerOnly ? <span className="legend-retain">Retain threshold</span> : null}
+        <span className="legend-enter">Enter threshold</span>
+        <span className="legend-retain">Retain threshold</span>
       </div>
       <svg
         ref={svgRef}

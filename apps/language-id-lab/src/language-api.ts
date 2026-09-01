@@ -27,6 +27,13 @@ export interface HysteresisDiagnostics {
   retainPosterior: number;
 }
 
+export interface ProviderBilling {
+  audioSeconds: number;
+  usdPerAudioMinute: number;
+  estimatedUsd: number;
+  transport: string;
+}
+
 export interface LanguageInference {
   sessionId: string;
   stableLanguage: string;
@@ -40,6 +47,7 @@ export interface LanguageInference {
   inferenceMs: number;
   model: string;
   pattern: EcapaPattern;
+  providerBilling: ProviderBilling | null;
 }
 
 interface InferOptions {
@@ -85,6 +93,17 @@ const probabilities = (value: unknown): readonly LanguageProbability[] => {
   return value.map(probability);
 };
 
+const providerBilling = (value: unknown): ProviderBilling | null => {
+  if (value === undefined) return null;
+  if (!isRecord(value)) throw new Error("Provider billing is invalid");
+  return {
+    audioSeconds: numberValue(value, "audio_seconds"),
+    usdPerAudioMinute: numberValue(value, "usd_per_audio_minute"),
+    estimatedUsd: numberValue(value, "estimated_usd"),
+    transport: stringValue(value, "transport"),
+  };
+};
+
 export const parseLanguageInference = (value: unknown): LanguageInference => {
   if (!isRecord(value) || !isRecord(value.hsmm) || !isRecord(value.sprt)) {
     throw new Error("Language inference response is invalid");
@@ -124,6 +143,7 @@ export const parseLanguageInference = (value: unknown): LanguageInference => {
     inferenceMs: numberValue(value, "inference_ms"),
     model: stringValue(value, "model"),
     pattern,
+    providerBilling: providerBilling(value.provider_billing),
   };
 };
 
@@ -162,6 +182,14 @@ export const inferLanguage = async (options: InferOptions): Promise<LanguageInfe
 
 export const warmLanguageContainer = async (options: ReleaseOptions): Promise<void> => {
   const response: Response = await fetch(`/api/language/${options.method}/warmup`, {
+    method: "POST",
+    headers: { "x-kotoba-session-id": options.sessionId },
+  });
+  if (!response.ok) throw await errorFromResponse(response);
+};
+
+export const resetLanguageInference = async (options: ReleaseOptions): Promise<void> => {
+  const response: Response = await fetch(`/api/language/${options.method}/reset`, {
     method: "POST",
     headers: { "x-kotoba-session-id": options.sessionId },
   });

@@ -12,7 +12,7 @@ export type ComputeTier = ContainerTier;
 interface ParsedLanguageRoute {
   method: ContainerInferenceMethod;
   tier: ContainerTier;
-  operation: "health" | "warmup" | "infer" | "release";
+  operation: "health" | "warmup" | "infer" | "reset" | "release";
 }
 
 interface ContainerStub {
@@ -24,7 +24,18 @@ interface ContainerStub {
 interface ContainerRequestOptions {
   request: Request;
   container: ContainerStub;
-  operation: ParsedLanguageRoute["operation"];
+  operation: ParsedLanguageRoute["operation"] | "track";
+}
+
+interface RustTrackerEnvironment {
+  SPEECHBRAIN_ECAPA_BASIC: Env["SPEECHBRAIN_ECAPA_BASIC"];
+}
+
+interface RustTrackerRequestOptions {
+  env: RustTrackerEnvironment;
+  sessionId: string;
+  operation: "health" | "track" | "reset";
+  body?: string;
 }
 
 interface RuntimeScheduler {
@@ -38,7 +49,7 @@ const CONTAINER_IDLE_TIMEOUT: string = "30s";
 const CONTAINER_REQUEST_TIMEOUT_MS: number = 90_000;
 const SESSION_ID_HEADER: string = "x-kotoba-session-id";
 const LANGUAGE_ROUTE_PATTERN: RegExp =
-  /^\/api\/language\/(speechbrain-ecapa-basic|speechbrain-ecapa-standard|nvidia-ambernet-basic|nvidia-ambernet-standard)\/(health|warmup|infer|release)$/u;
+  /^\/api\/language\/(speechbrain-ecapa-basic|speechbrain-ecapa-standard|nvidia-ambernet-basic|nvidia-ambernet-standard)\/(health|warmup|infer|reset|release)$/u;
 const SESSION_ID_PATTERN: RegExp = /^[A-Za-z0-9_-]{1,64}$/u;
 
 export abstract class LanguageIdContainer extends Container<Env> {
@@ -73,6 +84,7 @@ export const parseLanguageRoute = (pathname: string): ParsedLanguageRoute | unde
     operation !== "health" &&
     operation !== "warmup" &&
     operation !== "infer" &&
+    operation !== "reset" &&
     operation !== "release"
   ) {
     return undefined;
@@ -134,6 +146,32 @@ const proxyContainer = async (options: ContainerRequestOptions): Promise<Respons
   } finally {
     deadlineController.abort();
   }
+};
+
+export const requestRustTracker = (options: RustTrackerRequestOptions): Promise<Response> => {
+  const container: ContainerStub = getContainer(
+    options.env.SPEECHBRAIN_ECAPA_BASIC,
+    options.sessionId,
+  );
+  const headers = new Headers({ "x-kotoba-session-id": options.sessionId });
+  if (options.body !== undefined) headers.set("content-type", "application/json");
+  return proxyContainer({
+    request: new Request(`http://container/${options.operation}`, {
+      method: options.operation === "health" ? "GET" : "POST",
+      headers,
+      body: options.body,
+    }),
+    container,
+    operation: options.operation,
+  });
+};
+
+export const releaseRustTracker = async (
+  env: RustTrackerEnvironment,
+  sessionId: string,
+): Promise<void> => {
+  const container: ContainerStub = getContainer(env.SPEECHBRAIN_ECAPA_BASIC, sessionId);
+  await container.destroy();
 };
 
 export const handleLanguageContainerRequest = async (

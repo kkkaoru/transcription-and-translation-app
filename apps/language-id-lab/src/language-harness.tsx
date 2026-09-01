@@ -21,6 +21,7 @@ import {
   type LanguageInference,
   type LanguageProbability,
   releaseLanguageContainer,
+  resetLanguageInference,
   warmLanguageContainer,
 } from "./language-api";
 import { MicrophoneCapture } from "./microphone-capture";
@@ -55,6 +56,7 @@ interface CostRange {
 const LOCALE_STORAGE_KEY: string = "kotoba-language-id-lab-locale";
 const USAGE_REFRESH_MS: number = 60_000;
 const SESSION_CLOCK_MS: number = 1_000;
+const NOVA_HTTP_USD_PER_AUDIO_MINUTE: number = 0.0052;
 const VOICE_LANGUAGES: readonly string[] = [
   "en",
   "ja",
@@ -128,10 +130,27 @@ const sessionCostRange = (options: { elapsedMs: number; price: ContainerPrice })
   };
 };
 
+const containerUsageValue = (usage: ContainerUsage | null, messages: UiMessages): string =>
+  usage?.available
+    ? messages.dollars(usage.estimatedOverageUsd.toFixed(6))
+    : messages.usageUnavailable;
+
+const containerTierLabel = (tier: ComputeTier, messages: UiMessages): string =>
+  tier === "basic" ? messages.basic : messages.standard;
+
 const captureStatusLabel = (status: CaptureStatus, messages: UiMessages): string => {
   if (status === "processing") return messages.processing;
   if (status === "live") return messages.listening;
   return messages.waitingForSpeech;
+};
+
+const voiceActionLabel = (
+  status: "idle" | "generating" | "inferring",
+  messages: UiMessages,
+): string => {
+  if (status === "generating") return messages.generatingVoice;
+  if (status === "inferring") return messages.runningVoiceInference;
+  return messages.generateVoice;
 };
 
 const initialLocale = (): UiLocale =>
@@ -154,13 +173,13 @@ export function LanguageHarness() {
   const [sessionElapsedMs, setSessionElapsedMs] = useState<number>(0);
   const [history, setHistory] = useState<readonly InferenceTimelineEntry[]>([]);
   const [voiceText, setVoiceText] = useState<string>("Hello, welcome to Kotoba Beacon.");
-  const [sourceLanguage, setSourceLanguage] = useState<string>("en");
   const [targetLanguage, setTargetLanguage] = useState<string>("ja");
   const [voiceResult, setVoiceResult] = useState<VoiceTestResult | null>(null);
   const [voiceAudioUrl, setVoiceAudioUrl] = useState<string>("");
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "generating" | "inferring">("idle");
   const [voiceError, setVoiceError] = useState<string>("");
   const [voiceDetected, setVoiceDetected] = useState<LanguageInference | null>(null);
+  const [workersAiSessionCostUsd, setWorkersAiSessionCostUsd] = useState<number>(0);
   const captureRef = useRef<MicrophoneCapture | null>(null);
   const sessionIdRef = useRef<string>(crypto.randomUUID());
   const methodRef = useRef<InferenceMethod>(method);
@@ -172,6 +191,11 @@ export function LanguageHarness() {
   const tier: ComputeTier = inferenceMethod(method).tier ?? "basic";
   const price: ContainerPrice = selectedPrice(prices, tier);
   const costRange: CostRange = sessionCostRange({ elapsedMs: sessionElapsedMs, price });
+  const isWorkersAi: boolean = method === "workers-ai-nova-3";
+  const combinedCostRange: CostRange = {
+    low: workersAiSessionCostUsd + costRange.low,
+    high: workersAiSessionCostUsd + costRange.high,
+  };
 
   methodRef.current = method;
   patternRef.current = pattern;
@@ -182,6 +206,7 @@ export function LanguageHarness() {
     setHistory((current) =>
       [...current, { sequence: sequenceRef.current, inference: result }].slice(-30),
     );
+    setWorkersAiSessionCostUsd((current) => current + (result.providerBilling?.estimatedUsd ?? 0));
   }, []);
 
   const refreshDevices = useCallback(async () => {
@@ -243,6 +268,7 @@ export function LanguageHarness() {
     }
     setCaptureStatus("requesting");
     setCaptureError("");
+    setWorkersAiSessionCostUsd(0);
     const capture = new MicrophoneCapture({
       deviceId: selectedDeviceId,
       events: {
@@ -271,50 +297,76 @@ export function LanguageHarness() {
     }
   }, [handleSpeechEnd, messages, method, refreshDevices, selectedDeviceId]);
 
+  const identifyVoice = useCallback(
+    async (voice: VoiceTestResult): Promise<void> => {
+      setVoiceStatus("inferring");
+      const voiceSessionId: string = crypto.randomUUID();
+      try {
+        const samples: Float32Array = await decodeVoiceTestPcm(voice);
+        await warmLanguageContainer({ method, sessionId: voiceSessionId });
+        const result: LanguageInference = await inferLanguage({
+          samples,
+          capturedAtMs: Date.now(),
+          method,
+          pattern,
+          sessionId: voiceSessionId,
+        });
+        recordInference(result);
+        setVoiceDetected(result);
+      } finally {
+        await releaseLanguageContainer({ method, sessionId: voiceSessionId }).catch(
+          () => undefined,
+        );
+      }
+    },
+    [method, pattern, recordInference],
+  );
+
   const generateVoice = useCallback(async () => {
     setVoiceStatus("generating");
     setVoiceError("");
     try {
       const result: VoiceTestResult = await synthesizeVoiceTest({
         text: voiceText,
-        sourceLanguage,
         targetLanguage,
       });
       if (voiceAudioUrl !== "") URL.revokeObjectURL(voiceAudioUrl);
       setVoiceResult(result);
       setVoiceAudioUrl(audioUrl(result));
       setVoiceDetected(null);
+      await identifyVoice(result);
     } catch (error) {
       setVoiceError(error instanceof Error ? error.message : "Voice generation failed");
     } finally {
       setVoiceStatus("idle");
     }
-  }, [sourceLanguage, targetLanguage, voiceAudioUrl, voiceText]);
+  }, [identifyVoice, targetLanguage, voiceAudioUrl, voiceText]);
 
   const inferVoice = useCallback(async () => {
     if (voiceResult === null) return;
-    setVoiceStatus("inferring");
     setVoiceError("");
-    const voiceSessionId: string = crypto.randomUUID();
     try {
-      const samples: Float32Array = await decodeVoiceTestPcm(voiceResult);
-      await warmLanguageContainer({ method, sessionId: voiceSessionId });
-      const result: LanguageInference = await inferLanguage({
-        samples,
-        capturedAtMs: Date.now(),
-        method,
-        pattern,
-        sessionId: voiceSessionId,
-      });
-      recordInference(result);
-      setVoiceDetected(result);
+      await identifyVoice(voiceResult);
     } catch (error) {
       setVoiceError(error instanceof Error ? error.message : "Voice inference failed");
     } finally {
-      await releaseLanguageContainer({ method, sessionId: voiceSessionId }).catch(() => undefined);
       setVoiceStatus("idle");
     }
-  }, [method, pattern, recordInference, voiceResult]);
+  }, [identifyVoice, voiceResult]);
+
+  const resetInference = useCallback(async () => {
+    try {
+      await resetLanguageInference({ method, sessionId: sessionIdRef.current });
+      sequenceRef.current = 0;
+      setInference(null);
+      setHistory([]);
+      setVoiceDetected(null);
+      setWorkersAiSessionCostUsd(0);
+      setCaptureError("");
+    } catch (error) {
+      setCaptureError(error instanceof Error ? error.message : "Language state reset failed");
+    }
+  }, [method]);
 
   const selectLocale = (nextLocale: UiLocale) => {
     setLocale(nextLocale);
@@ -418,6 +470,14 @@ export function LanguageHarness() {
               <i /> {captureStatusLabel(captureStatus, messages)}
             </span>
           </div>
+          <button
+            type="button"
+            className="secondary-button reset-inference-button"
+            disabled={inference === null && history.length === 0}
+            onClick={() => void resetInference()}
+          >
+            {messages.resetInference}
+          </button>
           <div className="stable-language">
             <span className="language-badge">
               <span className="language-code">{inference?.stableLanguage ?? "—"}</span>
@@ -546,19 +606,6 @@ export function LanguageHarness() {
             />
           </label>
           <label>
-            <span>{messages.sourceLanguage}</span>
-            <select
-              value={sourceLanguage}
-              onChange={(event) => setSourceLanguage(event.currentTarget.value)}
-            >
-              {VOICE_LANGUAGES.map((language) => (
-                <option value={language} key={language}>
-                  {displayLanguageName(language, locale)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
             <span>{messages.targetLanguage}</span>
             <select
               value={targetLanguage}
@@ -577,11 +624,15 @@ export function LanguageHarness() {
             disabled={voiceStatus !== "idle" || voiceText.trim() === ""}
             onClick={() => void generateVoice()}
           >
-            {voiceStatus === "generating" ? messages.generatingVoice : messages.generateVoice}
+            {voiceActionLabel(voiceStatus, messages)}
           </button>
         </div>
         {voiceResult !== null ? (
           <div className="voice-result">
+            <p>
+              <span>{messages.detectedSourceLanguage}</span>
+              <strong>{displayLanguageName(voiceResult.sourceLanguage, locale)}</strong>
+            </p>
             <p>
               <span>{messages.translatedText}</span>
               <strong>{voiceResult.translatedText}</strong>
@@ -649,9 +700,7 @@ export function LanguageHarness() {
           locale={locale}
         />
         <PosteriorPanel
-          title={
-            isContainerInferenceMethod(method) ? messages.hsmmPosterior : messages.providerPosterior
-          }
+          title={messages.hsmmPosterior}
           values={inference?.hsmm.posterior ?? []}
           locale={locale}
         />
@@ -675,13 +724,7 @@ export function LanguageHarness() {
         {!isContainerInferenceMethod(method) ? (
           <p className="provider-diagnostic panel">{messages.providerDiagnostics}</p>
         ) : null}
-        <div
-          className={
-            isContainerInferenceMethod(method)
-              ? "diagnostic-grid"
-              : "diagnostic-grid provider-hidden"
-          }
-        >
+        <div className="diagnostic-grid">
           <article className="diagnostic-card panel">
             <h3>{messages.hsmm}</h3>
             <DiagnosticMetric
@@ -727,8 +770,10 @@ export function LanguageHarness() {
       <section className="cost-section panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">containersUsageAdaptiveGroups</p>
-            <h2>{messages.containerCost}</h2>
+            <p className="eyebrow">
+              {isWorkersAi ? "@cf/deepgram/nova-3 · regular HTTP" : "containersUsageAdaptiveGroups"}
+            </p>
+            <h2>{isWorkersAi ? messages.workersAiCost : messages.containerCost}</h2>
           </div>
           <button className="secondary-button" type="button" onClick={() => void refreshUsage()}>
             {messages.refreshUsage}
@@ -736,44 +781,59 @@ export function LanguageHarness() {
         </div>
         <div className="cost-grid">
           <div className="cost-primary">
-            <span>{messages.actualUsage}</span>
+            <span>{isWorkersAi ? messages.workersAiSessionEstimate : messages.actualUsage}</span>
             <strong>
-              {usage?.available
-                ? messages.dollars(usage.estimatedOverageUsd.toFixed(6))
-                : messages.usageUnavailable}
+              {isWorkersAi
+                ? messages.dollars(workersAiSessionCostUsd.toFixed(6))
+                : containerUsageValue(usage, messages)}
             </strong>
-            <small>{usage?.detail ?? usageError}</small>
+            <small>
+              {isWorkersAi
+                ? `${messages.dollars(NOVA_HTTP_USD_PER_AUDIO_MINUTE.toFixed(4))} / audio minute`
+                : (usage?.detail ?? usageError)}
+            </small>
           </div>
           <DiagnosticMetric
-            label={messages.grossResourceCost}
-            value={messages.dollars((usage?.grossResourceUsd ?? 0).toFixed(6))}
-            detail={`${usage?.periodStart ?? "—"} — ${usage?.periodEnd ?? "—"}`}
-          />
-          <DiagnosticMetric
-            label={messages.currentSessionRange}
+            label={isWorkersAi ? messages.workersAiRate : messages.grossResourceCost}
             value={
-              isContainerInferenceMethod(method)
-                ? `${messages.dollars(costRange.low.toFixed(6))}–${messages.dollars(costRange.high.toFixed(6))}`
-                : "—"
+              isWorkersAi
+                ? `${messages.dollars((inference?.providerBilling?.usdPerAudioMinute ?? NOVA_HTTP_USD_PER_AUDIO_MINUTE).toFixed(4))} / min`
+                : messages.dollars((usage?.grossResourceUsd ?? 0).toFixed(6))
             }
             detail={
-              isContainerInferenceMethod(method)
-                ? messages.idleShutdown
-                : messages.providerDiagnostics
+              isWorkersAi
+                ? messages.seconds((inference?.providerBilling?.audioSeconds ?? 0).toFixed(2))
+                : `${usage?.periodStart ?? "—"} — ${usage?.periodEnd ?? "—"}`
             }
+          />
+          <DiagnosticMetric
+            label={isWorkersAi ? messages.combinedSessionEstimate : messages.currentSessionRange}
+            value={
+              isWorkersAi
+                ? `${messages.dollars(combinedCostRange.low.toFixed(6))}–${messages.dollars(combinedCostRange.high.toFixed(6))}`
+                : `${messages.dollars(costRange.low.toFixed(6))}–${messages.dollars(costRange.high.toFixed(6))}`
+            }
+            detail={isWorkersAi ? messages.rustTrackerCost : messages.idleShutdown}
           />
         </div>
         <div className="price-table">
+          {isWorkersAi ? (
+            <div className="price-row active">
+              <strong>Deepgram Nova-3</strong>
+              <span>Workers AI · regular HTTP</span>
+              <span>
+                {messages.dollars(NOVA_HTTP_USD_PER_AUDIO_MINUTE.toFixed(4))} / audio minute
+              </span>
+              <span>{messages.workersAiSessionEstimate}</span>
+            </div>
+          ) : null}
           {prices.map((item) => (
-            <div
-              className={
-                isContainerInferenceMethod(method) && item.tier === tier
-                  ? "price-row active"
-                  : "price-row"
-              }
-              key={item.tier}
-            >
-              <strong>{item.tier === "basic" ? messages.basic : messages.standard}</strong>
+            <div className={item.tier === tier ? "price-row active" : "price-row"} key={item.tier}>
+              <strong>
+                {isWorkersAi && item.tier === "basic"
+                  ? messages.rustTrackerCost
+                  : containerTierLabel(item.tier, messages)}
+              </strong>
               <span>
                 {String(item.vcpu)} vCPU · {String(item.memoryGib)} GiB · {String(item.diskGb)} GB
               </span>

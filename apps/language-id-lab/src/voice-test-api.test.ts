@@ -10,6 +10,7 @@ import {
 
 const RESULT = {
   translatedText: "bonjour",
+  sourceLanguage: "en",
   targetLanguage: "fr",
   audioBase64: "UklGRg==",
   contentType: "audio/wav",
@@ -62,14 +63,14 @@ it("rejects malformed voice output", () => {
   );
 });
 
-it("posts text for translation and speech synthesis", async () => {
+it("posts text for automatic language detection, translation, and speech synthesis", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(() => Promise.resolve(Response.json(RESULT))),
   );
-  await expect(
-    synthesizeVoiceTest({ text: "hello", sourceLanguage: "en", targetLanguage: "fr" }),
-  ).resolves.toStrictEqual(RESULT);
+  await expect(synthesizeVoiceTest({ text: "hello", targetLanguage: "fr" })).resolves.toStrictEqual(
+    RESULT,
+  );
 });
 
 it("surfaces structured and fallback voice service failures", async () => {
@@ -77,14 +78,14 @@ it("surfaces structured and fallback voice service failures", async () => {
     "fetch",
     vi.fn(() => Promise.resolve(Response.json({ error: "missing key" }, { status: 503 }))),
   );
-  await expect(
-    synthesizeVoiceTest({ text: "hello", sourceLanguage: "en", targetLanguage: "fr" }),
-  ).rejects.toThrow("missing key");
+  await expect(synthesizeVoiceTest({ text: "hello", targetLanguage: "fr" })).rejects.toThrow(
+    "missing key",
+  );
   vi.stubGlobal(
     "fetch",
     vi.fn(() => Promise.resolve(new Response("bad", { status: 502 }))),
   );
-  await expect(
-    synthesizeVoiceTest({ text: "hello", sourceLanguage: "en", targetLanguage: "fr" }),
-  ).rejects.toThrow("Voice test failed: 502");
+  await expect(synthesizeVoiceTest({ text: "hello", targetLanguage: "fr" })).rejects.toThrow(
+    "Voice test failed: 502",
+  );
 });
