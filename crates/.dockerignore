@@ -1,0 +1,14 @@
+**
+!language-harness-core/
+!language-harness-core/Cargo.toml
+!language-harness-core/Cargo.lock
+!language-harness-core/src/
+!language-harness-core/src/**
+!language-harness-service/
+!language-harness-service/Cargo.toml
+!language-harness-service/Cargo.lock
+!language-harness-service/src/
+!language-harness-service/src/**
+!language-harness-service/Dockerfile
+language-harness-core/target/
+language-harness-service/target/

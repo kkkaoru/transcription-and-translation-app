@@ -57,6 +57,10 @@ jobs:
       - run: bun run sentence-boundary:typecheck
       - run: bun run azookey-compare:typecheck
       - run: bun run vad-lab:typecheck
+      - run: bun run language-id-lab:typecheck
+      - run: bun run rust:language-harness:fmt
+      - run: bun run rust:language-harness:lint
+      - run: bun run rust:language-harness:test
       - run: bun run test:coverage
       - run: bun run core:test:coverage
       - run: bun run azookey-reading:test:coverage
@@ -64,6 +68,8 @@ jobs:
       - run: bun run sentence-boundary:test:coverage
       - run: bun run parapper:test:coverage
       - run: bun run azookey-compare:test:coverage
+      - run: bun run language-id-lab:test:coverage
+      - run: bun run language-id-lab:build
       - run: bun run native:diagnostics:test:coverage
       - run: bun run gateway:build
       - run: bun run gateway:test:coverage
@@ -113,6 +119,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: false
+      - name: Cache pinned Mobile inference assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/mobile/assets/azookey/models/*/ggml-model-Q5_K_M.gguf
+            apps/mobile/assets/asr/reazonspeech-k2-v2/*.onnx
+            apps/mobile/assets/quickmt/quickmt-ja-en/model.bin
+          key: mobile-model-assets-v1-${{ runner.os }}-${{ hashFiles('scripts/prepare-mobile-model-assets.mjs') }}
+      - name: Prepare pinned Mobile inference assets
+        run: node scripts/prepare-mobile-model-assets.mjs
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
@@ -158,6 +174,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: false
+      - name: Cache pinned Mobile inference assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/mobile/assets/azookey/models/*/ggml-model-Q5_K_M.gguf
+            apps/mobile/assets/asr/reazonspeech-k2-v2/*.onnx
+            apps/mobile/assets/quickmt/quickmt-ja-en/model.bin
+          key: mobile-model-assets-v1-${{ runner.os }}-${{ hashFiles('scripts/prepare-mobile-model-assets.mjs') }}
+      - name: Prepare pinned Mobile inference assets
+        run: node scripts/prepare-mobile-model-assets.mjs
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt

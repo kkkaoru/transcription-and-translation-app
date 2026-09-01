@@ -1,0 +1,39 @@
+name: Language Harness
+
+on:
+  pull_request:
+    paths:
+      - "crates/language-harness-core/**"
+      - ".github/workflows/language-harness.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/language-harness-core/**"
+      - ".github/workflows/language-harness.yml"
+
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Format
+        run: cargo fmt --manifest-path crates/language-harness-core/Cargo.toml
+      - name: Clippy
+        run: cargo clippy --manifest-path crates/language-harness-core/Cargo.toml --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test --manifest-path crates/language-harness-core/Cargo.toml
+      - name: Coverage >= 95%
+        run: |
+          cargo llvm-cov \
+            --manifest-path crates/language-harness-core/Cargo.toml \
+            --all-targets \
+            --fail-under-lines 95 \
+            --fail-under-functions 95 \
+            --fail-under-regions 95
+      - name: Browser WASM portability
+        run: cargo build --manifest-path crates/language-harness-core/Cargo.toml --target wasm32-unknown-unknown --release
