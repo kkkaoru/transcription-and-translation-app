@@ -59,7 +59,7 @@ void main() {
         '{"version":1,"type":"azookey.request","session_id":"s",'
         '"turn_id":2,"revision":7,"text":"きょう","is_final":true}',
       );
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await _waitForSentMessages(transport, count: 2);
 
       expect(transport.sent.length, 2);
       expect(transport.sent[0], contains('"type":"azookey.result"'));
