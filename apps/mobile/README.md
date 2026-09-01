@@ -20,6 +20,24 @@ Native advertises `_kotobabeacon._tcp` with Bonjour and also provides a bounded 
 
 The desktop microphone remains the audio source. The phone sends every volatile/final ASR update to Desktop before starting Mobile AzooKey, then publishes AzooKey and translation results independently as soon as each stage completes. Desktop owns session, turn, revision, stale-result rejection, and source/translation pairing.
 
+## Mobile HTML caption host
+
+Mobile can explicitly enable a LAN Browser Source at port `1522`. The page uses
+the same HTML, JSON feed, and embedded Noto Sans JP font as Native Browser
+Source. The Mobile screen includes a 16:9 preview and controls for font weight,
+letter and line spacing, source/translation size, color and opacity, placement,
+background, shadow, and outline. The toggle and style are saved in the app
+sandbox. While paired, Native sends its authoritative visible source and
+translation to this host regardless of which of the eight processing routes is
+active. Native shows the authenticated Mobile URL and a copy button only while
+the Mobile host reports itself enabled.
+
+The Mobile listener binds `0.0.0.0` only after the user enables it and stops
+when disabled or when the app exits. Use the displayed LAN URL from OBS on the
+same trusted network. iOS Simulator falls back to `http://127.0.0.1:1522/`, so
+the complete server can be tested on the development Mac without a physical
+phone.
+
 ## Pairing
 
 1. Start Native and the mobile companion on the same trusted LAN.
@@ -54,6 +72,8 @@ make ios
 make ios-device IOS_DEVICE=<physical-iphone-udid>
 make install-ios-device IOS_DEVICE=<physical-iphone-udid>
 make run-ios-device IOS_DEVICE=<physical-iphone-udid>
+make run-ios-simulator IOS_SIMULATOR=<simulator-udid>
+make test-ios-simulator IOS_SIMULATOR=<simulator-udid>
 make build
 make clean
 
@@ -68,6 +88,8 @@ make mobile-build-ios
 make mobile-build-ios-device IOS_DEVICE=<physical-iphone-udid>
 make mobile-install-ios-device IOS_DEVICE=<physical-iphone-udid>
 make mobile-run-ios-device IOS_DEVICE=<physical-iphone-udid>
+make mobile-run-ios-simulator IOS_SIMULATOR=<simulator-udid>
+make mobile-test-ios-simulator IOS_SIMULATOR=<simulator-udid>
 make mobile-build
 make mobile-clean
 ```
@@ -94,6 +116,7 @@ make verify
 make android # Android ARM64 release only
 make ios     # iOS Simulator debug only
 make run-ios-device IOS_DEVICE=<udid> # signed physical-device release app
+make test-ios-simulator IOS_SIMULATOR=<udid> # real HTML host integration test
 make build   # Android ARM64 plus iOS Simulator
 ```
 

@@ -13,13 +13,16 @@ COVERAGE_CHECK := ../../scripts/verify-mobile-coverage.mjs
 DART_SOURCES := lib test integration_test
 ANDROID_TARGET := android-arm64
 IOS_DEVICE ?=
+IOS_SIMULATOR ?=
 IOS_DEVICE_RUSTFLAGS := -C target-feature=+fp16
 IOS_BUNDLE_ID := com.kotobabeacon.companion
 IOS_DEVICE_APP := build/ios/iphoneos/Runner.app
+IOS_SIMULATOR_APP := build/ios/iphonesimulator/Runner.app
 
 .PHONY: help doctor setup generate format format-check analyze lint \
 	rust-format rust-lint rust-test rust-build rust-verify test coverage \
 	verify android ios ios-device install-ios-device run-ios-device \
+	install-ios-simulator run-ios-simulator test-ios-simulator \
 	build-android build-ios build-ios-simulator build-ios-device build clean
 
 help:
@@ -41,6 +44,8 @@ help:
 		'  make ios-device IOS_DEVICE=<udid> Build the signed release app for a physical iPhone' \
 		'  make install-ios-device IOS_DEVICE=<udid> Build and install the release app' \
 		'  make run-ios-device IOS_DEVICE=<udid> Build, install, and launch the release app' \
+		'  make run-ios-simulator IOS_SIMULATOR=<udid> Build, install, and launch on Simulator' \
+		'  make test-ios-simulator IOS_SIMULATOR=<udid> Verify the real Mobile HTML host on Simulator' \
 		'  make build-android       Explicit alias for make android' \
 		'  make build-ios           Explicit alias for make ios' \
 		'  make build-ios-device    Explicit alias for make ios-device' \
@@ -132,6 +137,21 @@ run-ios-device: install-ios-device
 build-ios: ios
 
 build-ios-simulator: ios
+
+install-ios-simulator: ios
+	@test -n "$(IOS_SIMULATOR)" || { echo 'IOS_SIMULATOR is required; run xcrun simctl list devices available' >&2; exit 2; }
+	@xcrun simctl boot "$(IOS_SIMULATOR)" 2>/dev/null || true
+	xcrun simctl bootstatus "$(IOS_SIMULATOR)" -b
+	xcrun simctl install "$(IOS_SIMULATOR)" "$(IOS_SIMULATOR_APP)"
+
+run-ios-simulator: install-ios-simulator
+	xcrun simctl launch --terminate-running-process "$(IOS_SIMULATOR)" "$(IOS_BUNDLE_ID)"
+
+test-ios-simulator:
+	@test -n "$(IOS_SIMULATOR)" || { echo 'IOS_SIMULATOR is required; run xcrun simctl list devices available' >&2; exit 2; }
+	@xcrun simctl boot "$(IOS_SIMULATOR)" 2>/dev/null || true
+	xcrun simctl bootstatus "$(IOS_SIMULATOR)" -b
+	$(FLUTTER) test integration_test/mobile_browser_source_test.dart -d "$(IOS_SIMULATOR)"
 
 build-ios-device: ios-device
 

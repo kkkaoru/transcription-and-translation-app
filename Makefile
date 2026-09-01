@@ -12,7 +12,8 @@ RUST_COVERAGE_ARGS ?=
 	rust-parapper-engine-coverage clean-build-artifacts mobile-help mobile-setup \
 	mobile-generate mobile-check \
 	mobile-test mobile-coverage mobile-build mobile-build-android mobile-build-ios \
-	mobile-build-ios-device mobile-install-ios-device mobile-run-ios-device mobile-clean
+	mobile-build-ios-device mobile-install-ios-device mobile-run-ios-device \
+	mobile-install-ios-simulator mobile-run-ios-simulator mobile-test-ios-simulator mobile-clean
 
 help:
 	@printf '%s\n' \
@@ -40,6 +41,8 @@ help:
 		'  make mobile-build-ios-device IOS_DEVICE=<udid> Build the physical-iPhone release app' \
 		'  make mobile-install-ios-device IOS_DEVICE=<udid> Install the release app' \
 		'  make mobile-run-ios-device IOS_DEVICE=<udid> Install and launch the release app' \
+		'  make mobile-run-ios-simulator IOS_SIMULATOR=<udid> Build and launch the Simulator app' \
+		'  make mobile-test-ios-simulator IOS_SIMULATOR=<udid> Verify the Mobile HTML host on Simulator' \
 		'  make mobile-clean        Remove generated Mobile build and coverage caches'
 
 # Normal builds terminate the installed app before replacement, but never relaunch or activate it.
@@ -123,6 +126,15 @@ mobile-install-ios-device:
 
 mobile-run-ios-device:
 	$(MAKE) -C $(MOBILE_DIR) run-ios-device
+
+mobile-install-ios-simulator:
+	$(MAKE) -C $(MOBILE_DIR) install-ios-simulator
+
+mobile-run-ios-simulator:
+	$(MAKE) -C $(MOBILE_DIR) run-ios-simulator
+
+mobile-test-ios-simulator:
+	$(MAKE) -C $(MOBILE_DIR) test-ios-simulator
 
 mobile-clean:
 	$(MAKE) -C $(MOBILE_DIR) clean
