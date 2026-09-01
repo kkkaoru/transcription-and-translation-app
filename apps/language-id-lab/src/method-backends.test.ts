@@ -46,7 +46,11 @@ import {
   isContainerInferenceMethod,
   isInferenceMethod,
 } from "./inference-methods";
-import { handleVoiceTestRequest, parseVoiceTestRequest } from "./voice-test-backend";
+import {
+  handleVoiceTestRequest,
+  parseDetectedLanguage,
+  parseVoiceTestRequest,
+} from "./voice-test-backend";
 import { handleWorkersAiLanguageRequest, parseNovaLanguage } from "./workers-ai-language";
 
 const trackerNamespace = {
@@ -277,6 +281,14 @@ it("handles voice API routing and invalid request payloads", async () => {
     environment,
   );
   expect(invalid?.status).toBe(400);
+});
+
+it("parses decorated text-language detection responses without guessing names", () => {
+  expect(parseDetectedLanguage({ response: '"EN"' })).toBe("en");
+  expect(parseDetectedLanguage({ response: "```text\nja\n```" })).toBe("ja");
+  expect(parseDetectedLanguage({ response: "Language: fra (French)" })).toBe("fra");
+  expect(() => parseDetectedLanguage(null)).toThrow("returned no result");
+  expect(() => parseDetectedLanguage({ response: "English" })).toThrow("invalid language code");
 });
 
 it("validates voice test text and language codes", () => {

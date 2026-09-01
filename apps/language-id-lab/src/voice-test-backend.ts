@@ -42,30 +42,41 @@ export const parseVoiceTestRequest = (value: unknown): VoiceTestRequest => {
   return { text: text.trim(), targetLanguage };
 };
 
-const detectedLanguage = async (
-  input: VoiceTestRequest,
-  env: VoiceTestEnvironment,
-): Promise<string> => {
-  const result: unknown = await env.AI.run(LANGUAGE_DETECTION_MODEL, {
-    messages: [
-      {
-        role: "system",
-        content:
-          "Identify the dominant language of the user text. Return only its lowercase ISO 639-1 or ISO 639-3 code, with no punctuation or explanation.",
-      },
-      { role: "user", content: input.text },
-    ],
-    max_tokens: 8,
-  });
-  if (!isRecord(result) || typeof result.response !== "string") {
+export const parseDetectedLanguage = (value: unknown): string => {
+  if (!isRecord(value) || typeof value.response !== "string") {
     throw new Error("Workers AI language detection returned no result");
   }
-  const language: string = result.response.trim().toLowerCase();
-  if (!LANGUAGE_CODE.test(language)) {
+  const response: string = value.response.trim().toLowerCase();
+  const direct: RegExpMatchArray | null = response.match(
+    /^(?:```(?:json|text)?\s*)?["'`]?(?<code>[a-z]{2,3})\b/u,
+  );
+  const labeled: RegExpMatchArray | null = response.match(
+    /\b(?:language|code)(?:\s+is|\s*[:=])\s*["'`]?(?<code>[a-z]{2,3})\b/u,
+  );
+  const language: string | undefined = direct?.groups?.code ?? labeled?.groups?.code;
+  if (language === undefined || !LANGUAGE_CODE.test(language)) {
     throw new Error("Workers AI language detection returned an invalid language code");
   }
   return language;
 };
+
+const detectedLanguage = async (
+  input: VoiceTestRequest,
+  env: VoiceTestEnvironment,
+): Promise<string> =>
+  parseDetectedLanguage(
+    await env.AI.run(LANGUAGE_DETECTION_MODEL, {
+      messages: [
+        {
+          role: "system",
+          content:
+            "Identify the dominant language of the user text. Return only its lowercase ISO 639-1 or ISO 639-3 code, with no punctuation or explanation.",
+        },
+        { role: "user", content: input.text },
+      ],
+      max_tokens: 8,
+    }),
+  );
 
 const translatedText = async (
   input: VoiceTestRequest,
