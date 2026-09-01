@@ -86,7 +86,7 @@ it("uploads exact float32 PCM bytes to the selected tier", async () => {
   const result = await inferLanguage({
     samples: new Float32Array([0.25, -0.5]),
     capturedAtMs: 1000,
-    tier: "standard",
+    method: "speechbrain-ecapa-standard",
     pattern: "utterance",
     sessionId: "session-1",
   });
@@ -138,7 +138,7 @@ it("surfaces inference service errors with and without a JSON message", async ()
     inferLanguage({
       samples: new Float32Array([0.25]),
       capturedAtMs: 1,
-      tier: "basic",
+      method: "speechbrain-ecapa-basic",
       pattern: "utterance",
       sessionId: "session-1",
     }),
@@ -152,7 +152,7 @@ it("surfaces inference service errors with and without a JSON message", async ()
     inferLanguage({
       samples: new Float32Array([0.25]),
       capturedAtMs: 1,
-      tier: "basic",
+      method: "speechbrain-ecapa-basic",
       pattern: "utterance",
       sessionId: "session-1",
     }),
@@ -168,20 +168,20 @@ it("warms and releases a session, and propagates lifecycle errors", async () => 
       return Promise.resolve(new Response(null, { status: 204 }));
     }),
   );
-  await warmLanguageContainer({ tier: "basic", sessionId: "session-1" });
-  await releaseLanguageContainer({ tier: "standard", sessionId: "session-1" });
-  expect(requests[0].input).toBe("/api/language/basic/warmup");
-  expect(requests[1].input).toBe("/api/language/standard/release");
+  await warmLanguageContainer({ method: "speechbrain-ecapa-basic", sessionId: "session-1" });
+  await releaseLanguageContainer({ method: "nvidia-ambernet-standard", sessionId: "session-1" });
+  expect(requests[0].input).toBe("/api/language/speechbrain-ecapa-basic/warmup");
+  expect(requests[1].input).toBe("/api/language/nvidia-ambernet-standard/release");
   expect(requests[1].init?.keepalive).toBe(true);
 
   vi.stubGlobal(
     "fetch",
     vi.fn(() => Promise.resolve(Response.json({ error: "unavailable" }, { status: 503 }))),
   );
-  await expect(warmLanguageContainer({ tier: "basic", sessionId: "session-1" })).rejects.toThrow(
-    "unavailable",
-  );
   await expect(
-    releaseLanguageContainer({ tier: "standard", sessionId: "session-1" }),
+    warmLanguageContainer({ method: "workers-ai-nova-3", sessionId: "session-1" }),
+  ).rejects.toThrow("unavailable");
+  await expect(
+    releaseLanguageContainer({ method: "nvidia-ambernet-standard", sessionId: "session-1" }),
   ).rejects.toThrow("unavailable");
 });

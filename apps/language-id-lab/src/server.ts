@@ -2,12 +2,21 @@
 import handler from "@tanstack/react-start/server-entry";
 import {
   handleLanguageContainerRequest,
-  LanguageIdBasicContainer,
-  LanguageIdStandardContainer,
+  NvidiaAmbernetBasicContainer,
+  NvidiaAmbernetStandardContainer,
+  SpeechbrainEcapaBasicContainer,
+  SpeechbrainEcapaStandardContainer,
 } from "./container-backend";
 import { fetchContainerUsage } from "./container-usage";
+import { handleVoiceTestRequest } from "./voice-test-backend";
+import { handleWorkersAiLanguageRequest } from "./workers-ai-language";
 
-export { LanguageIdBasicContainer, LanguageIdStandardContainer };
+export {
+  NvidiaAmbernetBasicContainer,
+  NvidiaAmbernetStandardContainer,
+  SpeechbrainEcapaBasicContainer,
+  SpeechbrainEcapaStandardContainer,
+};
 
 const USAGE_PATH: string = "/api/container-usage";
 
@@ -27,6 +36,13 @@ export default {
       request,
       env,
     );
-    return containerResponse ?? handler.fetch(request);
+    if (containerResponse !== undefined) return containerResponse;
+    const workersAiResponse: Response | undefined = await handleWorkersAiLanguageRequest(
+      request,
+      env,
+    );
+    if (workersAiResponse !== undefined) return workersAiResponse;
+    const voiceTestResponse: Response | undefined = await handleVoiceTestRequest(request, env);
+    return voiceTestResponse ?? handler.fetch(request);
   },
 };

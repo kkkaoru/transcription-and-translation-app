@@ -1,5 +1,5 @@
 // Runs with Bun during build and test.
-import type { ComputeTier } from "./container-backend";
+import type { InferenceMethod } from "./inference-methods";
 
 export type EcapaPattern = "utterance" | "rolling-context";
 
@@ -45,13 +45,13 @@ export interface LanguageInference {
 interface InferOptions {
   samples: Float32Array;
   capturedAtMs: number;
-  tier: ComputeTier;
+  method: InferenceMethod;
   pattern: EcapaPattern;
   sessionId: string;
 }
 
 interface ReleaseOptions {
-  tier: ComputeTier;
+  method: InferenceMethod;
   sessionId: string;
 }
 
@@ -145,7 +145,7 @@ export const inferLanguage = async (options: InferOptions): Promise<LanguageInfe
     new Uint8Array(options.samples.buffer, options.samples.byteOffset, options.samples.byteLength),
   );
   const response: Response = await fetch(
-    `/api/language/${options.tier}/infer?${query.toString()}`,
+    `/api/language/${options.method}/infer?${query.toString()}`,
     {
       method: "POST",
       headers: {
@@ -161,7 +161,7 @@ export const inferLanguage = async (options: InferOptions): Promise<LanguageInfe
 };
 
 export const warmLanguageContainer = async (options: ReleaseOptions): Promise<void> => {
-  const response: Response = await fetch(`/api/language/${options.tier}/warmup`, {
+  const response: Response = await fetch(`/api/language/${options.method}/warmup`, {
     method: "POST",
     headers: { "x-kotoba-session-id": options.sessionId },
   });
@@ -169,7 +169,7 @@ export const warmLanguageContainer = async (options: ReleaseOptions): Promise<vo
 };
 
 export const releaseLanguageContainer = async (options: ReleaseOptions): Promise<void> => {
-  const response: Response = await fetch(`/api/language/${options.tier}/release`, {
+  const response: Response = await fetch(`/api/language/${options.method}/release`, {
     method: "POST",
     headers: { "x-kotoba-session-id": options.sessionId },
     keepalive: true,

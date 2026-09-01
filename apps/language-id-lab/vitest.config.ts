@@ -7,7 +7,16 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],
-      include: ["src/i18n.ts", "src/container-usage.ts", "src/language-api.ts", "src/usage-api.ts"],
+      include: [
+        "src/i18n.ts",
+        "src/container-usage.ts",
+        "src/language-api.ts",
+        "src/usage-api.ts",
+        "src/inference-methods.ts",
+        "src/workers-ai-language.ts",
+        "src/voice-test-backend.ts",
+        "src/voice-test-api.ts",
+      ],
       thresholds: {
         lines: 95,
         functions: 95,

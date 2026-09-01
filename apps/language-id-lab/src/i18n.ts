@@ -25,6 +25,12 @@ export interface UiMessages {
   inputLevel: string;
   speechProbability: string;
   computeTier: string;
+  inferenceMethod: string;
+  speechbrainBasic: string;
+  speechbrainStandard: string;
+  ambernetBasic: string;
+  ambernetStandard: string;
+  workersAiNova: string;
   basic: string;
   standard: string;
   ecapaPattern: string;
@@ -36,6 +42,7 @@ export interface UiMessages {
   actualAudioNotice: string;
   rawPosterior: string;
   hsmmPosterior: string;
+  providerPosterior: string;
   confidence: string;
   currentInference: string;
   speechLength: string;
@@ -67,6 +74,21 @@ export interface UiMessages {
   idleShutdown: string;
   modelCoverage: string;
   unknownLanguage: string;
+  voiceTestTitle: string;
+  voiceTestDetail: string;
+  sourceText: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  generateVoice: string;
+  generatingVoice: string;
+  translatedText: string;
+  runVoiceInference: string;
+  runningVoiceInference: string;
+  expectedLanguage: string;
+  detectedLanguage: string;
+  realtimeDiagram: string;
+  realtimeDiagramDetail: string;
+  providerDiagnostics: string;
   seconds: (value: string) => string;
   milliseconds: (value: string) => string;
   dollars: (value: string) => string;
@@ -97,6 +119,12 @@ const ENGLISH_MESSAGES: UiMessages = {
   inputLevel: "Input level",
   speechProbability: "Speech probability",
   computeTier: "Container tier",
+  inferenceMethod: "Identification method",
+  speechbrainBasic: "SpeechBrain ECAPA · Basic container",
+  speechbrainStandard: "SpeechBrain ECAPA · Standard container",
+  ambernetBasic: "NVIDIA LangID AmberNet · Basic container",
+  ambernetStandard: "NVIDIA LangID AmberNet · Standard container",
+  workersAiNova: "Cloudflare Workers AI · Deepgram Nova-3",
   basic: "Basic",
   standard: "Standard",
   ecapaPattern: "ECAPA input pattern",
@@ -106,8 +134,9 @@ const ENGLISH_MESSAGES: UiMessages = {
   rollingDetail: "Retain up to six seconds of voiced context across short segments.",
   privacyNotice: "Voiced PCM only; no transcript is produced or stored.",
   actualAudioNotice: "Results below come from your microphone, not a fixture.",
-  rawPosterior: "Raw ECAPA posterior",
+  rawPosterior: "Raw model posterior",
   hsmmPosterior: "Rust HSMM posterior",
+  providerPosterior: "Workers AI language detection",
   confidence: "confidence",
   currentInference: "Latest voiced segment",
   speechLength: "Speech length",
@@ -137,8 +166,26 @@ const ENGLISH_MESSAGES: UiMessages = {
   usageUnavailable: "Live usage is unavailable",
   refreshUsage: "Refresh usage",
   idleShutdown: "Explicit release on stop; automatic destroy after 30 s idle.",
-  modelCoverage: "SpeechBrain VoxLingua107 · 107 spoken languages",
+  modelCoverage: "Selected model",
   unknownLanguage: "Unknown",
+  voiceTestTitle: "Translation and synthetic voice check",
+  voiceTestDetail:
+    "Translate with Workers AI, synthesize with Fish Audio, play the result, then identify it with the selected method.",
+  sourceText: "Text to speak",
+  sourceLanguage: "Text language",
+  targetLanguage: "Voice language",
+  generateVoice: "Translate and synthesize",
+  generatingVoice: "Generating…",
+  translatedText: "Translated text",
+  runVoiceInference: "Identify this audio",
+  runningVoiceInference: "Identifying…",
+  expectedLanguage: "Expected",
+  detectedLanguage: "Detected",
+  realtimeDiagram: "How the live decision evolves",
+  realtimeDiagramDetail:
+    "D3 renders raw evidence, the HSMM state posterior, and thresholds after every voiced segment.",
+  providerDiagnostics:
+    "Workers AI returns provider language detection without the Rust state tracker.",
   seconds: (value) => `${value} s`,
   milliseconds: (value) => `${value} ms`,
   dollars: (value) => `$${value}`,
@@ -169,6 +216,12 @@ const JAPANESE_MESSAGES: UiMessages = {
   inputLevel: "入力レベル",
   speechProbability: "発話確率",
   computeTier: "Container種別",
+  inferenceMethod: "言語識別の方法",
+  speechbrainBasic: "SpeechBrain ECAPA · Basic container",
+  speechbrainStandard: "SpeechBrain ECAPA · Standard container",
+  ambernetBasic: "NVIDIA LangID AmberNet · Basic container",
+  ambernetStandard: "NVIDIA LangID AmberNet · Standard container",
+  workersAiNova: "Cloudflare Workers AI · Deepgram Nova-3",
   basic: "Basic",
   standard: "Standard",
   ecapaPattern: "ECAPA入力パターン",
@@ -178,8 +231,9 @@ const JAPANESE_MESSAGES: UiMessages = {
   rollingDetail: "短い発話をまたいで最大6秒の有声文脈を維持します。",
   privacyNotice: "有声PCMのみ送信し、文字起こしや音声保存は行いません。",
   actualAudioNotice: "以下はfixtureではなく、マイク入力の実推論結果です。",
-  rawPosterior: "ECAPA生事後確率",
+  rawPosterior: "モデルの生事後確率",
   hsmmPosterior: "Rust HSMM事後確率",
+  providerPosterior: "Workers AI言語検出",
   confidence: "確信度",
   currentInference: "最新の有声区間",
   speechLength: "発話長",
@@ -209,8 +263,24 @@ const JAPANESE_MESSAGES: UiMessages = {
   usageUnavailable: "実利用量を取得できません",
   refreshUsage: "利用量を更新",
   idleShutdown: "停止時に明示解放し、無操作30秒後にも自動destroyします。",
-  modelCoverage: "SpeechBrain VoxLingua107 · 音声107言語",
+  modelCoverage: "選択中のモデル",
   unknownLanguage: "不明",
+  voiceTestTitle: "翻訳・合成音声による動作確認",
+  voiceTestDetail:
+    "Workers AIで翻訳し、Fish Audioで音声を合成・再生した後、選択中の方法で言語を識別します。",
+  sourceText: "読み上げるテキスト",
+  sourceLanguage: "テキストの言語",
+  targetLanguage: "合成音声の言語",
+  generateVoice: "翻訳して音声を生成",
+  generatingVoice: "生成中…",
+  translatedText: "翻訳結果",
+  runVoiceInference: "この音声を言語識別",
+  runningVoiceInference: "識別中…",
+  expectedLanguage: "期待言語",
+  detectedLanguage: "識別結果",
+  realtimeDiagram: "リアルタイム判定の仕組み",
+  realtimeDiagramDetail: "有声区間ごとに、生の証拠・HSMM状態事後確率・判定閾値をD3で描画します。",
+  providerDiagnostics: "Workers AIはRust状態trackerを介さず、providerの言語検出結果を返します。",
   seconds: (value) => `${value}秒`,
   milliseconds: (value) => `${value} ms`,
   dollars: (value) => `$${value}`,

@@ -10,6 +10,12 @@ import {
   type UiMessages,
 } from "./i18n";
 import {
+  type InferenceMethod,
+  inferenceMethod,
+  isContainerInferenceMethod,
+  isInferenceMethod,
+} from "./inference-methods";
+import {
   type EcapaPattern,
   inferLanguage,
   type LanguageInference,
@@ -18,7 +24,14 @@ import {
   warmLanguageContainer,
 } from "./language-api";
 import { MicrophoneCapture } from "./microphone-capture";
+import { type InferenceTimelineEntry, RealtimeExplainer } from "./realtime-explainer";
 import { type ContainerPrice, type ContainerUsage, fetchContainerUsage } from "./usage-api";
+import {
+  audioUrl,
+  decodeVoiceTestPcm,
+  synthesizeVoiceTest,
+  type VoiceTestResult,
+} from "./voice-test-api";
 
 type CaptureStatus = "idle" | "requesting" | "live" | "processing" | "error";
 
@@ -42,6 +55,18 @@ interface CostRange {
 const LOCALE_STORAGE_KEY: string = "kotoba-language-id-lab-locale";
 const USAGE_REFRESH_MS: number = 60_000;
 const SESSION_CLOCK_MS: number = 1_000;
+const VOICE_LANGUAGES: readonly string[] = [
+  "en",
+  "ja",
+  "es",
+  "fr",
+  "de",
+  "ko",
+  "zh",
+  "pt",
+  "it",
+  "ru",
+];
 const FALLBACK_PRICES: readonly ContainerPrice[] = [
   {
     tier: "basic",
@@ -118,7 +143,7 @@ export function LanguageHarness() {
   const [captureError, setCaptureError] = useState<string>("");
   const [devices, setDevices] = useState<readonly MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
-  const [tier, setTier] = useState<ComputeTier>("basic");
+  const [method, setMethod] = useState<InferenceMethod>("speechbrain-ecapa-basic");
   const [pattern, setPattern] = useState<EcapaPattern>("rolling-context");
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [speechProbability, setSpeechProbability] = useState<number>(0);
@@ -127,18 +152,37 @@ export function LanguageHarness() {
   const [usageError, setUsageError] = useState<string>("");
   const [containerStartedAt, setContainerStartedAt] = useState<number | null>(null);
   const [sessionElapsedMs, setSessionElapsedMs] = useState<number>(0);
+  const [history, setHistory] = useState<readonly InferenceTimelineEntry[]>([]);
+  const [voiceText, setVoiceText] = useState<string>("Hello, welcome to Kotoba Beacon.");
+  const [sourceLanguage, setSourceLanguage] = useState<string>("en");
+  const [targetLanguage, setTargetLanguage] = useState<string>("ja");
+  const [voiceResult, setVoiceResult] = useState<VoiceTestResult | null>(null);
+  const [voiceAudioUrl, setVoiceAudioUrl] = useState<string>("");
+  const [voiceStatus, setVoiceStatus] = useState<"idle" | "generating" | "inferring">("idle");
+  const [voiceError, setVoiceError] = useState<string>("");
+  const [voiceDetected, setVoiceDetected] = useState<LanguageInference | null>(null);
   const captureRef = useRef<MicrophoneCapture | null>(null);
   const sessionIdRef = useRef<string>(crypto.randomUUID());
-  const tierRef = useRef<ComputeTier>(tier);
+  const methodRef = useRef<InferenceMethod>(method);
+  const sequenceRef = useRef<number>(0);
   const patternRef = useRef<EcapaPattern>(pattern);
   const containerActiveRef = useRef<boolean>(false);
   const messages = useMemo(() => messagesFor(locale), [locale]);
   const prices: readonly ContainerPrice[] = usage?.prices ?? FALLBACK_PRICES;
+  const tier: ComputeTier = inferenceMethod(method).tier ?? "basic";
   const price: ContainerPrice = selectedPrice(prices, tier);
   const costRange: CostRange = sessionCostRange({ elapsedMs: sessionElapsedMs, price });
 
-  tierRef.current = tier;
+  methodRef.current = method;
   patternRef.current = pattern;
+
+  const recordInference = useCallback((result: LanguageInference) => {
+    sequenceRef.current += 1;
+    setInference(result);
+    setHistory((current) =>
+      [...current, { sequence: sequenceRef.current, inference: result }].slice(-30),
+    );
+  }, []);
 
   const refreshDevices = useCallback(async () => {
     if (!navigator.mediaDevices) return;
@@ -163,7 +207,7 @@ export function LanguageHarness() {
     if (containerActiveRef.current) {
       containerActiveRef.current = false;
       await releaseLanguageContainer({
-        tier: tierRef.current,
+        method: methodRef.current,
         sessionId: sessionIdRef.current,
       }).catch((error: unknown) =>
         setCaptureError(error instanceof Error ? error.message : "Container release failed"),
@@ -180,15 +224,15 @@ export function LanguageHarness() {
       const result: LanguageInference = await inferLanguage({
         samples,
         capturedAtMs,
-        tier: tierRef.current,
+        method: methodRef.current,
         pattern: patternRef.current,
         sessionId: sessionIdRef.current,
       });
-      setInference(result);
+      recordInference(result);
       setCaptureStatus("live");
       await refreshUsage();
     },
-    [refreshUsage],
+    [recordInference, refreshUsage],
   );
 
   const startCapture = useCallback(async () => {
@@ -215,7 +259,7 @@ export function LanguageHarness() {
     try {
       await capture.start();
       captureRef.current = capture;
-      await warmLanguageContainer({ tier, sessionId: sessionIdRef.current });
+      await warmLanguageContainer({ method, sessionId: sessionIdRef.current });
       containerActiveRef.current = true;
       setContainerStartedAt(Date.now());
       setCaptureStatus("live");
@@ -225,7 +269,52 @@ export function LanguageHarness() {
       setCaptureStatus("error");
       setCaptureError(error instanceof Error ? error.message : messages.microphoneFailed);
     }
-  }, [handleSpeechEnd, messages, refreshDevices, selectedDeviceId, tier]);
+  }, [handleSpeechEnd, messages, method, refreshDevices, selectedDeviceId]);
+
+  const generateVoice = useCallback(async () => {
+    setVoiceStatus("generating");
+    setVoiceError("");
+    try {
+      const result: VoiceTestResult = await synthesizeVoiceTest({
+        text: voiceText,
+        sourceLanguage,
+        targetLanguage,
+      });
+      if (voiceAudioUrl !== "") URL.revokeObjectURL(voiceAudioUrl);
+      setVoiceResult(result);
+      setVoiceAudioUrl(audioUrl(result));
+      setVoiceDetected(null);
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : "Voice generation failed");
+    } finally {
+      setVoiceStatus("idle");
+    }
+  }, [sourceLanguage, targetLanguage, voiceAudioUrl, voiceText]);
+
+  const inferVoice = useCallback(async () => {
+    if (voiceResult === null) return;
+    setVoiceStatus("inferring");
+    setVoiceError("");
+    const voiceSessionId: string = crypto.randomUUID();
+    try {
+      const samples: Float32Array = await decodeVoiceTestPcm(voiceResult);
+      await warmLanguageContainer({ method, sessionId: voiceSessionId });
+      const result: LanguageInference = await inferLanguage({
+        samples,
+        capturedAtMs: Date.now(),
+        method,
+        pattern,
+        sessionId: voiceSessionId,
+      });
+      recordInference(result);
+      setVoiceDetected(result);
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : "Voice inference failed");
+    } finally {
+      await releaseLanguageContainer({ method, sessionId: voiceSessionId }).catch(() => undefined);
+      setVoiceStatus("idle");
+    }
+  }, [method, pattern, recordInference, voiceResult]);
 
   const selectLocale = (nextLocale: UiLocale) => {
     setLocale(nextLocale);
@@ -271,7 +360,7 @@ export function LanguageHarness() {
       if (!containerActiveRef.current) return;
       containerActiveRef.current = false;
       void releaseLanguageContainer({
-        tier: tierRef.current,
+        method: methodRef.current,
         sessionId: sessionIdRef.current,
       });
     };
@@ -295,8 +384,6 @@ export function LanguageHarness() {
           </span>
         </a>
         <div className="topbar-status">
-          <span className="edge-status">◆ {messages.edgeStatus}</span>
-          <span className="mode-pill">{messages.liveInference}</span>
           <fieldset className="language-switcher">
             <legend>{messages.localeSwitcherLabel}</legend>
             <button
@@ -323,7 +410,6 @@ export function LanguageHarness() {
         <div className="hero-copy">
           <p className="eyebrow">{messages.heroEyebrow}</p>
           <h1>{messages.heroTitle}</h1>
-          <p className="hero-description">{messages.heroDescription}</p>
         </div>
         <article className="stable-card panel">
           <div className="stable-header">
@@ -355,7 +441,7 @@ export function LanguageHarness() {
 
       <section className="capture-panel panel">
         <div className="capture-controls">
-          <label>
+          <label className="microphone-control">
             <span>{messages.microphoneInput}</span>
             <select
               value={selectedDeviceId}
@@ -370,23 +456,28 @@ export function LanguageHarness() {
               ))}
             </select>
           </label>
-          <label>
-            <span>{messages.computeTier}</span>
+          <label className="method-control">
+            <span>{messages.inferenceMethod}</span>
             <select
-              value={tier}
-              onChange={(event) =>
-                setTier(event.currentTarget.value === "standard" ? "standard" : "basic")
-              }
+              value={method}
+              onChange={(event) => {
+                const value: string = event.currentTarget.value;
+                if (isInferenceMethod(value)) setMethod(value);
+              }}
               disabled={captureStatus !== "idle" && captureStatus !== "error"}
             >
-              <option value="basic">{messages.basic}</option>
-              <option value="standard">{messages.standard}</option>
+              <option value="speechbrain-ecapa-basic">{messages.speechbrainBasic}</option>
+              <option value="speechbrain-ecapa-standard">{messages.speechbrainStandard}</option>
+              <option value="nvidia-ambernet-basic">{messages.ambernetBasic}</option>
+              <option value="nvidia-ambernet-standard">{messages.ambernetStandard}</option>
+              <option value="workers-ai-nova-3">{messages.workersAiNova}</option>
             </select>
           </label>
           <label>
             <span>{messages.ecapaPattern}</span>
             <select
               value={pattern}
+              disabled={!isContainerInferenceMethod(method)}
               onChange={(event) =>
                 setPattern(
                   event.currentTarget.value === "utterance" ? "utterance" : "rolling-context",
@@ -451,22 +542,32 @@ export function LanguageHarness() {
         </div>
         <div>
           <span>{messages.modelCoverage}</span>
-          <strong>{inference?.model ?? "speechbrain/lang-id-voxlingua107-ecapa"}</strong>
+          <strong>{inference?.model ?? inferenceMethod(method).model}</strong>
         </div>
       </section>
 
       <section className="posterior-grid">
         <PosteriorPanel
-          title={messages.rawPosterior}
+          title={`${messages.rawPosterior} · ${inference?.model ?? inferenceMethod(method).model}`}
           values={inference?.rawLanguages ?? []}
           locale={locale}
         />
         <PosteriorPanel
-          title={messages.hsmmPosterior}
+          title={
+            isContainerInferenceMethod(method) ? messages.hsmmPosterior : messages.providerPosterior
+          }
           values={inference?.hsmm.posterior ?? []}
           locale={locale}
         />
       </section>
+
+      <RealtimeExplainer
+        history={history}
+        title={messages.realtimeDiagram}
+        detail={messages.realtimeDiagramDetail}
+        providerDetail={messages.providerDiagnostics}
+        providerOnly={!isContainerInferenceMethod(method)}
+      />
 
       <section className="diagnostics-section">
         <div className="section-heading">
@@ -475,7 +576,16 @@ export function LanguageHarness() {
             <h2>{messages.diagnostics}</h2>
           </div>
         </div>
-        <div className="diagnostic-grid">
+        {!isContainerInferenceMethod(method) ? (
+          <p className="provider-diagnostic panel">{messages.providerDiagnostics}</p>
+        ) : null}
+        <div
+          className={
+            isContainerInferenceMethod(method)
+              ? "diagnostic-grid"
+              : "diagnostic-grid provider-hidden"
+          }
+        >
           <article className="diagnostic-card panel">
             <h3>{messages.hsmm}</h3>
             <DiagnosticMetric
@@ -518,6 +628,102 @@ export function LanguageHarness() {
         </div>
       </section>
 
+      <section className="voice-test-section panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Workers AI translation → Fish Audio TTS → Language ID</p>
+            <h2>{messages.voiceTestTitle}</h2>
+            <p>{messages.voiceTestDetail}</p>
+          </div>
+        </div>
+        <div className="voice-test-grid">
+          <label className="voice-text-control">
+            <span>{messages.sourceText}</span>
+            <textarea
+              value={voiceText}
+              maxLength={500}
+              rows={4}
+              onChange={(event) => setVoiceText(event.currentTarget.value)}
+            />
+          </label>
+          <label>
+            <span>{messages.sourceLanguage}</span>
+            <select
+              value={sourceLanguage}
+              onChange={(event) => setSourceLanguage(event.currentTarget.value)}
+            >
+              {VOICE_LANGUAGES.map((language) => (
+                <option value={language} key={language}>
+                  {displayLanguageName(language, locale)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>{messages.targetLanguage}</span>
+            <select
+              value={targetLanguage}
+              onChange={(event) => setTargetLanguage(event.currentTarget.value)}
+            >
+              {VOICE_LANGUAGES.map((language) => (
+                <option value={language} key={language}>
+                  {displayLanguageName(language, locale)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={voiceStatus !== "idle" || voiceText.trim() === ""}
+            onClick={() => void generateVoice()}
+          >
+            {voiceStatus === "generating" ? messages.generatingVoice : messages.generateVoice}
+          </button>
+        </div>
+        {voiceResult !== null ? (
+          <div className="voice-result">
+            <p>
+              <span>{messages.translatedText}</span>
+              <strong>{voiceResult.translatedText}</strong>
+            </p>
+            <audio controls src={voiceAudioUrl}>
+              <track
+                default
+                kind="captions"
+                label={messages.translatedText}
+                src={`data:text/vtt;charset=utf-8,${encodeURIComponent(`WEBVTT\n\n00:00.000 --> 59:59.000\n${voiceResult.translatedText}`)}`}
+              />
+            </audio>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={voiceStatus !== "idle"}
+              onClick={() => void inferVoice()}
+            >
+              {voiceStatus === "inferring"
+                ? messages.runningVoiceInference
+                : messages.runVoiceInference}
+            </button>
+            <p className="voice-comparison">
+              <span>
+                {messages.expectedLanguage}:{" "}
+                <strong>{displayLanguageName(targetLanguage, locale)}</strong>
+              </span>
+              <span>
+                {messages.detectedLanguage}:{" "}
+                <strong>
+                  {voiceDetected === null
+                    ? "—"
+                    : displayLanguageName(voiceDetected.stableLanguage, locale)}
+                </strong>
+              </span>
+            </p>
+          </div>
+        ) : null}
+        {voiceError !== "" ? <p className="control-error">{voiceError}</p> : null}
+      </section>
+
       <section className="cost-section panel">
         <div className="panel-heading">
           <div>
@@ -545,13 +751,28 @@ export function LanguageHarness() {
           />
           <DiagnosticMetric
             label={messages.currentSessionRange}
-            value={`${messages.dollars(costRange.low.toFixed(6))}–${messages.dollars(costRange.high.toFixed(6))}`}
-            detail={messages.idleShutdown}
+            value={
+              isContainerInferenceMethod(method)
+                ? `${messages.dollars(costRange.low.toFixed(6))}–${messages.dollars(costRange.high.toFixed(6))}`
+                : "—"
+            }
+            detail={
+              isContainerInferenceMethod(method)
+                ? messages.idleShutdown
+                : messages.providerDiagnostics
+            }
           />
         </div>
         <div className="price-table">
           {prices.map((item) => (
-            <div className={item.tier === tier ? "price-row active" : "price-row"} key={item.tier}>
+            <div
+              className={
+                isContainerInferenceMethod(method) && item.tier === tier
+                  ? "price-row active"
+                  : "price-row"
+              }
+              key={item.tier}
+            >
               <strong>{item.tier === "basic" ? messages.basic : messages.standard}</strong>
               <span>
                 {String(item.vcpu)} vCPU · {String(item.memoryGib)} GiB · {String(item.diskGb)} GB

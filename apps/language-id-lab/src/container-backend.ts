@@ -1,10 +1,17 @@
 // Runs with Bun during build and test.
 import { Container, getContainer } from "@cloudflare/containers";
+import {
+  type ContainerInferenceMethod,
+  type ContainerTier,
+  inferenceMethod,
+  isContainerInferenceMethod,
+} from "./inference-methods";
 
-export type ComputeTier = "basic" | "standard";
+export type ComputeTier = ContainerTier;
 
 interface ParsedLanguageRoute {
-  tier: ComputeTier;
+  method: ContainerInferenceMethod;
+  tier: ContainerTier;
   operation: "health" | "warmup" | "infer" | "release";
 }
 
@@ -31,7 +38,7 @@ const CONTAINER_IDLE_TIMEOUT: string = "30s";
 const CONTAINER_REQUEST_TIMEOUT_MS: number = 90_000;
 const SESSION_ID_HEADER: string = "x-kotoba-session-id";
 const LANGUAGE_ROUTE_PATTERN: RegExp =
-  /^\/api\/language\/(basic|standard)\/(health|warmup|infer|release)$/u;
+  /^\/api\/language\/(speechbrain-ecapa-basic|speechbrain-ecapa-standard|nvidia-ambernet-basic|nvidia-ambernet-standard)\/(health|warmup|infer|release)$/u;
 const SESSION_ID_PATTERN: RegExp = /^[A-Za-z0-9_-]{1,64}$/u;
 
 export abstract class LanguageIdContainer extends Container<Env> {
@@ -46,14 +53,21 @@ export abstract class LanguageIdContainer extends Container<Env> {
   }
 }
 
-export class LanguageIdBasicContainer extends LanguageIdContainer {}
+export class SpeechbrainEcapaBasicContainer extends LanguageIdContainer {}
 
-export class LanguageIdStandardContainer extends LanguageIdContainer {}
+export class SpeechbrainEcapaStandardContainer extends LanguageIdContainer {}
+
+export class NvidiaAmbernetBasicContainer extends LanguageIdContainer {}
+
+export class NvidiaAmbernetStandardContainer extends LanguageIdContainer {}
 
 export const parseLanguageRoute = (pathname: string): ParsedLanguageRoute | undefined => {
   const match: RegExpExecArray | null = LANGUAGE_ROUTE_PATTERN.exec(pathname);
-  if (match === null) return undefined;
-  const tier: ComputeTier = match[1] === "basic" ? "basic" : "standard";
+  if (match === null || !isContainerInferenceMethod(match[1])) return undefined;
+  const method: ContainerInferenceMethod = match[1];
+  const definition = inferenceMethod(method);
+  if (definition.tier === null) return undefined;
+  const tier: ContainerTier = definition.tier;
   const operation = match[2];
   if (
     operation !== "health" &&
@@ -63,7 +77,7 @@ export const parseLanguageRoute = (pathname: string): ParsedLanguageRoute | unde
   ) {
     return undefined;
   }
-  return { tier, operation };
+  return { method, tier, operation };
 };
 
 export const validSessionId = (value: string | null): value is string =>
@@ -71,12 +85,20 @@ export const validSessionId = (value: string | null): value is string =>
 
 const selectedContainer = (options: {
   env: Env;
-  tier: ComputeTier;
+  method: ContainerInferenceMethod;
   sessionId: string;
-}): ContainerStub =>
-  options.tier === "basic"
-    ? getContainer(options.env.LANGUAGE_ID_BASIC, options.sessionId)
-    : getContainer(options.env.LANGUAGE_ID_STANDARD, options.sessionId);
+}): ContainerStub => {
+  if (options.method === "speechbrain-ecapa-basic") {
+    return getContainer(options.env.SPEECHBRAIN_ECAPA_BASIC, options.sessionId);
+  }
+  if (options.method === "speechbrain-ecapa-standard") {
+    return getContainer(options.env.SPEECHBRAIN_ECAPA_STANDARD, options.sessionId);
+  }
+  if (options.method === "nvidia-ambernet-basic") {
+    return getContainer(options.env.NVIDIA_AMBERNET_BASIC, options.sessionId);
+  }
+  return getContainer(options.env.NVIDIA_AMBERNET_STANDARD, options.sessionId);
+};
 
 export const fetchContainerBeforeDeadline = async (
   options: ContainerRequestOptions & { deadline: Promise<void> },
@@ -128,7 +150,11 @@ export const handleLanguageContainerRequest = async (
       { status: 400 },
     );
   }
-  const container: ContainerStub = selectedContainer({ env, tier: route.tier, sessionId });
+  const container: ContainerStub = selectedContainer({
+    env,
+    method: route.method,
+    sessionId,
+  });
   if (route.operation === "release") {
     await container.destroy();
     return Response.json({ ok: true, state: "destroyed", idleTimeout: CONTAINER_IDLE_TIMEOUT });
@@ -142,6 +168,7 @@ export const handleLanguageContainerRequest = async (
       operation: route.operation,
     });
     const headers = new Headers(response.headers);
+    headers.set("x-kotoba-inference-method", route.method);
     headers.set("x-kotoba-container-tier", route.tier);
     headers.set("x-kotoba-container-idle-timeout", CONTAINER_IDLE_TIMEOUT);
     headers.set("x-kotoba-container-elapsed-ms", String(performance.now() - startedAt));
@@ -156,6 +183,7 @@ export const handleLanguageContainerRequest = async (
     console.error(
       JSON.stringify({
         event: "language_id_container_failure",
+        method: route.method,
         tier: route.tier,
         operation: route.operation,
         elapsedMs: performance.now() - startedAt,

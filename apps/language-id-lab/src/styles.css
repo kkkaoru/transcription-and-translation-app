@@ -28,7 +28,8 @@ body {
 }
 
 button,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -304,7 +305,7 @@ button {
 
 .capture-controls {
   display: grid;
-  grid-template-columns: 1.4fr 0.75fr 1fr auto;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(320px, 1.55fr) minmax(180px, 0.8fr) auto;
   gap: 14px;
   align-items: end;
 }
@@ -314,9 +315,14 @@ button {
   gap: 8px;
 }
 
-select {
+.microphone-control {
+  max-width: 220px;
+}
+
+select,
+textarea {
   width: 100%;
-  height: 46px;
+  min-height: 46px;
   padding: 0 13px;
   color: var(--ink);
   background: #f1f0e9;
@@ -523,6 +529,106 @@ progress::-moz-progress-bar {
   background: var(--green);
 }
 
+.explainer-section {
+  margin-top: 14px;
+  padding: 25px;
+}
+
+.panel-heading p {
+  max-width: 720px;
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.signal-flow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 22px 0 12px;
+  overflow-x: auto;
+  font-family: "DM Mono", monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.signal-flow span {
+  padding: 10px 12px;
+  color: var(--green);
+  background: var(--green-soft);
+  border: 1px solid #bfd1c1;
+  border-radius: 9px;
+}
+
+.signal-flow i {
+  color: var(--orange);
+  font-style: normal;
+}
+
+.timeline-chart {
+  display: block;
+  width: 100%;
+  min-height: 220px;
+  color: var(--muted);
+  font-family: "DM Mono", monospace;
+  font-size: 9px;
+}
+
+.timeline-chart .domain,
+.timeline-chart .tick line {
+  stroke: var(--line);
+}
+
+.timeline-line {
+  stroke-width: 2.5;
+}
+.timeline-raw {
+  stroke: var(--orange);
+}
+.timeline-state {
+  stroke: var(--green);
+}
+.timeline-enter {
+  stroke: #7957a8;
+  stroke-dasharray: 6 4;
+}
+.timeline-retain {
+  stroke: #3985a2;
+  stroke-dasharray: 3 4;
+}
+
+.timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: var(--muted);
+  font-family: "DM Mono", monospace;
+  font-size: 9px;
+}
+
+.timeline-legend span::before {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+  content: "";
+}
+
+.legend-raw::before {
+  background: var(--orange);
+}
+.legend-state::before {
+  background: var(--green);
+}
+.legend-enter::before {
+  background: #7957a8;
+}
+.legend-retain::before {
+  background: #3985a2;
+}
+
 .diagnostics-section {
   padding-top: 56px;
 }
@@ -564,9 +670,78 @@ progress::-moz-progress-bar {
   line-height: 1.45;
 }
 
+.provider-diagnostic {
+  margin-top: 20px;
+  padding: 22px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.provider-hidden {
+  display: none;
+}
+
+.voice-test-section,
 .cost-section {
   margin-top: 14px;
   padding: 25px;
+}
+
+.voice-test-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.6fr) minmax(150px, 0.55fr) minmax(150px, 0.55fr) auto;
+  gap: 14px;
+  align-items: end;
+  margin-top: 22px;
+}
+
+.voice-test-grid label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-family: "DM Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.voice-test-grid textarea {
+  min-height: 96px;
+  padding: 12px 13px;
+  resize: vertical;
+}
+
+.voice-result {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px 24px;
+  align-items: center;
+  margin-top: 18px;
+  padding: 18px;
+  background: var(--green-soft);
+  border-radius: 12px;
+}
+
+.voice-result p {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.voice-result p > span,
+.voice-comparison span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.voice-result audio {
+  width: min(100%, 420px);
+}
+
+.voice-result .voice-comparison {
+  display: flex;
+  gap: 24px;
+  grid-column: 1 / -1;
 }
 
 .cost-grid {
@@ -628,8 +803,13 @@ progress::-moz-progress-bar {
     gap: 34px;
   }
 
-  .capture-controls {
+  .capture-controls,
+  .voice-test-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .microphone-control {
+    max-width: none;
   }
 
   .latest-strip,
@@ -665,7 +845,8 @@ progress::-moz-progress-bar {
   .latest-strip,
   .posterior-grid,
   .diagnostic-grid,
-  .cost-grid {
+  .cost-grid,
+  .voice-test-grid {
     grid-template-columns: 1fr;
   }
 
@@ -691,6 +872,8 @@ progress::-moz-progress-bar {
   .stable-card,
   .capture-panel,
   .posterior-card,
+  .voice-test-section,
+  .explainer-section,
   .cost-section {
     padding: 20px;
   }

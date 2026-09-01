@@ -5,6 +5,7 @@
   "compatibility_date": "2026-08-31",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/server.ts",
+  "ai": { "binding": "AI" },
   "vars": {
     "CLOUDFLARE_ACCOUNT_ID": "78109ec18c7c85b194b19fb32e3bb149"
   },
@@ -15,8 +16,8 @@
   },
   "containers": [
     {
-      "name": "language-id-basic",
-      "class_name": "LanguageIdBasicContainer",
+      "name": "speechbrain-ecapa-basic",
+      "class_name": "SpeechbrainEcapaBasicContainer",
       "image": "../../crates/language-harness-service/Dockerfile",
       "image_build_context": "../../crates",
       "instance_type": "basic",
@@ -24,9 +25,27 @@
       "constraints": { "regions": ["APAC"] }
     },
     {
-      "name": "language-id-standard",
-      "class_name": "LanguageIdStandardContainer",
+      "name": "speechbrain-ecapa-standard",
+      "class_name": "SpeechbrainEcapaStandardContainer",
       "image": "../../crates/language-harness-service/Dockerfile",
+      "image_build_context": "../../crates",
+      "instance_type": "standard-1",
+      "max_instances": 4,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "nvidia-ambernet-basic",
+      "class_name": "NvidiaAmbernetBasicContainer",
+      "image": "../../crates/language-harness-service/Dockerfile.ambernet",
+      "image_build_context": "../../crates",
+      "instance_type": "basic",
+      "max_instances": 4,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "nvidia-ambernet-standard",
+      "class_name": "NvidiaAmbernetStandardContainer",
+      "image": "../../crates/language-harness-service/Dockerfile.ambernet",
       "image_build_context": "../../crates",
       "instance_type": "standard-1",
       "max_instances": 4,
@@ -35,14 +54,26 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "LANGUAGE_ID_BASIC", "class_name": "LanguageIdBasicContainer" },
-      { "name": "LANGUAGE_ID_STANDARD", "class_name": "LanguageIdStandardContainer" }
+      { "name": "SPEECHBRAIN_ECAPA_BASIC", "class_name": "SpeechbrainEcapaBasicContainer" },
+      { "name": "SPEECHBRAIN_ECAPA_STANDARD", "class_name": "SpeechbrainEcapaStandardContainer" },
+      { "name": "NVIDIA_AMBERNET_BASIC", "class_name": "NvidiaAmbernetBasicContainer" },
+      { "name": "NVIDIA_AMBERNET_STANDARD", "class_name": "NvidiaAmbernetStandardContainer" }
     ]
   },
   "migrations": [
     {
       "tag": "v1-language-id-containers",
       "new_sqlite_classes": ["LanguageIdBasicContainer", "LanguageIdStandardContainer"]
+    },
+    {
+      "tag": "v2-language-id-methods",
+      "new_sqlite_classes": [
+        "SpeechbrainEcapaBasicContainer",
+        "SpeechbrainEcapaStandardContainer",
+        "NvidiaAmbernetBasicContainer",
+        "NvidiaAmbernetStandardContainer"
+      ],
+      "deleted_classes": ["LanguageIdBasicContainer", "LanguageIdStandardContainer"]
     }
   ]
 }

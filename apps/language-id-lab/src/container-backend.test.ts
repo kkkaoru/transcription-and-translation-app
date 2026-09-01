@@ -16,17 +16,19 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-it("parses Basic and Standard language Container operations", () => {
-  expect(parseLanguageRoute("/api/language/basic/infer")).toStrictEqual({
+it("parses model-specific Basic and Standard Container operations", () => {
+  expect(parseLanguageRoute("/api/language/speechbrain-ecapa-basic/infer")).toStrictEqual({
+    method: "speechbrain-ecapa-basic",
     tier: "basic",
     operation: "infer",
   });
-  expect(parseLanguageRoute("/api/language/standard/release")).toStrictEqual({
+  expect(parseLanguageRoute("/api/language/nvidia-ambernet-standard/release")).toStrictEqual({
+    method: "nvidia-ambernet-standard",
     tier: "standard",
     operation: "release",
   });
   expect(parseLanguageRoute("/api/language/premium/infer")).toBeUndefined();
-  expect(parseLanguageRoute("/api/language/basic/unknown")).toBeUndefined();
+  expect(parseLanguageRoute("/api/language/speechbrain-ecapa-basic/unknown")).toBeUndefined();
 });
 
 it("accepts only bounded URL-safe session identifiers", () => {

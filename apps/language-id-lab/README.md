@@ -1,19 +1,30 @@
 # Language ID Lab
 
-TanStack Start UI and private Cloudflare Container backend for realtime multilingual spoken-language identification.
+TanStack Start UI with private Cloudflare Containers and Workers AI for realtime multilingual spoken-language identification.
 
 ## Runtime behavior
 
 - `@ricky0123/vad-web` runs Silero VAD in the browser and emits 16 kHz mono voiced PCM.
 - The input-level meter uses the live microphone waveform; the speech meter uses Silero probability.
-- Voiced segments are sent to a session-sticky private Container. Audio is not stored and no transcript is produced.
-- The Container runs the pinned `speechbrain/lang-id-voxlingua107-ecapa` ONNX export in native Rust and returns probabilities across all 107 model languages.
-- Rust `language-harness-core` owns the Online HSMM, two-sided SPRT, and hysteresis state. The UI only renders returned diagnostics.
-- **Per utterance** classifies each VAD segment independently. **Rolling 6 s context** retains voiced context across short segments before ECAPA inference.
-- Basic (¼ vCPU, 1 GiB) and Standard (`standard-1`: ½ vCPU, 4 GiB) use the same model and Rust code.
+- Select one method: SpeechBrain ECAPA or NVIDIA LangID AmberNet in an independent Basic/Standard Container, or Cloudflare Workers AI Deepgram Nova-3.
+- Container methods return probabilities across all 107 model languages. Rust `language-harness-core` owns their Online HSMM, two-sided SPRT, and hysteresis state; the UI only renders returned diagnostics.
+- Workers AI is stateless and returns Nova-3's provider language detection without duplicating the Rust tracker in TypeScript.
+- **Per utterance** classifies each VAD segment independently. **Rolling 6 s context** retains voiced context across short segments for Container methods.
 - Stopping the microphone explicitly destroys the selected Container. Idle instances are destroyed after 30 seconds.
+- A D3.js timeline renders live raw evidence, stable posterior, and Rust enter/retain thresholds.
 
 The interface is localized in Japanese and English. Language inference is not restricted to those UI locales.
+
+## Translation and synthesized-voice check
+
+The verification panel translates arbitrary text with Workers AI `@cf/meta/m2m100-1.2b`, synthesizes 16 kHz WAV with Fish Audio `s2.1-pro-free`, plays it, and submits that exact audio to the selected identification method. Configure Fish Audio only as a Worker secret:
+
+```sh
+cd apps/language-id-lab
+wrangler secret put FISH_AUDIO_API_KEY
+```
+
+The secret is never returned to the browser. Without it, deployment and microphone identification still work, while the panel reports that synthesis is unavailable.
 
 ## Cost data
 
@@ -30,7 +41,9 @@ Hourly rows distinguish provisioned memory+disk cost from the upper bound at 100
 
 ## Model provenance
 
-The Docker image downloads revision `41e60dea31b80ea5d4f9d9d9e818501ea184e568` of `drakulavich/SpeechBrain-coreml` and verifies SHA-256 for the ONNX graph, external weights, and 107 labels during the image build.
+The SpeechBrain image downloads revision `41e60dea31b80ea5d4f9d9d9e818501ea184e568` of `drakulavich/SpeechBrain-coreml` and verifies SHA-256 for the ONNX graph, external weights, and 107 labels.
+
+The independent AmberNet image downloads NVIDIA NGC `ambernet.nemo` v1.12.0, verifies SHA-256 `2f92d645b9ea5824d7663584fecb9ecc52557d0d700e24266747f38a61ba1681`, and exports the official NeMo model to CPU ONNX during its build. Python is build-only; both final images run the same native Rust/ONNX Runtime service.
 
 ## Commands
 
@@ -47,4 +60,4 @@ bun run rust:language-harness:test
 bun run language-id-lab:deploy
 ```
 
-Run `bun run cf-typegen` from this directory after changing bindings. The Worker and both Container applications are configured in `wrangler.jsonc`.
+Run `bun run cf-typegen` from this directory after changing bindings. The Worker, Workers AI binding, and four model/tier Container applications are configured in `wrangler.jsonc`.

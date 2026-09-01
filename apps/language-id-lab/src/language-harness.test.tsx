@@ -102,6 +102,12 @@ describe("LanguageHarness", () => {
     expect(container.querySelectorAll("meter").length).toBe(2);
     expect(container.querySelectorAll(".posterior-card").length).toBe(2);
     expect(container.querySelectorAll(".diagnostic-card").length).toBe(3);
+    expect(container.querySelector(".method-control select")?.children).toHaveLength(5);
+    expect(container.querySelector(".microphone-control")).not.toBeNull();
+    expect(container.querySelector(".timeline-chart")).not.toBeNull();
+    expect(container.querySelector(".voice-test-section")).not.toBeNull();
+    expect(container.querySelector(".edge-status")).toBeNull();
+    expect(container.querySelector(".hero-description")).toBeNull();
     expect(container.querySelector(".scenario-section")).toBeNull();
     expect(container.querySelector("footer")).toBeNull();
 
