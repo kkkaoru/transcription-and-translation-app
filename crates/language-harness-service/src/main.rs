@@ -43,6 +43,14 @@ const AMBERNET_MODEL_FILE: &str = "ambernet.onnx";
 const LABELS_FILE: &str = "labels.json";
 const AMBERNET_PREPROCESSOR_FILE: &str = "preprocessor.json";
 const WORKERS_AI_NOVA_MODEL: &str = "@cf/deepgram/nova-3";
+const RESPONSIVE_ACCEPT_LLR: f32 = 2.0;
+const RESPONSIVE_REJECT_LLR: f32 = -1.5;
+const MINIMUM_ACCEPT_LLR: f32 = 0.25;
+const MAXIMUM_ACCEPT_LLR: f32 = 10.0;
+const MINIMUM_REJECT_LLR: f32 = -10.0;
+const MAXIMUM_REJECT_LLR: f32 = -0.1;
+const MINIMUM_ERROR_PROBABILITY: f32 = 0.001;
+const MAXIMUM_ERROR_PROBABILITY: f32 = 0.4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ModelKind {
@@ -92,10 +100,44 @@ enum EcapaPattern {
     RollingContext,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum DecisionMode {
+    Responsive,
+    Wald,
+    Custom,
+    HysteresisOnly,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+enum DecisionPolicyRequest {
+    Responsive,
+    Wald {
+        false_switch_probability: f32,
+        missed_switch_probability: f32,
+    },
+    Custom {
+        accept_llr: f32,
+        reject_llr: f32,
+    },
+    #[default]
+    HysteresisOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ResolvedDecisionPolicy {
+    mode: DecisionMode,
+    sprt_enabled: bool,
+    accept_llr: f32,
+    reject_llr: f32,
+}
+
 #[derive(Debug, Deserialize)]
 struct InferQuery {
     at_ms: u64,
     pattern: EcapaPattern,
+    decision_policy: Option<String>,
 }
 
 #[derive(Debug)]
@@ -103,6 +145,7 @@ struct InferInput {
     session_id: String,
     at_ms: u64,
     pattern: EcapaPattern,
+    decision_policy: ResolvedDecisionPolicy,
     samples: Vec<f32>,
 }
 
@@ -145,6 +188,7 @@ struct LanguageProbability {
 struct ProviderTrackRequest {
     at_ms: u64,
     pattern: EcapaPattern,
+    decision_policy: Option<DecisionPolicyRequest>,
     raw_languages: Vec<LanguageProbability>,
     quality: f32,
     speech_seconds: f32,
@@ -155,6 +199,7 @@ struct ProviderTrackRequest {
 struct TrackerUpdate<'a> {
     session_id: &'a str,
     at_ms: u64,
+    decision_policy: ResolvedDecisionPolicy,
     raw_probabilities: &'a [f32],
     quality: f32,
 }
@@ -168,6 +213,8 @@ struct TrackerSnapshot {
     posterior: Vec<LanguageProbability>,
     hsmm_duration_ticks: usize,
     hsmm_transition_hazard: f32,
+    sprt_enabled: bool,
+    decision_mode: DecisionMode,
     sprt_llr: f32,
     sprt_accept_llr: f32,
     sprt_reject_llr: f32,
@@ -180,6 +227,7 @@ struct TrackerSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum SprtState {
+    Disabled,
     Idle,
     Accumulating,
     Accepted,
@@ -203,6 +251,8 @@ struct HsmmDiagnostics {
 
 #[derive(Debug, Serialize)]
 struct SprtDiagnostics {
+    enabled: bool,
+    mode: DecisionMode,
     candidate_language: Option<String>,
     llr: f32,
     accept_llr: f32,
@@ -247,6 +297,7 @@ struct RuntimeService {
 
 #[derive(Debug)]
 struct LanguageSession {
+    decision_policy: ResolvedDecisionPolicy,
     tracker: MultilingualTracker,
     rolling_samples: VecDeque<f32>,
 }
@@ -310,6 +361,89 @@ impl IntoResponse for ServiceError {
     fn into_response(self) -> Response {
         (self.status, axum::Json(serde_json::json!({ "error": self.message }))).into_response()
     }
+}
+
+impl DecisionPolicyRequest {
+    fn resolve(self) -> Result<ResolvedDecisionPolicy, ServiceError> {
+        match self {
+            Self::Responsive => Ok(ResolvedDecisionPolicy {
+                mode: DecisionMode::Responsive,
+                sprt_enabled: true,
+                accept_llr: RESPONSIVE_ACCEPT_LLR,
+                reject_llr: RESPONSIVE_REJECT_LLR,
+            }),
+            Self::Wald { false_switch_probability, missed_switch_probability } => {
+                validate_error_probability(false_switch_probability, "False-switch probability")?;
+                validate_error_probability(missed_switch_probability, "Missed-switch probability")?;
+                Ok(ResolvedDecisionPolicy {
+                    mode: DecisionMode::Wald,
+                    sprt_enabled: true,
+                    accept_llr: ((1.0 - missed_switch_probability) / false_switch_probability).ln(),
+                    reject_llr: (missed_switch_probability / (1.0 - false_switch_probability)).ln(),
+                })
+            }
+            Self::Custom { accept_llr, reject_llr } => {
+                validate_custom_bound(
+                    accept_llr,
+                    MINIMUM_ACCEPT_LLR,
+                    MAXIMUM_ACCEPT_LLR,
+                    "accept",
+                )?;
+                validate_custom_bound(
+                    reject_llr,
+                    MINIMUM_REJECT_LLR,
+                    MAXIMUM_REJECT_LLR,
+                    "reject",
+                )?;
+                Ok(ResolvedDecisionPolicy {
+                    mode: DecisionMode::Custom,
+                    sprt_enabled: true,
+                    accept_llr,
+                    reject_llr,
+                })
+            }
+            Self::HysteresisOnly => Ok(ResolvedDecisionPolicy {
+                mode: DecisionMode::HysteresisOnly,
+                sprt_enabled: false,
+                accept_llr: RESPONSIVE_ACCEPT_LLR,
+                reject_llr: RESPONSIVE_REJECT_LLR,
+            }),
+        }
+    }
+}
+
+fn validate_error_probability(value: f32, label: &str) -> Result<(), ServiceError> {
+    if !value.is_finite()
+        || !(MINIMUM_ERROR_PROBABILITY..=MAXIMUM_ERROR_PROBABILITY).contains(&value)
+    {
+        return Err(ServiceError::bad_request(format!(
+            "{label} must be between {MINIMUM_ERROR_PROBABILITY} and {MAXIMUM_ERROR_PROBABILITY}",
+        )));
+    }
+    Ok(())
+}
+
+fn validate_custom_bound(
+    value: f32,
+    minimum: f32,
+    maximum: f32,
+    label: &str,
+) -> Result<(), ServiceError> {
+    if !value.is_finite() || !(minimum..=maximum).contains(&value) {
+        return Err(ServiceError::bad_request(format!(
+            "Custom SPRT {label} boundary must be between {minimum} and {maximum}",
+        )));
+    }
+    Ok(())
+}
+
+fn decision_policy_from_query(value: Option<&str>) -> Result<ResolvedDecisionPolicy, ServiceError> {
+    let request = value.map_or(Ok(DecisionPolicyRequest::default()), |json| {
+        serde_json::from_str(json).map_err(|error| {
+            ServiceError::bad_request(format!("Decision policy is invalid: {error}"))
+        })
+    })?;
+    request.resolve()
 }
 
 impl RuntimeHandle {
@@ -413,6 +547,7 @@ impl RuntimeService {
         let snapshot = self.update_tracker(TrackerUpdate {
             session_id: &input.session_id,
             at_ms: input.at_ms,
+            decision_policy: input.decision_policy,
             raw_probabilities: &raw_probabilities,
             quality,
         })?;
@@ -427,6 +562,8 @@ impl RuntimeService {
                 posterior: snapshot.posterior,
             },
             sprt: SprtDiagnostics {
+                enabled: snapshot.sprt_enabled,
+                mode: snapshot.decision_mode,
                 candidate_language: snapshot.candidate_language,
                 llr: snapshot.sprt_llr,
                 accept_llr: snapshot.sprt_accept_llr,
@@ -451,6 +588,7 @@ impl RuntimeService {
 
     fn track(&mut self, input: TrackInput) -> Result<InferenceResponse, ServiceError> {
         let request = input.request;
+        let decision_policy = request.decision_policy.unwrap_or_default().resolve()?;
         if request.model != WORKERS_AI_NOVA_MODEL {
             return Err(ServiceError::bad_request("Provider model is not supported"));
         }
@@ -467,6 +605,7 @@ impl RuntimeService {
         let snapshot = self.update_tracker(TrackerUpdate {
             session_id: &input.session_id,
             at_ms: request.at_ms,
+            decision_policy,
             raw_probabilities: &raw_probabilities,
             quality: request.quality,
         })?;
@@ -481,6 +620,8 @@ impl RuntimeService {
                 posterior: snapshot.posterior,
             },
             sprt: SprtDiagnostics {
+                enabled: snapshot.sprt_enabled,
+                mode: snapshot.decision_mode,
                 candidate_language: snapshot.candidate_language,
                 llr: snapshot.sprt_llr,
                 accept_llr: snapshot.sprt_accept_llr,
@@ -540,7 +681,7 @@ impl RuntimeService {
         let tracker_probabilities =
             calibrated_tracker_probabilities(input.raw_probabilities, input.quality);
         let labels = tracker_labels(&self.labels);
-        let session = self.session_mut(input.session_id, labels)?;
+        let session = self.session_mut(input.session_id, labels, input.decision_policy)?;
         let observation = MultilingualObservation::from_probabilities(
             input.at_ms,
             tracker_probabilities,
@@ -561,7 +702,9 @@ impl RuntimeService {
         let labels = session.tracker.labels();
         let leading_index = probability_argmax_index(&state.posterior);
         let challenger_index = (leading_index != state.stable_index).then_some(leading_index);
-        let sprt_state = if switched && !previous_was_unknown {
+        let sprt_state = if !session.decision_policy.sprt_enabled {
+            SprtState::Disabled
+        } else if switched && !previous_was_unknown {
             SprtState::Accepted
         } else if state.candidate_index.is_some() {
             SprtState::Accumulating
@@ -586,6 +729,8 @@ impl RuntimeService {
             posterior: top_probabilities(labels, &state.posterior),
             hsmm_duration_ticks: state.hsmm_duration_ticks,
             hsmm_transition_hazard: state.hsmm_transition_hazard,
+            sprt_enabled: session.decision_policy.sprt_enabled,
+            decision_mode: session.decision_policy.mode,
             sprt_llr: state.sprt_llr,
             sprt_accept_llr: state.sprt_accept_llr,
             sprt_reject_llr: state.sprt_reject_llr,
@@ -612,7 +757,7 @@ impl RuntimeService {
             return Ok(input.samples.clone());
         }
         let labels = tracker_labels(&self.labels);
-        let session = self.session_mut(&input.session_id, labels)?;
+        let session = self.session_mut(&input.session_id, labels, input.decision_policy)?;
         input.samples.iter().copied().for_each(|sample| {
             session.rolling_samples.push_back(sample);
         });
@@ -625,24 +770,44 @@ impl RuntimeService {
         &mut self,
         session_id: &str,
         labels: Vec<String>,
+        decision_policy: ResolvedDecisionPolicy,
     ) -> Result<&mut LanguageSession, ServiceError> {
         if !self.sessions.contains_key(session_id) {
-            let session = LanguageSession::new(labels)?;
+            let session = LanguageSession::new(labels, decision_policy)?;
             self.sessions.insert(session_id.into(), session);
         }
-        self.sessions
+        let session = self
+            .sessions
             .get_mut(session_id)
-            .ok_or_else(|| ServiceError::unavailable("Language session was not created"))
+            .ok_or_else(|| ServiceError::unavailable("Language session was not created"))?;
+        if session.decision_policy != decision_policy {
+            return Err(ServiceError::bad_request(
+                "Decision policy changed during a session; reset the language state first",
+            ));
+        }
+        Ok(session)
     }
 }
 
 impl LanguageSession {
-    fn new(labels: Vec<String>) -> Result<Self, ServiceError> {
-        let tracker = MultilingualTracker::new(labels, MultilingualTrackerConfig::default())
-            .map_err(|error| {
-                ServiceError::unavailable(format!("Invalid tracker configuration: {error:?}"))
-            })?;
-        Ok(Self { tracker, rolling_samples: VecDeque::with_capacity(ROLLING_WINDOW_SAMPLES) })
+    fn new(
+        labels: Vec<String>,
+        decision_policy: ResolvedDecisionPolicy,
+    ) -> Result<Self, ServiceError> {
+        let config = MultilingualTrackerConfig {
+            sprt_enabled: decision_policy.sprt_enabled,
+            sprt_accept_llr: decision_policy.accept_llr,
+            sprt_reject_llr: decision_policy.reject_llr,
+            ..MultilingualTrackerConfig::default()
+        };
+        let tracker = MultilingualTracker::new(labels, config).map_err(|error| {
+            ServiceError::unavailable(format!("Invalid tracker configuration: {error:?}"))
+        })?;
+        Ok(Self {
+            decision_policy,
+            tracker,
+            rolling_samples: VecDeque::with_capacity(ROLLING_WINDOW_SAMPLES),
+        })
     }
 }
 
@@ -931,7 +1096,7 @@ async fn health(State(state): State<AppState>) -> axum::Json<HealthResponse> {
         ok: true,
         model: state.model_kind.model_name(),
         languages: state.language_count,
-        tracker: "rust-online-hsmm-sprt-hysteresis",
+        tracker: "rust-online-hsmm-configurable-sprt-hysteresis",
     })
 }
 
@@ -947,9 +1112,16 @@ async fn infer(
 ) -> Result<axum::Json<InferenceResponse>, ServiceError> {
     let session_id = validated_session_id(&headers)?;
     let samples = decode_float32_pcm(&body)?;
+    let decision_policy = decision_policy_from_query(query.decision_policy.as_deref())?;
     state
         .runtime
-        .infer(InferInput { session_id, at_ms: query.at_ms, pattern: query.pattern, samples })
+        .infer(InferInput {
+            session_id,
+            at_ms: query.at_ms,
+            pattern: query.pattern,
+            decision_policy,
+            samples,
+        })
         .await
         .map(axum::Json)
 }
@@ -1143,6 +1315,7 @@ mod tests {
         ProviderTrackRequest {
             at_ms: 1_000,
             pattern: EcapaPattern::Utterance,
+            decision_policy: Some(DecisionPolicyRequest::Responsive),
             raw_languages: vec![LanguageProbability { language: language.into(), probability }],
             quality: probability,
             speech_seconds: 1.0,
@@ -1194,15 +1367,91 @@ mod tests {
             .unwrap();
         assert_eq!(switched.stable_language, "ja");
         assert_eq!(switched.sprt.state, SprtState::Accepted);
+        assert_eq!(switched.sprt.accept_llr, 2.0);
         assert_eq!(switched.hysteresis.state, HysteresisState::Switched);
+        assert!(switched.hysteresis.stable_posterior > 0.99);
 
         let labels = tracker_labels(&service.labels);
-        service.sessions.insert("other-session".into(), LanguageSession::new(labels).unwrap());
+        service.sessions.insert(
+            "other-session".into(),
+            LanguageSession::new(labels, DecisionPolicyRequest::default().resolve().unwrap())
+                .unwrap(),
+        );
         service.reset("provider-session");
         assert!(!service.sessions.contains_key("provider-session"));
         assert!(service.sessions.contains_key("other-session"));
         assert_eq!(normalized_language_code("iw_IL"), "he");
         assert_eq!(normalized_language_code("JW"), "jv");
+    }
+
+    #[test]
+    fn decision_policies_resolve_wald_custom_and_hysteresis_only_modes() {
+        let wald = DecisionPolicyRequest::Wald {
+            false_switch_probability: 0.1,
+            missed_switch_probability: 0.2,
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(wald.mode, DecisionMode::Wald);
+        assert!((wald.accept_llr - 8.0_f32.ln()).abs() < 0.0001);
+        assert!((wald.reject_llr - (0.2_f32 / 0.9).ln()).abs() < 0.0001);
+
+        let custom =
+            DecisionPolicyRequest::Custom { accept_llr: 4.0, reject_llr: -2.0 }.resolve().unwrap();
+        assert_eq!(custom.accept_llr, 4.0);
+        assert_eq!(custom.reject_llr, -2.0);
+
+        let without_sprt = DecisionPolicyRequest::HysteresisOnly.resolve().unwrap();
+        assert!(!without_sprt.sprt_enabled);
+        assert_eq!(without_sprt.mode, DecisionMode::HysteresisOnly);
+
+        assert!(
+            DecisionPolicyRequest::Wald {
+                false_switch_probability: 0.0,
+                missed_switch_probability: 0.2,
+            }
+            .resolve()
+            .is_err()
+        );
+        assert!(
+            DecisionPolicyRequest::Wald {
+                false_switch_probability: 0.1,
+                missed_switch_probability: 0.5,
+            }
+            .resolve()
+            .is_err()
+        );
+        assert!(
+            DecisionPolicyRequest::Custom { accept_llr: 0.0, reject_llr: -1.0 }.resolve().is_err()
+        );
+        assert!(
+            DecisionPolicyRequest::Custom { accept_llr: 2.0, reject_llr: 0.0 }.resolve().is_err()
+        );
+        assert!(decision_policy_from_query(Some("{invalid")).is_err());
+        assert_eq!(decision_policy_from_query(None).unwrap().mode, DecisionMode::HysteresisOnly);
+    }
+
+    #[test]
+    fn provider_tracking_applies_session_decision_policy() {
+        let mut service = test_service();
+        let mut request = provider_request("fr", 0.99);
+        request.decision_policy = Some(DecisionPolicyRequest::HysteresisOnly);
+        let response =
+            service.track(TrackInput { session_id: "policy-session".into(), request }).unwrap();
+        assert!(!response.sprt.enabled);
+        assert_eq!(response.sprt.mode, DecisionMode::HysteresisOnly);
+        assert_eq!(response.sprt.state, SprtState::Disabled);
+
+        let mut changed = provider_request("de", 0.99);
+        changed.at_ms = 1_600;
+        changed.decision_policy = Some(DecisionPolicyRequest::Responsive);
+        assert_eq!(
+            service
+                .track(TrackInput { session_id: "policy-session".into(), request: changed })
+                .unwrap_err()
+                .message,
+            "Decision policy changed during a session; reset the language state first"
+        );
     }
 
     #[test]
@@ -1282,11 +1531,13 @@ mod tests {
     #[test]
     fn rolling_pattern_retains_only_the_latest_six_seconds() {
         let mut service = test_service();
+        let decision_policy = DecisionPolicyRequest::default().resolve().unwrap();
         let first = service
             .samples_for_pattern(&InferInput {
                 session_id: "session".into(),
                 at_ms: 0,
                 pattern: EcapaPattern::RollingContext,
+                decision_policy,
                 samples: vec![0.1; SAMPLE_RATE_HZ * 4],
             })
             .unwrap();
@@ -1296,6 +1547,7 @@ mod tests {
                 session_id: "session".into(),
                 at_ms: 500,
                 pattern: EcapaPattern::RollingContext,
+                decision_policy,
                 samples: vec![0.2; SAMPLE_RATE_HZ * 4],
             })
             .unwrap();
@@ -1307,6 +1559,7 @@ mod tests {
                 session_id: "session".into(),
                 at_ms: 1_000,
                 pattern: EcapaPattern::Utterance,
+                decision_policy,
                 samples: vec![0.3; SAMPLE_RATE_HZ],
             })
             .unwrap();

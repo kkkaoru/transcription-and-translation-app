@@ -9,6 +9,7 @@ pub struct MultilingualTrackerConfig {
     pub minimum_duration_ticks: usize,
     pub expected_duration_ticks: usize,
     pub maximum_duration_ticks: usize,
+    pub sprt_enabled: bool,
     pub sprt_accept_llr: f32,
     pub sprt_reject_llr: f32,
     pub maximum_llr_increment: f32,
@@ -25,7 +26,8 @@ impl Default for MultilingualTrackerConfig {
             minimum_duration_ticks: 2,
             expected_duration_ticks: 8,
             maximum_duration_ticks: 40,
-            sprt_accept_llr: 3.0,
+            sprt_enabled: true,
+            sprt_accept_llr: 2.0,
             sprt_reject_llr: -1.5,
             maximum_llr_increment: 2.0,
             switch_posterior_threshold: 0.72,
@@ -370,6 +372,20 @@ impl MultilingualTracker {
             self.sprt_episode = None;
             return None;
         }
+        if !self.config.sprt_enabled {
+            if self.posterior[candidate_index] < self.config.switch_posterior_threshold {
+                return None;
+            }
+            let from_index = self.stable_index;
+            self.stable_index = candidate_index;
+            self.sprt_episode = None;
+            return Some(MultilingualSwitchEvent {
+                at_ms: tick_ms,
+                from_index,
+                to_index: candidate_index,
+                sprt_llr: 0.0,
+            });
+        }
         let raw_increment =
             observation.log_scores[candidate_index] - observation.log_scores[self.stable_index];
         let increment = raw_increment
@@ -702,6 +718,19 @@ mod tests {
         assert!(tracker.advance_to(500).is_empty());
         assert_eq!(tracker.state().stable_index, 1);
         assert!(tracker.state().sprt_llr <= 2.0);
+    }
+
+    #[test]
+    fn hysteresis_only_switches_without_accumulating_sprt_evidence() {
+        let config = MultilingualTrackerConfig { sprt_enabled: false, ..fast_config() };
+        let mut tracker = MultilingualTracker::new(labels(), config).unwrap();
+        tracker.push_observation(observation(0, [0.01, 0.97, 0.01, 0.01]));
+        tracker.advance_to(0);
+        tracker.push_observation(observation(500, [0.001, 0.001, 0.997, 0.001]));
+        let events = tracker.advance_to(500);
+        assert_eq!(events[0].to_index, 2);
+        assert_eq!(tracker.state().stable_index, 2);
+        assert_eq!(tracker.state().sprt_llr, 0.0);
     }
 
     #[test]
