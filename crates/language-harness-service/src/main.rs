@@ -163,14 +163,35 @@ struct TrackerSnapshot {
     stable_language: String,
     stable_confidence: f32,
     candidate_language: Option<String>,
+    challenger_language: Option<String>,
+    challenger_posterior: f32,
     posterior: Vec<LanguageProbability>,
     hsmm_duration_ticks: usize,
     hsmm_transition_hazard: f32,
     sprt_llr: f32,
     sprt_accept_llr: f32,
     sprt_reject_llr: f32,
+    sprt_state: SprtState,
     hysteresis_enter_posterior: f32,
     hysteresis_retain_posterior: f32,
+    hysteresis_state: HysteresisState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum SprtState {
+    Idle,
+    Accumulating,
+    Accepted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum HysteresisState {
+    Unlocked,
+    Retaining,
+    Challenged,
+    Switched,
 }
 
 #[derive(Debug, Serialize)]
@@ -186,6 +207,7 @@ struct SprtDiagnostics {
     llr: f32,
     accept_llr: f32,
     reject_llr: f32,
+    state: SprtState,
 }
 
 #[derive(Debug, Serialize)]
@@ -193,6 +215,9 @@ struct HysteresisDiagnostics {
     stable_posterior: f32,
     enter_posterior: f32,
     retain_posterior: f32,
+    state: HysteresisState,
+    challenger_language: Option<String>,
+    challenger_posterior: f32,
 }
 
 #[derive(Debug, Serialize)]
@@ -406,11 +431,15 @@ impl RuntimeService {
                 llr: snapshot.sprt_llr,
                 accept_llr: snapshot.sprt_accept_llr,
                 reject_llr: snapshot.sprt_reject_llr,
+                state: snapshot.sprt_state,
             },
             hysteresis: HysteresisDiagnostics {
                 stable_posterior: snapshot.stable_confidence,
                 enter_posterior: snapshot.hysteresis_enter_posterior,
                 retain_posterior: snapshot.hysteresis_retain_posterior,
+                state: snapshot.hysteresis_state,
+                challenger_language: snapshot.challenger_language,
+                challenger_posterior: snapshot.challenger_posterior,
             },
             quality,
             speech_seconds: input.samples.len() as f32 / SAMPLE_RATE_HZ as f32,
@@ -456,11 +485,15 @@ impl RuntimeService {
                 llr: snapshot.sprt_llr,
                 accept_llr: snapshot.sprt_accept_llr,
                 reject_llr: snapshot.sprt_reject_llr,
+                state: snapshot.sprt_state,
             },
             hysteresis: HysteresisDiagnostics {
                 stable_posterior: snapshot.stable_confidence,
                 enter_posterior: snapshot.hysteresis_enter_posterior,
                 retain_posterior: snapshot.hysteresis_retain_posterior,
+                state: snapshot.hysteresis_state,
+                challenger_language: snapshot.challenger_language,
+                challenger_posterior: snapshot.challenger_posterior,
             },
             quality: request.quality,
             speech_seconds: request.speech_seconds,
@@ -520,21 +553,46 @@ impl RuntimeService {
                 "Tracker rejected the observation; the session was reset",
             ));
         }
-        session.tracker.advance_to(input.at_ms);
+        let previous_state = session.tracker.state();
+        let previous_was_unknown =
+            session.tracker.labels()[previous_state.stable_index] == "unknown";
+        let switched = !session.tracker.advance_through_observation(input.at_ms).is_empty();
         let state = session.tracker.state();
         let labels = session.tracker.labels();
+        let leading_index = probability_argmax_index(&state.posterior);
+        let challenger_index = (leading_index != state.stable_index).then_some(leading_index);
+        let sprt_state = if switched && !previous_was_unknown {
+            SprtState::Accepted
+        } else if state.candidate_index.is_some() {
+            SprtState::Accumulating
+        } else {
+            SprtState::Idle
+        };
+        let hysteresis_state = if switched {
+            HysteresisState::Switched
+        } else if labels[state.stable_index] == "unknown" {
+            HysteresisState::Unlocked
+        } else if state.candidate_index.is_some() {
+            HysteresisState::Challenged
+        } else {
+            HysteresisState::Retaining
+        };
         Ok(TrackerSnapshot {
             stable_language: labels[state.stable_index].clone(),
             stable_confidence: state.stable_confidence,
             candidate_language: state.candidate_index.map(|index| labels[index].clone()),
+            challenger_language: challenger_index.map(|index| labels[index].clone()),
+            challenger_posterior: challenger_index.map_or(0.0, |index| state.posterior[index]),
             posterior: top_probabilities(labels, &state.posterior),
             hsmm_duration_ticks: state.hsmm_duration_ticks,
             hsmm_transition_hazard: state.hsmm_transition_hazard,
             sprt_llr: state.sprt_llr,
             sprt_accept_llr: state.sprt_accept_llr,
             sprt_reject_llr: state.sprt_reject_llr,
+            sprt_state,
             hysteresis_enter_posterior: state.hysteresis_enter_posterior,
             hysteresis_retain_posterior: state.hysteresis_retain_posterior,
+            hysteresis_state,
         })
     }
 
@@ -811,6 +869,15 @@ fn observation_quality(samples: &[f32]) -> f32 {
         .sqrt();
     let signal_quality = (rms / MINIMUM_AUDIBLE_RMS).clamp(0.0, 1.0);
     duration_quality * signal_quality
+}
+
+fn probability_argmax_index(probabilities: &[f32]) -> usize {
+    probabilities
+        .iter()
+        .copied()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map_or(0, |(index, _)| index)
 }
 
 fn probability_order(left: &(usize, f32), right: &(usize, f32)) -> std::cmp::Ordering {
@@ -1097,7 +1164,37 @@ mod tests {
         assert_eq!(response.raw_languages[0].language, "EN-us");
         assert_eq!(response.model, WORKERS_AI_NOVA_MODEL);
         assert_eq!(response.pattern, EcapaPattern::Utterance);
+        assert_eq!(response.stable_language, "en");
+        assert_eq!(response.sprt.state, SprtState::Idle);
+        assert_eq!(response.hysteresis.state, HysteresisState::Switched);
         assert!(service.sessions.contains_key("provider-session"));
+
+        let mut japanese_challenge = provider_request("ja", 0.998);
+        japanese_challenge.at_ms = 1_600;
+        let challenged = service
+            .track(TrackInput {
+                session_id: "provider-session".into(),
+                request: japanese_challenge,
+            })
+            .unwrap();
+        assert_eq!(challenged.stable_language, "en");
+        assert_eq!(challenged.sprt.state, SprtState::Accumulating);
+        assert_eq!(challenged.sprt.candidate_language.as_deref(), Some("ja"));
+        assert_eq!(challenged.hysteresis.state, HysteresisState::Challenged);
+        assert_eq!(challenged.hysteresis.challenger_language.as_deref(), Some("ja"));
+        assert!(challenged.hysteresis.challenger_posterior >= 0.42);
+
+        let mut sustained_japanese = provider_request("ja", 0.998);
+        sustained_japanese.at_ms = 2_200;
+        let switched = service
+            .track(TrackInput {
+                session_id: "provider-session".into(),
+                request: sustained_japanese,
+            })
+            .unwrap();
+        assert_eq!(switched.stable_language, "ja");
+        assert_eq!(switched.sprt.state, SprtState::Accepted);
+        assert_eq!(switched.hysteresis.state, HysteresisState::Switched);
 
         let labels = tracker_labels(&service.labels);
         service.sessions.insert("other-session".into(), LanguageSession::new(labels).unwrap());

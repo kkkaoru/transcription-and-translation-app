@@ -267,6 +267,14 @@ impl MultilingualTracker {
         events
     }
 
+    pub fn advance_through_observation(
+        &mut self,
+        observation_at_ms: u64,
+    ) -> Vec<MultilingualSwitchEvent> {
+        let observation_tick = self.scheduled_tick_for(observation_at_ms);
+        self.advance_to(observation_tick)
+    }
+
     pub fn state(&self) -> MultilingualTrackerState {
         let duration_ticks = conditional_duration_ticks(
             &self.hsmm_joint,
@@ -726,6 +734,25 @@ mod tests {
             )),
             MultilingualPushResult::ProbabilityCountMismatch
         );
+    }
+
+    #[test]
+    fn advance_through_observation_processes_the_current_grid_slot_without_a_turn_delay() {
+        let mut tracker = MultilingualTracker::new(labels(), fast_config()).unwrap();
+        assert_eq!(
+            tracker.push_observation(observation(1_000, [0.01, 0.01, 0.97, 0.01])),
+            MultilingualPushResult::Enqueued
+        );
+        assert_eq!(tracker.advance_through_observation(1_000)[0].to_index, 2);
+        assert_eq!(tracker.state().stable_index, 2);
+
+        assert_eq!(
+            tracker.push_observation(observation(1_600, [0.01, 0.97, 0.01, 0.01])),
+            MultilingualPushResult::Enqueued
+        );
+        assert!(tracker.advance_through_observation(1_600).is_empty());
+        assert_eq!(tracker.state().candidate_index, Some(1));
+        assert!(tracker.state().posterior[1] > tracker.state().posterior[2]);
     }
 
     #[test]
