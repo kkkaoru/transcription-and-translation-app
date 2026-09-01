@@ -11,6 +11,8 @@ import 'package:kotoba_beacon_companion/src/companion_controller.dart';
 import 'package:kotoba_beacon_companion/src/companion_l10n.dart';
 import 'package:kotoba_beacon_companion/src/companion_pairing.dart';
 import 'package:kotoba_beacon_companion/src/companion_style.dart';
+import 'package:kotoba_beacon_companion/src/mobile_browser_source.dart';
+import 'package:kotoba_beacon_companion/src/mobile_browser_source_panel.dart';
 import 'package:kotoba_beacon_companion/src/mobile_rust_asr_assets.dart';
 import 'package:kotoba_beacon_companion/src/native_processing.dart';
 import 'package:kotoba_beacon_companion/src/quickmt_assets.dart';
@@ -24,10 +26,15 @@ const _processingChannel = MethodChannel('kotoba_beacon/processing');
 const _pairingEvents = EventChannel('kotoba_beacon/pairing');
 
 Future<void> main() => startCompanion(
-  initializeRust: RustLib.init,
+  initializeRust: () async {
+    await RustLib.init();
+    await loadMobileBrowserSourceFont();
+  },
   root: KotobaBeaconCompanionApp(
     home: CompanionHomePage(
       autoDiscover: true,
+      loadBrowserSourcePreferences: loadMobileBrowserSourcePreferences,
+      saveBrowserSourcePreferences: saveMobileBrowserSourcePreferences,
       pairingLinks: _pairingEvents
           .receiveBroadcastStream()
           .where((event) => event is String)
@@ -277,6 +284,9 @@ class CompanionHomePage extends StatefulWidget {
     this.pairingLinks,
     this.openSystemCamera,
     this.autoDiscover = false,
+    this.browserSourceBackend = const RustMobileBrowserSourceBackend(),
+    this.loadBrowserSourcePreferences,
+    this.saveBrowserSourcePreferences,
   });
 
   /// Initial Rust-owned stage assignment shown by the route controls.
@@ -308,6 +318,17 @@ class CompanionHomePage extends StatefulWidget {
 
   /// Opens the platform camera app for QR pairing.
   final Future<void> Function()? openSystemCamera;
+
+  /// Owns the opt-in Mobile LAN HTML caption server.
+  final MobileBrowserSourceBackend browserSourceBackend;
+
+  /// Loads persisted HTML host settings in production.
+  final Future<MobileBrowserSourcePreferences> Function()?
+  loadBrowserSourcePreferences;
+
+  /// Saves persisted HTML host settings in production.
+  final Future<void> Function(MobileBrowserSourcePreferences preferences)?
+  saveBrowserSourcePreferences;
 
   @override
   State<CompanionHomePage> createState() => _CompanionHomePageState();
@@ -343,6 +364,15 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
   bool _authenticated = false;
   bool _routeControlsEnabled = false;
   bool _selectionPending = false;
+  bool _browserSourceEnabled = false;
+  bool _browserSourceBusy = false;
+  String? _browserSourceUrl;
+  CompanionCaptionStyle _browserSourceStyle = const CompanionCaptionStyle();
+  String _previewSourceText = 'こんにちは聞こえますか。';
+  String _previewTranslationText = 'Hello, can you hear me?';
+  String _hostSourceText = '';
+  String _hostTranslationText = '';
+  Timer? _browserSourceSaveTimer;
   StreamSubscription<Uri>? _pairingSubscription;
 
   @override
@@ -373,6 +403,7 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       _pairingSubscription = pairingLinks.listen(_applyPairingLink);
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_restoreBrowserSourcePreferences());
       unawaited(_probeProviderAvailabilityAndStart());
     });
   }
@@ -423,9 +454,141 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
     unawaited(_disposeTransport(_transport));
     unawaited(_disposeProcessing(_processing));
     unawaited(_pairingSubscription?.cancel());
+    _browserSourceSaveTimer?.cancel();
+    if (_browserSourceEnabled) unawaited(widget.browserSourceBackend.stop());
     _endpointController.dispose();
     _tokenController.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreBrowserSourcePreferences() async {
+    final load = widget.loadBrowserSourcePreferences;
+    if (load == null) return;
+    try {
+      final preferences = await load();
+      if (!mounted) return;
+      setState(() {
+        _browserSourceStyle = preferences.style;
+        _browserSourceEnabled = preferences.enabled;
+      });
+      if (preferences.enabled) await _startBrowserSource();
+    } on Object catch (error) {
+      _reportBrowserSourceFailure(error);
+    }
+  }
+
+  Future<void> _setBrowserSourceEnabled(bool enabled) async {
+    if (_browserSourceBusy || enabled == _browserSourceEnabled) return;
+    setState(() {
+      _browserSourceEnabled = enabled;
+      _browserSourceBusy = true;
+    });
+    try {
+      if (enabled) {
+        await _startBrowserSource();
+      } else {
+        await widget.browserSourceBackend.stop();
+        if (!mounted) return;
+        setState(() {
+          _browserSourceUrl = null;
+          _browserSourceBusy = false;
+        });
+        _companion?.publishBrowserSourceStatus();
+      }
+      _scheduleBrowserSourceSave();
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _browserSourceEnabled = !enabled;
+        _browserSourceBusy = false;
+      });
+      _reportBrowserSourceFailure(error);
+    }
+  }
+
+  Future<void> _startBrowserSource() async {
+    if (!_browserSourceBusy && mounted) {
+      setState(() => _browserSourceBusy = true);
+    }
+    final url = await widget.browserSourceBackend.start();
+    await widget.browserSourceBackend.updateStyle(_browserSourceStyle);
+    await widget.browserSourceBackend.updateCaption(
+      _hostSourceText.isEmpty ? _previewSourceText : _hostSourceText,
+      _hostTranslationText.isEmpty
+          ? _previewTranslationText
+          : _hostTranslationText,
+    );
+    if (!mounted) return;
+    setState(() {
+      _browserSourceEnabled = true;
+      _browserSourceUrl = url;
+      _browserSourceBusy = false;
+    });
+    _companion?.publishBrowserSourceStatus();
+  }
+
+  Future<void> _applyHostedCaption(String source, String translation) async {
+    _hostSourceText = source;
+    _hostTranslationText = translation;
+    if (!_browserSourceEnabled) return;
+    await widget.browserSourceBackend.updateCaption(source, translation);
+  }
+
+  void _setBrowserSourceStyle(CompanionCaptionStyle style) {
+    setState(() => _browserSourceStyle = style);
+    if (_browserSourceEnabled) {
+      unawaited(
+        widget.browserSourceBackend
+            .updateStyle(style)
+            .catchError(_reportBrowserSourceFailure),
+      );
+    }
+    _scheduleBrowserSourceSave();
+  }
+
+  void _setPreviewCaption({String? source, String? translation}) {
+    setState(() {
+      if (source != null) _previewSourceText = source;
+      if (translation != null) _previewTranslationText = translation;
+    });
+    if (_browserSourceEnabled && _hostSourceText.isEmpty) {
+      unawaited(
+        widget.browserSourceBackend
+            .updateCaption(_previewSourceText, _previewTranslationText)
+            .catchError(_reportBrowserSourceFailure),
+      );
+    }
+  }
+
+  void _scheduleBrowserSourceSave() {
+    final save = widget.saveBrowserSourcePreferences;
+    if (save == null) return;
+    _browserSourceSaveTimer?.cancel();
+    _browserSourceSaveTimer = Timer(const Duration(milliseconds: 250), () {
+      unawaited(
+        save(
+          MobileBrowserSourcePreferences(
+            enabled: _browserSourceEnabled,
+            style: _browserSourceStyle,
+          ),
+        ).catchError(_reportBrowserSourceFailure),
+      );
+    });
+  }
+
+  void _reportBrowserSourceFailure(Object error) {
+    if (!mounted) return;
+    setState(() {
+      _browserSourceBusy = false;
+      _statusKind = _StatusKind.error;
+      _status = _l10n.browserSourceFailed(error);
+    });
+  }
+
+  Future<void> _copyBrowserSourceUrl() async {
+    final url = _browserSourceUrl;
+    if (url == null) return;
+    await Clipboard.setData(ClipboardData(text: url));
   }
 
   Future<void> _initializeDictionary() async {
@@ -650,6 +813,9 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
         onSource: (text) => _setResult(source: text),
         onAzooKey: (text) => _setResult(azooKey: text),
         onTranslation: (text) => _setResult(translation: text),
+        onBrowserSourceCaption: _applyHostedCaption,
+        browserSourceEnabled: () => _browserSourceEnabled,
+        browserSourceUrl: () => _browserSourceUrl,
       );
       if (supportedRoute.azookey == ExecutionDevice.mobile) {
         await _prepareInitialAzooKeyResources();
@@ -1131,6 +1297,21 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
           onChanged: (value) => unawaited(_setTranslationChoice(value)),
         ),
       ],
+      const SizedBox(height: CompanionStyle.section),
+      MobileBrowserSourcePanel(
+        enabled: _browserSourceEnabled,
+        busy: _browserSourceBusy,
+        url: _browserSourceUrl,
+        style: _browserSourceStyle,
+        previewSource: _previewSourceText,
+        previewTranslation: _previewTranslationText,
+        onToggle: (enabled) => unawaited(_setBrowserSourceEnabled(enabled)),
+        onCopyUrl: () => unawaited(_copyBrowserSourceUrl()),
+        onStyleChanged: _setBrowserSourceStyle,
+        onPreviewSourceChanged: (source) => _setPreviewCaption(source: source),
+        onPreviewTranslationChanged: (translation) =>
+            _setPreviewCaption(translation: translation),
+      ),
     ];
   }
 

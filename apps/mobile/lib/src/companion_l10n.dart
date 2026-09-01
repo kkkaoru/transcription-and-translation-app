@@ -78,6 +78,68 @@ final class CompanionL10n {
 
   String get translationMethod => _japanese ? '翻訳' : 'Translation';
 
+  String get htmlHost => _japanese ? 'HTMLホスト字幕' : 'HTML caption host';
+
+  String get htmlHostEnabled =>
+      _japanese ? 'この端末でHTML字幕を配信' : 'Host HTML captions on this device';
+
+  String get copyHtmlUrl => _japanese ? 'HTML URLをコピー' : 'Copy HTML URL';
+
+  String get editCaptionStyle => _japanese ? '字幕スタイルを編集' : 'Edit caption style';
+
+  String get hideCaptionStyle =>
+      _japanese ? '字幕スタイルを閉じる' : 'Close caption style';
+
+  String get previewRecognition => _japanese ? 'プレビュー字幕' : 'Preview caption';
+
+  String get previewTranslation =>
+      _japanese ? 'プレビュー翻訳' : 'Preview translation';
+
+  String get fontWeight => _japanese ? 'フォントの太さ' : 'Font weight';
+
+  String get letterSpacing => _japanese ? '文字間隔' : 'Letter spacing';
+
+  String get lineHeight => _japanese ? '行の高さ' : 'Line height';
+
+  String get sourceSize => _japanese ? '字幕サイズ' : 'Caption size';
+
+  String get sourceColor => _japanese ? '字幕色' : 'Caption color';
+
+  String get sourceOpacity => _japanese ? '字幕の不透明度' : 'Caption opacity';
+
+  String get translationSize => _japanese ? '翻訳サイズ' : 'Translation size';
+
+  String get translationColor => _japanese ? '翻訳色' : 'Translation color';
+
+  String get translationOpacity =>
+      _japanese ? '翻訳の不透明度' : 'Translation opacity';
+
+  String get positionX => _japanese ? '横位置' : 'Horizontal position';
+
+  String get positionY => _japanese ? '縦位置' : 'Vertical position';
+
+  String get background => _japanese ? '背景' : 'Background';
+
+  String get backgroundColor => _japanese ? '背景色' : 'Background color';
+
+  String get backgroundOpacity => _japanese ? '背景の不透明度' : 'Background opacity';
+
+  String get shadow => _japanese ? '影' : 'Shadow';
+
+  String get shadowColor => _japanese ? '影の色' : 'Shadow color';
+
+  String get shadowBlur => _japanese ? '影のぼかし' : 'Shadow blur';
+
+  String get shadowOffsetX => _japanese ? '影の横位置' : 'Shadow horizontal offset';
+
+  String get shadowOffsetY => _japanese ? '影の縦位置' : 'Shadow vertical offset';
+
+  String get outline => _japanese ? '縁取り' : 'Outline';
+
+  String get outlineColor => _japanese ? '縁取り色' : 'Outline color';
+
+  String get outlineWidth => _japanese ? '縁取り幅' : 'Outline width';
+
   String get processOnDesktop => _japanese ? 'デスクトップで処理' : 'Process on desktop';
 
   String get processOnThisDevice =>
@@ -239,6 +301,10 @@ final class CompanionL10n {
 
   String syncFailed(Object error) =>
       _japanese ? '設定同期失敗: $error' : 'Could not sync settings: $error';
+
+  String browserSourceFailed(Object error) => _japanese
+      ? 'HTMLホストの更新に失敗しました: $error'
+      : 'Could not update the HTML host: $error';
 
   String unavailableOnThisDevice(String label) =>
       _japanese ? '$label（この端末では利用不可）' : '$label (unavailable on this device)';

@@ -37,6 +37,49 @@ void main() {
   });
 
   test(
+    'authenticated HTML host status and captions stay session scoped',
+    () async {
+      final transport = _RoutingTransport();
+      final processing = _RoutingProcessing();
+      final hostedCaption = Completer<(String, String)>();
+      final controller = CompanionController(
+        route: _allMobileRoute,
+        transport: transport,
+        processing: processing,
+        onStatus: (_) {},
+        onSource: (_) {},
+        onAzooKey: (_) {},
+        onTranslation: (_) {},
+        browserSourceEnabled: () => true,
+        browserSourceUrl: () => 'http://192.168.1.20:1522/',
+        onBrowserSourceCaption: (source, translation) async {
+          hostedCaption.complete((source, translation));
+        },
+      );
+
+      transport.addText(
+        '{"version":1,"type":"session.ready","session_id":"html-session",'
+        '"route":{"asr":"mobile","azookey":"mobile","translation":"mobile"}}',
+      );
+      await _waitForSentMessages(transport, count: 1);
+      expect(
+        transport.sent.single,
+        '{"version":1,"type":"browser_source.status",'
+        '"session_id":"html-session","url":"http://192.168.1.20:1522/",'
+        '"enabled":true}',
+      );
+
+      transport.addText(
+        '{"version":1,"type":"browser_source.caption",'
+        '"session_id":"html-session","source_text":"こんにちは",'
+        '"translation_text":"Hello"}',
+      );
+      expect(await hostedCaption.future, ('こんにちは', 'Hello'));
+      await controller.dispose();
+    },
+  );
+
+  test(
     'desktop ASR continues through mobile AzooKey and translation',
     () async {
       final transport = _RoutingTransport();

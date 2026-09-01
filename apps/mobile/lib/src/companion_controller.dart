@@ -16,6 +16,15 @@ String _defaultConnectedStatus(String sessionId, String routeId) =>
 
 String _defaultSyncedStatus(String routeId) => '設定同期済み: $routeId';
 
+bool _browserSourceDisabled() => false;
+
+String? _noBrowserSourceUrl() => null;
+
+Future<void> _ignoreBrowserSourceCaption(
+  String source,
+  String translation,
+) async {}
+
 /// Reports whether the authenticated session is idle enough to change routes.
 typedef RouteControlsChanged = void Function({required bool enabled});
 
@@ -62,6 +71,9 @@ final class CompanionController {
     required this.onSource,
     required this.onAzooKey,
     required this.onTranslation,
+    this.onBrowserSourceCaption = _ignoreBrowserSourceCaption,
+    this.browserSourceEnabled = _browserSourceDisabled,
+    this.browserSourceUrl = _noBrowserSourceUrl,
     this.onRouteRequested = _acceptRoute,
     this.onRouteControlsEnabled = _ignoreRouteControlState,
     this.onConnectionChanged = _ignoreConnectionState,
@@ -111,11 +123,22 @@ final class CompanionController {
   /// Receives accepted translation text immediately.
   final void Function(String text) onTranslation;
 
+  /// Applies the authoritative Native caption to the Mobile HTML host.
+  final Future<void> Function(String source, String translation)
+  onBrowserSourceCaption;
+
+  /// Reads whether the Mobile HTML host is currently enabled.
+  final bool Function() browserSourceEnabled;
+
+  /// Reads the current LAN URL advertised for the Mobile HTML host.
+  final String? Function() browserSourceUrl;
+
   static const _maxPendingPcmFrames = 64;
 
   final Map<BigInt, BigInt> _latestRevisionByTurn = <BigInt, BigInt>{};
   final Map<BigInt, BigInt> _asrBaseRevisionByTurn = <BigInt, BigInt>{};
   BigInt? _latestTurnId;
+  String? _sessionId;
   final List<Uint8List> _pendingPcm = <Uint8List>[];
   StreamSubscription<Object>? _transportSubscription;
   StreamSubscription<ProcessingEvent>? _processingSubscription;
@@ -127,6 +150,19 @@ final class CompanionController {
   bool _translationEnabled = true;
   _AzooKeyRequest? _pendingAzooKey;
   _TranslationRequest? _pendingTranslation;
+
+  /// Sends the current Mobile HTML host state to the authenticated Native app.
+  void publishBrowserSourceStatus() {
+    final sessionId = _sessionId;
+    if (sessionId == null) return;
+    transport.sendText(
+      encodeMobileBrowserSourceStatus(
+        sessionId: sessionId,
+        enabled: browserSourceEnabled(),
+        url: browserSourceUrl(),
+      ),
+    );
+  }
 
   /// Stops subscriptions after the transport has already failed.
   ///
@@ -217,6 +253,8 @@ final class CompanionController {
     switch (command) {
       case DesktopCommand_SessionReady(:final sessionId, :final route):
         await _configureRoute(route);
+        _sessionId = sessionId;
+        publishBrowserSourceStatus();
         onConnectionChanged(connected: true);
         onRouteControlsEnabled(enabled: true);
         onStatus(connectedStatus(sessionId, pipelineRouteId(route: route)));
@@ -305,6 +343,13 @@ final class CompanionController {
       case DesktopCommand_SetTranslationEnabled(:final enabled):
         _translationEnabled = enabled;
         if (!enabled) onTranslation('');
+      case DesktopCommand_UpdateBrowserSourceCaption(
+        :final sessionId,
+        :final sourceText,
+        :final translationText,
+      ):
+        if (_sessionId != sessionId || !browserSourceEnabled()) return;
+        await onBrowserSourceCaption(sourceText, translationText);
       case DesktopCommand_StopSession():
         _mobileAsrStarting = false;
         _mobileAsrActive = false;
@@ -314,6 +359,7 @@ final class CompanionController {
         _latestRevisionByTurn.clear();
         _asrBaseRevisionByTurn.clear();
         _latestTurnId = null;
+        _sessionId = null;
         await processing.cancel();
         onRouteControlsEnabled(enabled: true);
         onStatus('デスクトップがセッションを停止しました');

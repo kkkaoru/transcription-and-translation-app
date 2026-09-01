@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kotoba_beacon_companion/main.dart' as app;
 import 'package:kotoba_beacon_companion/src/companion_connection.dart';
 import 'package:kotoba_beacon_companion/src/companion_l10n.dart';
+import 'package:kotoba_beacon_companion/src/mobile_browser_source.dart';
 import 'package:kotoba_beacon_companion/src/native_processing.dart';
 import 'package:kotoba_beacon_companion/src/rust/api/simple.dart';
 
@@ -42,6 +43,14 @@ void main() {
   testWidgets(
     'uses a minimal readable type spacing and action vocabulary',
     _testVisualVocabulary,
+  );
+  testWidgets(
+    'hosts and styles HTML captions through the injected backend',
+    _testMobileBrowserSourceLifecycle,
+  );
+  testWidgets(
+    'restores the HTML host toggle after a startup failure',
+    _testMobileBrowserSourceFailure,
   );
   testWidgets(
     'disables unsupported mobile APIs after capability detection',
@@ -236,18 +245,164 @@ Future<void> _testVisualVocabulary(WidgetTester tester) async {
   expect(theme.textTheme.titleLarge?.fontSize, 20);
   expect(theme.textTheme.titleLarge?.fontWeight, FontWeight.w600);
   expect(find.byType(FilledButton), findsOneWidget);
-  expect(find.byType(OutlinedButton), findsOneWidget);
+  expect(find.byType(OutlinedButton), findsNWidgets(2));
   expect(
     tester.getSize(find.byType(FilledButton)).height,
     greaterThanOrEqualTo(48),
   );
-  expect(
-    tester.getSize(find.byType(OutlinedButton)).height,
-    greaterThanOrEqualTo(48),
-  );
+  for (var index = 0; index < 2; index += 1) {
+    expect(
+      tester.getSize(find.byType(OutlinedButton).at(index)).height,
+      greaterThanOrEqualTo(48),
+    );
+  }
   expect(
     tester.getSize(find.byKey(const Key('azookey-provider'))).height,
     greaterThanOrEqualTo(48),
+  );
+}
+
+Future<void> _testMobileBrowserSourceLifecycle(WidgetTester tester) async {
+  final browserSource = _WidgetBrowserSource();
+  final savedPreferences = <MobileBrowserSourcePreferences>[];
+  await tester.pumpWidget(
+    _japaneseShell(
+      home: app.CompanionHomePage(
+        browserSourceBackend: browserSource,
+        loadBrowserSourcePreferences: () async =>
+            const MobileBrowserSourcePreferences(),
+        saveBrowserSourcePreferences: (preferences) async {
+          savedPreferences.add(preferences);
+        },
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+
+  final toggle = find.byKey(const Key('mobile-browser-source-toggle'));
+  await tester.ensureVisible(toggle);
+  final enableControl = tester.widget<Widget>(
+    find.descendant(
+      of: toggle,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is CupertinoSwitch || widget is Switch,
+      ),
+    ),
+  );
+  if (enableControl case CupertinoSwitch(:final onChanged)) {
+    onChanged?.call(true);
+  } else if (enableControl case Switch(:final onChanged)) {
+    onChanged?.call(true);
+  }
+  await tester.pumpAndSettle();
+  expect(browserSource.startCalls, 1);
+  expect(browserSource.styleUpdates, isNotEmpty);
+  expect(browserSource.captionUpdates, isNotEmpty);
+  expect(find.text('http://127.0.0.1:1522/'), findsOneWidget);
+
+  final editorToggle = find.byKey(
+    const Key('toggle-mobile-caption-style-editor'),
+  );
+  await tester.ensureVisible(editorToggle);
+  await tester.tap(editorToggle);
+  await tester.pump();
+  final previewInputs = find.descendant(
+    of: find.byKey(const Key('mobile-browser-source-panel')),
+    matching: find.byWidgetPredicate(
+      (widget) => widget is CupertinoTextField || widget is TextField,
+    ),
+  );
+  final sourcePreview = previewInputs.first;
+  await tester.ensureVisible(sourcePreview);
+  await tester.enterText(sourcePreview, '配信中の字幕');
+  await tester.pumpAndSettle();
+  expect(browserSource.captionUpdates.last.$1, '配信中の字幕');
+  await tester.enterText(previewInputs.at(1), 'Live translation');
+  await tester.pumpAndSettle();
+  expect(browserSource.captionUpdates.last.$2, 'Live translation');
+
+  final styleSlider = find
+      .descendant(
+        of: find.byKey(const Key('mobile-browser-source-panel')),
+        matching: find.byWidgetPredicate(
+          (widget) => widget is CupertinoSlider || widget is Slider,
+        ),
+      )
+      .first;
+  final slider = tester.widget<Widget>(styleSlider);
+  if (slider case CupertinoSlider(:final onChanged)) {
+    onChanged?.call(800);
+  } else if (slider case Slider(:final onChanged)) {
+    onChanged?.call(800);
+  }
+  await tester.pumpAndSettle();
+  expect(browserSource.styleUpdates.last.fontWeight, 800);
+
+  await tester.ensureVisible(toggle);
+  final disableControl = tester.widget<Widget>(
+    find.descendant(
+      of: toggle,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is CupertinoSwitch || widget is Switch,
+      ),
+    ),
+  );
+  if (disableControl case CupertinoSwitch(:final onChanged)) {
+    onChanged?.call(false);
+  } else if (disableControl case Switch(:final onChanged)) {
+    onChanged?.call(false);
+  }
+  await tester.pumpAndSettle();
+  expect(browserSource.stopCalls, 1);
+  expect(savedPreferences.last.enabled, isFalse);
+}
+
+Future<void> _testMobileBrowserSourceFailure(WidgetTester tester) async {
+  final browserSource = _WidgetBrowserSource(failStart: true);
+  await tester.pumpWidget(
+    _japaneseShell(
+      home: app.CompanionHomePage(
+        browserSourceBackend: browserSource,
+        loadBrowserSourcePreferences: () async =>
+            const MobileBrowserSourcePreferences(),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+
+  final toggle = find.byKey(const Key('mobile-browser-source-toggle'));
+  final switchControl = tester.widget<Widget>(
+    find.descendant(
+      of: toggle,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is CupertinoSwitch || widget is Switch,
+      ),
+    ),
+  );
+  if (switchControl case CupertinoSwitch(:final onChanged)) {
+    onChanged?.call(true);
+  } else if (switchControl case Switch(:final onChanged)) {
+    onChanged?.call(true);
+  }
+  await tester.pumpAndSettle();
+
+  expect(browserSource.startCalls, 1);
+  expect(find.textContaining('HTMLホストの更新に失敗しました'), findsOneWidget);
+  final restoredControl = tester.widget<Widget>(
+    find.descendant(
+      of: toggle,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is CupertinoSwitch || widget is Switch,
+      ),
+    ),
+  );
+  expect(
+    switch (restoredControl) {
+      CupertinoSwitch(:final value) => value,
+      Switch(:final value) => value,
+      _ => true,
+    },
+    isFalse,
   );
 }
 
@@ -1222,6 +1377,36 @@ final class _WidgetTransport implements CompanionTransport {
 
   @override
   Future<void> close() async => closeCalls += 1;
+}
+
+final class _WidgetBrowserSource implements MobileBrowserSourceBackend {
+  _WidgetBrowserSource({this.failStart = false});
+
+  final bool failStart;
+  int startCalls = 0;
+  int stopCalls = 0;
+  final styleUpdates = <CompanionCaptionStyle>[];
+  final captionUpdates = <(String, String)>[];
+
+  @override
+  Future<String> start() async {
+    startCalls += 1;
+    if (failStart) throw StateError('port busy');
+    return 'http://127.0.0.1:1522/';
+  }
+
+  @override
+  Future<void> stop() async => stopCalls += 1;
+
+  @override
+  Future<void> updateCaption(String source, String translation) async {
+    captionUpdates.add((source, translation));
+  }
+
+  @override
+  Future<void> updateStyle(CompanionCaptionStyle style) async {
+    styleUpdates.add(style);
+  }
 }
 
 final class _WidgetProcessing implements ProcessingBackend {
