@@ -34,6 +34,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  MobileBrowserSourceStyle dco_decode_box_autoadd_mobile_browser_source_style(
+    dynamic raw,
+  );
+
+  @protected
   MobileCapabilities dco_decode_box_autoadd_mobile_capabilities(dynamic raw);
 
   @protected
@@ -47,6 +52,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ExecutionDevice dco_decode_execution_device(dynamic raw);
+
+  @protected
+  double dco_decode_f_32(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -64,10 +72,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  MobileBrowserSourceStatus dco_decode_mobile_browser_source_status(
+    dynamic raw,
+  );
+
+  @protected
+  MobileBrowserSourceStyle dco_decode_mobile_browser_source_style(dynamic raw);
+
+  @protected
   MobileCapabilities dco_decode_mobile_capabilities(dynamic raw);
 
   @protected
   MobileStageResult dco_decode_mobile_stage_result(dynamic raw);
+
+  @protected
+  String? dco_decode_opt_String(dynamic raw);
 
   @protected
   PairRequest dco_decode_pair_request(dynamic raw);
@@ -80,6 +99,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SessionConfiguration dco_decode_session_configuration(dynamic raw);
+
+  @protected
+  int dco_decode_u_16(dynamic raw);
 
   @protected
   BigInt dco_decode_u_64(dynamic raw);
@@ -103,6 +125,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  MobileBrowserSourceStyle sse_decode_box_autoadd_mobile_browser_source_style(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   MobileCapabilities sse_decode_box_autoadd_mobile_capabilities(
     SseDeserializer deserializer,
   );
@@ -120,6 +147,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ExecutionDevice sse_decode_execution_device(SseDeserializer deserializer);
+
+  @protected
+  double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -141,6 +171,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  MobileBrowserSourceStatus sse_decode_mobile_browser_source_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  MobileBrowserSourceStyle sse_decode_mobile_browser_source_style(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   MobileCapabilities sse_decode_mobile_capabilities(
     SseDeserializer deserializer,
   );
@@ -149,6 +189,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MobileStageResult sse_decode_mobile_stage_result(
     SseDeserializer deserializer,
   );
+
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
   PairRequest sse_decode_pair_request(SseDeserializer deserializer);
@@ -163,6 +206,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SessionConfiguration sse_decode_session_configuration(
     SseDeserializer deserializer,
   );
+
+  @protected
+  int sse_decode_u_16(SseDeserializer deserializer);
 
   @protected
   BigInt sse_decode_u_64(SseDeserializer deserializer);
@@ -184,6 +230,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_mobile_browser_source_style(
+    MobileBrowserSourceStyle self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_mobile_capabilities(
@@ -216,6 +268,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_f_32(double self, SseSerializer serializer);
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -240,6 +295,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_mobile_browser_source_status(
+    MobileBrowserSourceStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_mobile_browser_source_style(
+    MobileBrowserSourceStyle self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_mobile_capabilities(
     MobileCapabilities self,
     SseSerializer serializer,
@@ -250,6 +317,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     MobileStageResult self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
   void sse_encode_pair_request(PairRequest self, SseSerializer serializer);
@@ -268,6 +338,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     SessionConfiguration self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_u_16(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_64(BigInt self, SseSerializer serializer);

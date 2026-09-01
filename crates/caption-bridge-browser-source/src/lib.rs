@@ -1,20 +1,21 @@
-//! OBS Browser Source loopback HTTP server without a Tauri `AppHandle`.
+//! OBS Browser Source HTTP server without a Tauri `AppHandle`.
 //!
-//! The native Syphon/Spout2 lanes are platform-specific, so every platform
-//! keeps a loopback fallback. This crate serves a caption-only page plus a JSON
-//! caption feed on `http://127.0.0.1:{port}/` that OBS captures with a regular
-//! Browser Source.
+//! Desktop callers use a loopback-only listener. The Mobile companion can
+//! explicitly opt into a LAN listener so OBS on the paired desktop can read the
+//! phone-owned caption page. Both modes serve the same caption-only page and
+//! JSON feed.
 //!
 //! Documented identities (see `caption-bridge-sidecar` `PortMap`):
 //! - Tauri desktop app: port `1421`
 //! - Native (GPUI) app: port `1521` (`1421 + 100`)
+//! - Mobile companion: port `1522` (`1421 + 101`)
 //!
 //! Port `0` asks the OS for an ephemeral listener, which tests use so they never
 //! collide with a running app.
 
 #![forbid(unsafe_code)]
 
-use caption_bridge_fonts::{NOTO_SANS_JP_BROWSER_PATH, NOTO_SANS_JP_VARIABLE_TTF};
+pub use caption_bridge_fonts::{NOTO_SANS_JP_BROWSER_PATH, NOTO_SANS_JP_VARIABLE_TTF};
 use serde::Serialize;
 use std::io::{Cursor, Error as IoError, ErrorKind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,8 +30,12 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 pub const TAURI_BROWSER_SOURCE_PORT: u16 = 1421;
 /// Loopback port owned by the native (GPUI) app: Tauri identity plus 100.
 pub const NATIVE_BROWSER_SOURCE_PORT: u16 = 1521;
-/// Interface the listener binds. The page is never exposed beyond the host.
+/// Loopback interface used by desktop callers.
 pub const LOOPBACK_HOST: &str = "127.0.0.1";
+/// Opt-in LAN interface used only by the Mobile companion.
+pub const LAN_HOST: &str = "0.0.0.0";
+/// Port owned by the Mobile companion.
+pub const MOBILE_BROWSER_SOURCE_PORT: u16 = 1522;
 
 /// Accept-poll interval. A clean stop is observed within this window.
 const ACCEPT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -181,6 +186,11 @@ impl BrowserSourceConfig {
     pub const fn native() -> Self {
         Self { port: NATIVE_BROWSER_SOURCE_PORT, enabled: true }
     }
+
+    /// Mobile companion identity: port `1522`.
+    pub const fn mobile() -> Self {
+        Self { port: MOBILE_BROWSER_SOURCE_PORT, enabled: true }
+    }
 }
 
 impl Default for BrowserSourceServer {
@@ -192,9 +202,24 @@ impl Default for BrowserSourceServer {
 impl BrowserSourceServer {
     /// Start serving on the configured port when `enabled`.
     pub fn start(config: BrowserSourceConfig) -> Result<Self, BrowserSourceError> {
+        Self::start_on_host(config, LOOPBACK_HOST)
+    }
+
+    /// Start an explicitly enabled LAN listener for the Mobile companion.
+    ///
+    /// This API is separate from [`Self::start`] so desktop call sites cannot
+    /// accidentally expose their Browser Source outside the host.
+    pub fn start_mobile(config: BrowserSourceConfig) -> Result<Self, BrowserSourceError> {
+        Self::start_on_host(config, LAN_HOST)
+    }
+
+    fn start_on_host(
+        config: BrowserSourceConfig,
+        bind_host: &'static str,
+    ) -> Result<Self, BrowserSourceError> {
         let shared = Arc::new(SharedState { feed: Mutex::new(empty_feed()) });
         let bind = if config.enabled {
-            Some(bind_listener(config.port, Arc::clone(&shared))?)
+            Some(bind_listener(bind_host, config.port, Arc::clone(&shared))?)
         } else {
             None
         };
@@ -247,13 +272,16 @@ fn empty_feed() -> BrowserSourceFeed {
     BrowserSourceFeed { caption: None, style: BrowserSourceStyle::default() }
 }
 
-fn bind_error(port: u16, source: impl Into<IoError>) -> BrowserSourceError {
-    BrowserSourceError::Bind { host: LOOPBACK_HOST.to_string(), port, source: source.into() }
-}
-
-fn bind_listener(port: u16, shared: Arc<SharedState>) -> Result<BindHandle, BrowserSourceError> {
-    let server = Server::http((LOOPBACK_HOST, port))
-        .map_err(|error| bind_error(port, IoError::new(ErrorKind::AddrInUse, error.to_string())))?;
+fn bind_listener(
+    host: &'static str,
+    port: u16,
+    shared: Arc<SharedState>,
+) -> Result<BindHandle, BrowserSourceError> {
+    let server = Server::http((host, port)).map_err(|error| BrowserSourceError::Bind {
+        host: host.to_string(),
+        port,
+        source: IoError::new(ErrorKind::AddrInUse, error.to_string()),
+    })?;
     let actual_port = server.server_addr().to_ip().map(|address| address.port()).unwrap_or(port);
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
@@ -698,6 +726,22 @@ mod tests {
         assert!(!server.is_running());
         assert_eq!(server.bound_port(), None);
         assert!(server_is_stopped(port), "dropping the listener must stop accepting");
+    }
+
+    #[test]
+    fn mobile_listener_is_lan_bound_and_serves_the_shared_feed() {
+        let server =
+            BrowserSourceServer::start_mobile(BrowserSourceConfig { port: 0, enabled: true })
+                .expect("bind mobile LAN listener");
+        server.feed("モバイル字幕", "Mobile caption");
+        let port = server.bound_port().expect("bound port");
+
+        let feed_body = http_get(port, "/captions.json");
+        assert!(feed_body.starts_with("HTTP/1.1 200 OK"));
+        let json: serde_json::Value =
+            serde_json::from_str(response_body(&feed_body)).expect("feed JSON");
+        assert_eq!(json["caption"]["source"], "モバイル字幕");
+        assert_eq!(json["caption"]["translation"], "Mobile caption");
     }
 
     #[test]

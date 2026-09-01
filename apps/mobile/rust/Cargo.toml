@@ -15,6 +15,7 @@ mobile-rust-asr = ["dep:sherpa-onnx"]
 
 [dependencies]
 caption-bridge-azookey-rust = { path = "../../../packages/azookey-rust" }
+caption-bridge-browser-source = { path = "../../../crates/caption-bridge-browser-source" }
 caption-bridge-zenz-verifier = { path = "../../../packages/zenz-verifier-rust", features = ["candle"], optional = true }
 candle-core = { version = "0.11", optional = true }
 flate2 = "1"

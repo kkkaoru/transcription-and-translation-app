@@ -73,7 +73,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1811000938;
+  int get rustContentHash => 35166356;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -96,6 +96,10 @@ abstract class RustLibApi extends BaseApi {
   Future<BigInt> crateApiSimpleDecodeDiscoveryRequest({required String json});
 
   DiscoveryResponse crateApiSimpleDecodeDiscoveryResponse({
+    required String json,
+  });
+
+  MobileBrowserSourceStatus crateApiSimpleDecodeMobileBrowserSourceStatus({
     required String json,
   });
 
@@ -122,12 +126,24 @@ abstract class RustLibApi extends BaseApi {
     required BigInt revision,
   });
 
+  String crateApiSimpleEncodeBrowserSourceCaption({
+    required String sessionId,
+    required String sourceText,
+    required String translationText,
+  });
+
   String crateApiSimpleEncodeDiscoveryRequest({required BigInt nonce});
 
   Future<String> crateApiSimpleEncodeDiscoveryResponse({
     required BigInt nonce,
     required String endpoint,
     required String token,
+  });
+
+  String crateApiSimpleEncodeMobileBrowserSourceStatus({
+    required String sessionId,
+    required bool enabled,
+    String? url,
   });
 
   String crateApiSimpleEncodePairRequest({
@@ -180,6 +196,11 @@ abstract class RustLibApi extends BaseApi {
     required List<int> bytes,
   });
 
+  Future<Uint8List> crateApiSimpleMobileBrowserSourceFontBytes();
+
+  Future<MobileBrowserSourceStyle>
+  crateApiSimpleMobileBrowserSourceStyleDefault();
+
   Future<PipelineRoute> crateApiSimpleMobileCapabilitiesConstrain({
     required MobileCapabilities that,
     required PipelineRoute route,
@@ -224,11 +245,24 @@ abstract class RustLibApi extends BaseApi {
     required ProcessingStage stage,
   });
 
+  Future<int> crateApiSimpleStartMobileBrowserSource();
+
+  Future<void> crateApiSimpleStopMobileBrowserSource();
+
   Future<String> crateApiSimpleTranscribeMobileRustAsr({
     required List<int> pcm16,
   });
 
   Future<String> crateApiSimpleTranslateQuickmt({required String text});
+
+  Future<void> crateApiSimpleUpdateMobileBrowserSourceCaption({
+    required String source,
+    required String translation,
+  });
+
+  Future<void> crateApiSimpleUpdateMobileBrowserSourceStyle({
+    required MobileBrowserSourceStyle style,
+  });
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -408,13 +442,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  PipelineRoute crateApiSimpleDecodeMobileRouteRequest({required String json}) {
+  MobileBrowserSourceStatus crateApiSimpleDecodeMobileBrowserSourceStatus({
+    required String json,
+  }) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(json, serializer);
           return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_mobile_browser_source_status,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleDecodeMobileBrowserSourceStatusConstMeta,
+        argValues: [json],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleDecodeMobileBrowserSourceStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "decode_mobile_browser_source_status",
+        argNames: ["json"],
+      );
+
+  @override
+  PipelineRoute crateApiSimpleDecodeMobileRouteRequest({required String json}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(json, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_pipeline_route,
@@ -442,7 +504,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(json, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_mobile_stage_result,
@@ -468,7 +530,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(json, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_pair_request,
@@ -496,7 +558,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(json, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_session_configuration,
@@ -521,7 +583,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_azoo_key_model,
@@ -546,7 +608,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_pipeline_route,
@@ -580,7 +642,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(sessionId, serializer);
           sse_encode_u_64(turnId, serializer);
           sse_encode_u_64(revision, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -600,13 +662,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  String crateApiSimpleEncodeBrowserSourceCaption({
+    required String sessionId,
+    required String sourceText,
+    required String translationText,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(sessionId, serializer);
+          sse_encode_String(sourceText, serializer);
+          sse_encode_String(translationText, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleEncodeBrowserSourceCaptionConstMeta,
+        argValues: [sessionId, sourceText, translationText],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleEncodeBrowserSourceCaptionConstMeta =>
+      const TaskConstMeta(
+        debugName: "encode_browser_source_caption",
+        argNames: ["sessionId", "sourceText", "translationText"],
+      );
+
+  @override
   String crateApiSimpleEncodeDiscoveryRequest({required BigInt nonce}) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_u_64(nonce, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -641,7 +735,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 17,
             port: port_,
           );
         },
@@ -663,6 +757,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  String crateApiSimpleEncodeMobileBrowserSourceStatus({
+    required String sessionId,
+    required bool enabled,
+    String? url,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(sessionId, serializer);
+          sse_encode_bool(enabled, serializer);
+          sse_encode_opt_String(url, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleEncodeMobileBrowserSourceStatusConstMeta,
+        argValues: [sessionId, enabled, url],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleEncodeMobileBrowserSourceStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "encode_mobile_browser_source_status",
+        argNames: ["sessionId", "enabled", "url"],
+      );
+
+  @override
   String crateApiSimpleEncodePairRequest({
     required String token,
     required String deviceId,
@@ -675,7 +801,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(token, serializer);
           sse_encode_String(deviceId, serializer);
           sse_encode_String(deviceName, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -703,7 +829,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_box_autoadd_pipeline_route(route, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -729,7 +855,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_box_autoadd_pipeline_route(route, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -761,7 +887,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(sessionId, serializer);
           sse_encode_box_autoadd_pipeline_route(route, serializer);
           sse_encode_box_autoadd_mobile_capabilities(capabilities, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -791,7 +917,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(sessionId, serializer);
           sse_encode_box_autoadd_pipeline_route(route, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -829,7 +955,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_64(revision, serializer);
           sse_encode_String(text, serializer);
           sse_encode_bool(isFinal, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -874,7 +1000,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_64(revision, serializer);
           sse_encode_String(text, serializer);
           sse_encode_bool(isFinal, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 25)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -911,7 +1037,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(sessionId, serializer);
           sse_encode_bool(enabled, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 26)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -939,7 +1065,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 27,
             port: port_,
           );
         },
@@ -971,7 +1097,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 28,
             port: port_,
           );
         },
@@ -993,6 +1119,67 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<Uint8List> crateApiSimpleMobileBrowserSourceFontBytes() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSimpleMobileBrowserSourceFontBytesConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleMobileBrowserSourceFontBytesConstMeta =>
+      const TaskConstMeta(
+        debugName: "mobile_browser_source_font_bytes",
+        argNames: [],
+      );
+
+  @override
+  Future<MobileBrowserSourceStyle>
+  crateApiSimpleMobileBrowserSourceStyleDefault() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 30,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_mobile_browser_source_style,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSimpleMobileBrowserSourceStyleDefaultConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleMobileBrowserSourceStyleDefaultConstMeta =>
+      const TaskConstMeta(
+        debugName: "mobile_browser_source_style_default",
+        argNames: [],
+      );
+
+  @override
   Future<PipelineRoute> crateApiSimpleMobileCapabilitiesConstrain({
     required MobileCapabilities that,
     required PipelineRoute route,
@@ -1006,7 +1193,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1041,7 +1228,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1069,7 +1256,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_box_autoadd_pipeline_route(route, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 28)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -1104,7 +1291,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1137,7 +1324,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1170,7 +1357,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 36,
             port: port_,
           );
         },
@@ -1200,7 +1387,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 37,
             port: port_,
           );
         },
@@ -1230,7 +1417,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 38,
             port: port_,
           );
         },
@@ -1260,7 +1447,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 39,
             port: port_,
           );
         },
@@ -1290,7 +1477,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 40,
             port: port_,
           );
         },
@@ -1322,7 +1509,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_box_autoadd_pipeline_route(route, serializer);
           sse_encode_processing_stage(completedStage, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 36)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 41)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -1352,7 +1539,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_box_autoadd_pipeline_route(route, serializer);
           sse_encode_processing_stage(stage, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 37)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 42)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_execution_device,
@@ -1371,6 +1558,66 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<int> crateApiSimpleStartMobileBrowserSource() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 43,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_16,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleStartMobileBrowserSourceConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleStartMobileBrowserSourceConstMeta =>
+      const TaskConstMeta(
+        debugName: "start_mobile_browser_source",
+        argNames: [],
+      );
+
+  @override
+  Future<void> crateApiSimpleStopMobileBrowserSource() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 44,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleStopMobileBrowserSourceConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleStopMobileBrowserSourceConstMeta =>
+      const TaskConstMeta(
+        debugName: "stop_mobile_browser_source",
+        argNames: [],
+      );
+
+  @override
   Future<String> crateApiSimpleTranscribeMobileRustAsr({
     required List<int> pcm16,
   }) {
@@ -1382,7 +1629,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 45,
             port: port_,
           );
         },
@@ -1413,7 +1660,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 46,
             port: port_,
           );
         },
@@ -1432,6 +1679,74 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "translate_quickmt",
         argNames: ["text"],
+      );
+
+  @override
+  Future<void> crateApiSimpleUpdateMobileBrowserSourceCaption({
+    required String source,
+    required String translation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(source, serializer);
+          sse_encode_String(translation, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 47,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleUpdateMobileBrowserSourceCaptionConstMeta,
+        argValues: [source, translation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleUpdateMobileBrowserSourceCaptionConstMeta =>
+      const TaskConstMeta(
+        debugName: "update_mobile_browser_source_caption",
+        argNames: ["source", "translation"],
+      );
+
+  @override
+  Future<void> crateApiSimpleUpdateMobileBrowserSourceStyle({
+    required MobileBrowserSourceStyle style,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_mobile_browser_source_style(style, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 48,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSimpleUpdateMobileBrowserSourceStyleConstMeta,
+        argValues: [style],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSimpleUpdateMobileBrowserSourceStyleConstMeta =>
+      const TaskConstMeta(
+        debugName: "update_mobile_browser_source_style",
+        argNames: ["style"],
       );
 
   @protected
@@ -1461,6 +1776,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   bool dco_decode_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as bool;
+  }
+
+  @protected
+  MobileBrowserSourceStyle dco_decode_box_autoadd_mobile_browser_source_style(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_mobile_browser_source_style(raw);
   }
 
   @protected
@@ -1525,6 +1848,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           enabled: dco_decode_bool(raw[1]),
         );
       case 8:
+        return DesktopCommand_UpdateBrowserSourceCaption(
+          sessionId: dco_decode_String(raw[1]),
+          sourceText: dco_decode_String(raw[2]),
+          translationText: dco_decode_String(raw[3]),
+        );
+      case 9:
         return DesktopCommand_Ping(
           nonce: dco_decode_u_64(raw[1]),
         );
@@ -1550,6 +1879,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ExecutionDevice dco_decode_execution_device(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ExecutionDevice.values[raw as int];
+  }
+
+  @protected
+  double dco_decode_f_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as double;
   }
 
   @protected
@@ -1583,6 +1918,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  MobileBrowserSourceStatus dco_decode_mobile_browser_source_status(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return MobileBrowserSourceStatus(
+      sessionId: dco_decode_String(arr[0]),
+      enabled: dco_decode_bool(arr[1]),
+      url: dco_decode_opt_String(arr[2]),
+    );
+  }
+
+  @protected
+  MobileBrowserSourceStyle dco_decode_mobile_browser_source_style(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 23)
+      throw Exception('unexpected arr length: expect 23 but see ${arr.length}');
+    return MobileBrowserSourceStyle(
+      fontFamily: dco_decode_String(arr[0]),
+      fontWeight: dco_decode_u_16(arr[1]),
+      letterSpacingPx: dco_decode_f_32(arr[2]),
+      lineHeight: dco_decode_f_32(arr[3]),
+      sourceSizePx: dco_decode_f_32(arr[4]),
+      sourceColor: dco_decode_String(arr[5]),
+      sourceOpacity: dco_decode_f_32(arr[6]),
+      translationSizePx: dco_decode_f_32(arr[7]),
+      translationColor: dco_decode_String(arr[8]),
+      translationOpacity: dco_decode_f_32(arr[9]),
+      xPercent: dco_decode_f_32(arr[10]),
+      yPercent: dco_decode_f_32(arr[11]),
+      backgroundEnabled: dco_decode_bool(arr[12]),
+      backgroundColor: dco_decode_String(arr[13]),
+      backgroundOpacity: dco_decode_f_32(arr[14]),
+      shadowEnabled: dco_decode_bool(arr[15]),
+      shadowColor: dco_decode_String(arr[16]),
+      shadowBlurPx: dco_decode_f_32(arr[17]),
+      shadowOffsetX: dco_decode_f_32(arr[18]),
+      shadowOffsetY: dco_decode_f_32(arr[19]),
+      outlineEnabled: dco_decode_bool(arr[20]),
+      outlineColor: dco_decode_String(arr[21]),
+      outlineWidthPx: dco_decode_f_32(arr[22]),
+    );
+  }
+
+  @protected
   MobileCapabilities dco_decode_mobile_capabilities(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -1612,6 +1995,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       text: dco_decode_String(arr[4]),
       isFinal: dco_decode_bool(arr[5]),
     );
+  }
+
+  @protected
+  String? dco_decode_opt_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_String(raw);
   }
 
   @protected
@@ -1660,6 +2049,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  int dco_decode_u_16(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
+  }
+
+  @protected
   BigInt dco_decode_u_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dcoDecodeU64(raw);
@@ -1702,6 +2097,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   bool sse_decode_bool(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getUint8() != 0;
+  }
+
+  @protected
+  MobileBrowserSourceStyle sse_decode_box_autoadd_mobile_browser_source_style(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_mobile_browser_source_style(deserializer));
   }
 
   @protected
@@ -1787,6 +2190,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_enabled = sse_decode_bool(deserializer);
         return DesktopCommand_SetTranslationEnabled(enabled: var_enabled);
       case 8:
+        var var_sessionId = sse_decode_String(deserializer);
+        var var_sourceText = sse_decode_String(deserializer);
+        var var_translationText = sse_decode_String(deserializer);
+        return DesktopCommand_UpdateBrowserSourceCaption(
+          sessionId: var_sessionId,
+          sourceText: var_sourceText,
+          translationText: var_translationText,
+        );
+      case 9:
         var var_nonce = sse_decode_u_64(deserializer);
         return DesktopCommand_Ping(nonce: var_nonce);
       default:
@@ -1814,6 +2226,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return ExecutionDevice.values[inner];
+  }
+
+  @protected
+  double sse_decode_f_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getFloat32();
   }
 
   @protected
@@ -1865,6 +2283,76 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  MobileBrowserSourceStatus sse_decode_mobile_browser_source_status(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_sessionId = sse_decode_String(deserializer);
+    var var_enabled = sse_decode_bool(deserializer);
+    var var_url = sse_decode_opt_String(deserializer);
+    return MobileBrowserSourceStatus(
+      sessionId: var_sessionId,
+      enabled: var_enabled,
+      url: var_url,
+    );
+  }
+
+  @protected
+  MobileBrowserSourceStyle sse_decode_mobile_browser_source_style(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fontFamily = sse_decode_String(deserializer);
+    var var_fontWeight = sse_decode_u_16(deserializer);
+    var var_letterSpacingPx = sse_decode_f_32(deserializer);
+    var var_lineHeight = sse_decode_f_32(deserializer);
+    var var_sourceSizePx = sse_decode_f_32(deserializer);
+    var var_sourceColor = sse_decode_String(deserializer);
+    var var_sourceOpacity = sse_decode_f_32(deserializer);
+    var var_translationSizePx = sse_decode_f_32(deserializer);
+    var var_translationColor = sse_decode_String(deserializer);
+    var var_translationOpacity = sse_decode_f_32(deserializer);
+    var var_xPercent = sse_decode_f_32(deserializer);
+    var var_yPercent = sse_decode_f_32(deserializer);
+    var var_backgroundEnabled = sse_decode_bool(deserializer);
+    var var_backgroundColor = sse_decode_String(deserializer);
+    var var_backgroundOpacity = sse_decode_f_32(deserializer);
+    var var_shadowEnabled = sse_decode_bool(deserializer);
+    var var_shadowColor = sse_decode_String(deserializer);
+    var var_shadowBlurPx = sse_decode_f_32(deserializer);
+    var var_shadowOffsetX = sse_decode_f_32(deserializer);
+    var var_shadowOffsetY = sse_decode_f_32(deserializer);
+    var var_outlineEnabled = sse_decode_bool(deserializer);
+    var var_outlineColor = sse_decode_String(deserializer);
+    var var_outlineWidthPx = sse_decode_f_32(deserializer);
+    return MobileBrowserSourceStyle(
+      fontFamily: var_fontFamily,
+      fontWeight: var_fontWeight,
+      letterSpacingPx: var_letterSpacingPx,
+      lineHeight: var_lineHeight,
+      sourceSizePx: var_sourceSizePx,
+      sourceColor: var_sourceColor,
+      sourceOpacity: var_sourceOpacity,
+      translationSizePx: var_translationSizePx,
+      translationColor: var_translationColor,
+      translationOpacity: var_translationOpacity,
+      xPercent: var_xPercent,
+      yPercent: var_yPercent,
+      backgroundEnabled: var_backgroundEnabled,
+      backgroundColor: var_backgroundColor,
+      backgroundOpacity: var_backgroundOpacity,
+      shadowEnabled: var_shadowEnabled,
+      shadowColor: var_shadowColor,
+      shadowBlurPx: var_shadowBlurPx,
+      shadowOffsetX: var_shadowOffsetX,
+      shadowOffsetY: var_shadowOffsetY,
+      outlineEnabled: var_outlineEnabled,
+      outlineColor: var_outlineColor,
+      outlineWidthPx: var_outlineWidthPx,
+    );
+  }
+
+  @protected
   MobileCapabilities sse_decode_mobile_capabilities(
     SseDeserializer deserializer,
   ) {
@@ -1904,6 +2392,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       text: var_text,
       isFinal: var_isFinal,
     );
+  }
+
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
   }
 
   @protected
@@ -1955,6 +2454,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  int sse_decode_u_16(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint16();
+  }
+
+  @protected
   BigInt sse_decode_u_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getBigUint64();
@@ -1996,6 +2501,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_bool(bool self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self ? 1 : 0);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_mobile_browser_source_style(
+    MobileBrowserSourceStyle self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_mobile_browser_source_style(self, serializer);
   }
 
   @protected
@@ -2083,8 +2597,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case DesktopCommand_SetTranslationEnabled(enabled: final enabled):
         sse_encode_i_32(7, serializer);
         sse_encode_bool(enabled, serializer);
-      case DesktopCommand_Ping(nonce: final nonce):
+      case DesktopCommand_UpdateBrowserSourceCaption(
+        sessionId: final sessionId,
+        sourceText: final sourceText,
+        translationText: final translationText,
+      ):
         sse_encode_i_32(8, serializer);
+        sse_encode_String(sessionId, serializer);
+        sse_encode_String(sourceText, serializer);
+        sse_encode_String(translationText, serializer);
+      case DesktopCommand_Ping(nonce: final nonce):
+        sse_encode_i_32(9, serializer);
         sse_encode_u_64(nonce, serializer);
     }
   }
@@ -2107,6 +2630,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_f_32(double self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putFloat32(self);
   }
 
   @protected
@@ -2162,6 +2691,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_mobile_browser_source_status(
+    MobileBrowserSourceStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.sessionId, serializer);
+    sse_encode_bool(self.enabled, serializer);
+    sse_encode_opt_String(self.url, serializer);
+  }
+
+  @protected
+  void sse_encode_mobile_browser_source_style(
+    MobileBrowserSourceStyle self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.fontFamily, serializer);
+    sse_encode_u_16(self.fontWeight, serializer);
+    sse_encode_f_32(self.letterSpacingPx, serializer);
+    sse_encode_f_32(self.lineHeight, serializer);
+    sse_encode_f_32(self.sourceSizePx, serializer);
+    sse_encode_String(self.sourceColor, serializer);
+    sse_encode_f_32(self.sourceOpacity, serializer);
+    sse_encode_f_32(self.translationSizePx, serializer);
+    sse_encode_String(self.translationColor, serializer);
+    sse_encode_f_32(self.translationOpacity, serializer);
+    sse_encode_f_32(self.xPercent, serializer);
+    sse_encode_f_32(self.yPercent, serializer);
+    sse_encode_bool(self.backgroundEnabled, serializer);
+    sse_encode_String(self.backgroundColor, serializer);
+    sse_encode_f_32(self.backgroundOpacity, serializer);
+    sse_encode_bool(self.shadowEnabled, serializer);
+    sse_encode_String(self.shadowColor, serializer);
+    sse_encode_f_32(self.shadowBlurPx, serializer);
+    sse_encode_f_32(self.shadowOffsetX, serializer);
+    sse_encode_f_32(self.shadowOffsetY, serializer);
+    sse_encode_bool(self.outlineEnabled, serializer);
+    sse_encode_String(self.outlineColor, serializer);
+    sse_encode_f_32(self.outlineWidthPx, serializer);
+  }
+
+  @protected
   void sse_encode_mobile_capabilities(
     MobileCapabilities self,
     SseSerializer serializer,
@@ -2187,6 +2758,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.revision, serializer);
     sse_encode_String(self.text, serializer);
     sse_encode_bool(self.isFinal, serializer);
+  }
+
+  @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_String(self, serializer);
+    }
   }
 
   @protected
@@ -2223,6 +2804,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.sessionId, serializer);
     sse_encode_pipeline_route(self.route, serializer);
     sse_encode_mobile_capabilities(self.capabilities, serializer);
+  }
+
+  @protected
+  void sse_encode_u_16(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint16(self);
   }
 
   @protected

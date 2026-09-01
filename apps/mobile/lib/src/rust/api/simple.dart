@@ -9,9 +9,9 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'simple.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bounded_required_text`, `convert_azookey_input`, `decode_dictionary_bytes`, `decode_wire`, `desktop_envelope`, `device_id`, `encode_desktop_message`, `encode_route_message`, `encode`, `quickmt_config`, `quickmt_options`, `required`, `supported_owner`, `validate_mobile_capabilities`
+// These functions are ignored because they are not marked as `pub`: `bounded_required_text`, `bounded_text`, `convert_azookey_input`, `decode_dictionary_bytes`, `decode_wire`, `desktop_envelope`, `device_id`, `encode_desktop_message`, `encode_route_message`, `encode`, `quickmt_config`, `quickmt_options`, `required`, `supported_owner`, `validate_browser_source_url`, `validate_hex_color`, `validate_mobile_browser_source_style`, `validate_mobile_capabilities`, `validate_style_number`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ActiveAzooKeyVerifier`, `MobileQuickMtEngine`, `MobileRustAsrEngine`, `WireEnvelope`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `try_from`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `convert_azookey_hiragana`
 
 PipelineRoute defaultPipelineRoute() =>
@@ -41,6 +41,29 @@ bool shouldContinueOnMobile({
   route: route,
   completedStage: completedStage,
 );
+
+Future<int> startMobileBrowserSource() =>
+    RustLib.instance.api.crateApiSimpleStartMobileBrowserSource();
+
+Future<void> stopMobileBrowserSource() =>
+    RustLib.instance.api.crateApiSimpleStopMobileBrowserSource();
+
+Future<void> updateMobileBrowserSourceCaption({
+  required String source,
+  required String translation,
+}) => RustLib.instance.api.crateApiSimpleUpdateMobileBrowserSourceCaption(
+  source: source,
+  translation: translation,
+);
+
+Future<void> updateMobileBrowserSourceStyle({
+  required MobileBrowserSourceStyle style,
+}) => RustLib.instance.api.crateApiSimpleUpdateMobileBrowserSourceStyle(
+  style: style,
+);
+
+Future<Uint8List> mobileBrowserSourceFontBytes() =>
+    RustLib.instance.api.crateApiSimpleMobileBrowserSourceFontBytes();
 
 String encodePairRequest({
   required String token,
@@ -115,6 +138,32 @@ String encodeStageRequest({
 
 MobileStageResult decodeMobileStageResult({required String json}) =>
     RustLib.instance.api.crateApiSimpleDecodeMobileStageResult(json: json);
+
+String encodeMobileBrowserSourceStatus({
+  required String sessionId,
+  required bool enabled,
+  String? url,
+}) => RustLib.instance.api.crateApiSimpleEncodeMobileBrowserSourceStatus(
+  sessionId: sessionId,
+  enabled: enabled,
+  url: url,
+);
+
+MobileBrowserSourceStatus decodeMobileBrowserSourceStatus({
+  required String json,
+}) => RustLib.instance.api.crateApiSimpleDecodeMobileBrowserSourceStatus(
+  json: json,
+);
+
+String encodeBrowserSourceCaption({
+  required String sessionId,
+  required String sourceText,
+  required String translationText,
+}) => RustLib.instance.api.crateApiSimpleEncodeBrowserSourceCaption(
+  sessionId: sessionId,
+  sourceText: sourceText,
+  translationText: translationText,
+);
 
 String encodeTranslationEnabled({
   required String sessionId,
@@ -272,6 +321,11 @@ sealed class DesktopCommand with _$DesktopCommand {
   const factory DesktopCommand.setTranslationEnabled({
     required bool enabled,
   }) = DesktopCommand_SetTranslationEnabled;
+  const factory DesktopCommand.updateBrowserSourceCaption({
+    required String sessionId,
+    required String sourceText,
+    required String translationText,
+  }) = DesktopCommand_UpdateBrowserSourceCaption;
   const factory DesktopCommand.ping({
     required BigInt nonce,
   }) = DesktopCommand_Ping;
@@ -304,6 +358,140 @@ class DiscoveryResponse {
 enum ExecutionDevice {
   desktop,
   mobile,
+}
+
+class MobileBrowserSourceStatus {
+  final String sessionId;
+  final bool enabled;
+  final String? url;
+
+  const MobileBrowserSourceStatus({
+    required this.sessionId,
+    required this.enabled,
+    this.url,
+  });
+
+  @override
+  int get hashCode => sessionId.hashCode ^ enabled.hashCode ^ url.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MobileBrowserSourceStatus &&
+          runtimeType == other.runtimeType &&
+          sessionId == other.sessionId &&
+          enabled == other.enabled &&
+          url == other.url;
+}
+
+class MobileBrowserSourceStyle {
+  final String fontFamily;
+  final int fontWeight;
+  final double letterSpacingPx;
+  final double lineHeight;
+  final double sourceSizePx;
+  final String sourceColor;
+  final double sourceOpacity;
+  final double translationSizePx;
+  final String translationColor;
+  final double translationOpacity;
+  final double xPercent;
+  final double yPercent;
+  final bool backgroundEnabled;
+  final String backgroundColor;
+  final double backgroundOpacity;
+  final bool shadowEnabled;
+  final String shadowColor;
+  final double shadowBlurPx;
+  final double shadowOffsetX;
+  final double shadowOffsetY;
+  final bool outlineEnabled;
+  final String outlineColor;
+  final double outlineWidthPx;
+
+  const MobileBrowserSourceStyle({
+    required this.fontFamily,
+    required this.fontWeight,
+    required this.letterSpacingPx,
+    required this.lineHeight,
+    required this.sourceSizePx,
+    required this.sourceColor,
+    required this.sourceOpacity,
+    required this.translationSizePx,
+    required this.translationColor,
+    required this.translationOpacity,
+    required this.xPercent,
+    required this.yPercent,
+    required this.backgroundEnabled,
+    required this.backgroundColor,
+    required this.backgroundOpacity,
+    required this.shadowEnabled,
+    required this.shadowColor,
+    required this.shadowBlurPx,
+    required this.shadowOffsetX,
+    required this.shadowOffsetY,
+    required this.outlineEnabled,
+    required this.outlineColor,
+    required this.outlineWidthPx,
+  });
+
+  static Future<MobileBrowserSourceStyle> default_() =>
+      RustLib.instance.api.crateApiSimpleMobileBrowserSourceStyleDefault();
+
+  @override
+  int get hashCode =>
+      fontFamily.hashCode ^
+      fontWeight.hashCode ^
+      letterSpacingPx.hashCode ^
+      lineHeight.hashCode ^
+      sourceSizePx.hashCode ^
+      sourceColor.hashCode ^
+      sourceOpacity.hashCode ^
+      translationSizePx.hashCode ^
+      translationColor.hashCode ^
+      translationOpacity.hashCode ^
+      xPercent.hashCode ^
+      yPercent.hashCode ^
+      backgroundEnabled.hashCode ^
+      backgroundColor.hashCode ^
+      backgroundOpacity.hashCode ^
+      shadowEnabled.hashCode ^
+      shadowColor.hashCode ^
+      shadowBlurPx.hashCode ^
+      shadowOffsetX.hashCode ^
+      shadowOffsetY.hashCode ^
+      outlineEnabled.hashCode ^
+      outlineColor.hashCode ^
+      outlineWidthPx.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MobileBrowserSourceStyle &&
+          runtimeType == other.runtimeType &&
+          fontFamily == other.fontFamily &&
+          fontWeight == other.fontWeight &&
+          letterSpacingPx == other.letterSpacingPx &&
+          lineHeight == other.lineHeight &&
+          sourceSizePx == other.sourceSizePx &&
+          sourceColor == other.sourceColor &&
+          sourceOpacity == other.sourceOpacity &&
+          translationSizePx == other.translationSizePx &&
+          translationColor == other.translationColor &&
+          translationOpacity == other.translationOpacity &&
+          xPercent == other.xPercent &&
+          yPercent == other.yPercent &&
+          backgroundEnabled == other.backgroundEnabled &&
+          backgroundColor == other.backgroundColor &&
+          backgroundOpacity == other.backgroundOpacity &&
+          shadowEnabled == other.shadowEnabled &&
+          shadowColor == other.shadowColor &&
+          shadowBlurPx == other.shadowBlurPx &&
+          shadowOffsetX == other.shadowOffsetX &&
+          shadowOffsetY == other.shadowOffsetY &&
+          outlineEnabled == other.outlineEnabled &&
+          outlineColor == other.outlineColor &&
+          outlineWidthPx == other.outlineWidthPx;
 }
 
 class MobileCapabilities {

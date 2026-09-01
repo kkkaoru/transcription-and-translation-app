@@ -56,7 +56,7 @@ extension DesktopCommandPatterns on DesktopCommand {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( DesktopCommand_SessionReady value)?  sessionReady,TResult Function( DesktopCommand_ConfigureRoute value)?  configureRoute,TResult Function( DesktopCommand_StartAudio value)?  startAudio,TResult Function( DesktopCommand_EndAudio value)?  endAudio,TResult Function( DesktopCommand_RunAzookey value)?  runAzookey,TResult Function( DesktopCommand_RunTranslation value)?  runTranslation,TResult Function( DesktopCommand_StopSession value)?  stopSession,TResult Function( DesktopCommand_SetTranslationEnabled value)?  setTranslationEnabled,TResult Function( DesktopCommand_Ping value)?  ping,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( DesktopCommand_SessionReady value)?  sessionReady,TResult Function( DesktopCommand_ConfigureRoute value)?  configureRoute,TResult Function( DesktopCommand_StartAudio value)?  startAudio,TResult Function( DesktopCommand_EndAudio value)?  endAudio,TResult Function( DesktopCommand_RunAzookey value)?  runAzookey,TResult Function( DesktopCommand_RunTranslation value)?  runTranslation,TResult Function( DesktopCommand_StopSession value)?  stopSession,TResult Function( DesktopCommand_SetTranslationEnabled value)?  setTranslationEnabled,TResult Function( DesktopCommand_UpdateBrowserSourceCaption value)?  updateBrowserSourceCaption,TResult Function( DesktopCommand_Ping value)?  ping,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady() when sessionReady != null:
@@ -67,7 +67,8 @@ return endAudio(_that);case DesktopCommand_RunAzookey() when runAzookey != null:
 return runAzookey(_that);case DesktopCommand_RunTranslation() when runTranslation != null:
 return runTranslation(_that);case DesktopCommand_StopSession() when stopSession != null:
 return stopSession(_that);case DesktopCommand_SetTranslationEnabled() when setTranslationEnabled != null:
-return setTranslationEnabled(_that);case DesktopCommand_Ping() when ping != null:
+return setTranslationEnabled(_that);case DesktopCommand_UpdateBrowserSourceCaption() when updateBrowserSourceCaption != null:
+return updateBrowserSourceCaption(_that);case DesktopCommand_Ping() when ping != null:
 return ping(_that);case _:
   return orElse();
 
@@ -86,7 +87,7 @@ return ping(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( DesktopCommand_SessionReady value)  sessionReady,required TResult Function( DesktopCommand_ConfigureRoute value)  configureRoute,required TResult Function( DesktopCommand_StartAudio value)  startAudio,required TResult Function( DesktopCommand_EndAudio value)  endAudio,required TResult Function( DesktopCommand_RunAzookey value)  runAzookey,required TResult Function( DesktopCommand_RunTranslation value)  runTranslation,required TResult Function( DesktopCommand_StopSession value)  stopSession,required TResult Function( DesktopCommand_SetTranslationEnabled value)  setTranslationEnabled,required TResult Function( DesktopCommand_Ping value)  ping,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( DesktopCommand_SessionReady value)  sessionReady,required TResult Function( DesktopCommand_ConfigureRoute value)  configureRoute,required TResult Function( DesktopCommand_StartAudio value)  startAudio,required TResult Function( DesktopCommand_EndAudio value)  endAudio,required TResult Function( DesktopCommand_RunAzookey value)  runAzookey,required TResult Function( DesktopCommand_RunTranslation value)  runTranslation,required TResult Function( DesktopCommand_StopSession value)  stopSession,required TResult Function( DesktopCommand_SetTranslationEnabled value)  setTranslationEnabled,required TResult Function( DesktopCommand_UpdateBrowserSourceCaption value)  updateBrowserSourceCaption,required TResult Function( DesktopCommand_Ping value)  ping,}){
 final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady():
@@ -97,7 +98,8 @@ return endAudio(_that);case DesktopCommand_RunAzookey():
 return runAzookey(_that);case DesktopCommand_RunTranslation():
 return runTranslation(_that);case DesktopCommand_StopSession():
 return stopSession(_that);case DesktopCommand_SetTranslationEnabled():
-return setTranslationEnabled(_that);case DesktopCommand_Ping():
+return setTranslationEnabled(_that);case DesktopCommand_UpdateBrowserSourceCaption():
+return updateBrowserSourceCaption(_that);case DesktopCommand_Ping():
 return ping(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
@@ -112,7 +114,7 @@ return ping(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( DesktopCommand_SessionReady value)?  sessionReady,TResult? Function( DesktopCommand_ConfigureRoute value)?  configureRoute,TResult? Function( DesktopCommand_StartAudio value)?  startAudio,TResult? Function( DesktopCommand_EndAudio value)?  endAudio,TResult? Function( DesktopCommand_RunAzookey value)?  runAzookey,TResult? Function( DesktopCommand_RunTranslation value)?  runTranslation,TResult? Function( DesktopCommand_StopSession value)?  stopSession,TResult? Function( DesktopCommand_SetTranslationEnabled value)?  setTranslationEnabled,TResult? Function( DesktopCommand_Ping value)?  ping,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( DesktopCommand_SessionReady value)?  sessionReady,TResult? Function( DesktopCommand_ConfigureRoute value)?  configureRoute,TResult? Function( DesktopCommand_StartAudio value)?  startAudio,TResult? Function( DesktopCommand_EndAudio value)?  endAudio,TResult? Function( DesktopCommand_RunAzookey value)?  runAzookey,TResult? Function( DesktopCommand_RunTranslation value)?  runTranslation,TResult? Function( DesktopCommand_StopSession value)?  stopSession,TResult? Function( DesktopCommand_SetTranslationEnabled value)?  setTranslationEnabled,TResult? Function( DesktopCommand_UpdateBrowserSourceCaption value)?  updateBrowserSourceCaption,TResult? Function( DesktopCommand_Ping value)?  ping,}){
 final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady() when sessionReady != null:
@@ -123,7 +125,8 @@ return endAudio(_that);case DesktopCommand_RunAzookey() when runAzookey != null:
 return runAzookey(_that);case DesktopCommand_RunTranslation() when runTranslation != null:
 return runTranslation(_that);case DesktopCommand_StopSession() when stopSession != null:
 return stopSession(_that);case DesktopCommand_SetTranslationEnabled() when setTranslationEnabled != null:
-return setTranslationEnabled(_that);case DesktopCommand_Ping() when ping != null:
+return setTranslationEnabled(_that);case DesktopCommand_UpdateBrowserSourceCaption() when updateBrowserSourceCaption != null:
+return updateBrowserSourceCaption(_that);case DesktopCommand_Ping() when ping != null:
 return ping(_that);case _:
   return null;
 
@@ -141,7 +144,7 @@ return ping(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String sessionId,  PipelineRoute route)?  sessionReady,TResult Function( PipelineRoute route)?  configureRoute,TResult Function( String sessionId,  BigInt turnId,  BigInt revision)?  startAudio,TResult Function( String sessionId,  BigInt turnId,  BigInt revision)?  endAudio,TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)?  runAzookey,TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)?  runTranslation,TResult Function( String sessionId)?  stopSession,TResult Function( bool enabled)?  setTranslationEnabled,TResult Function( BigInt nonce)?  ping,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String sessionId,  PipelineRoute route)?  sessionReady,TResult Function( PipelineRoute route)?  configureRoute,TResult Function( String sessionId,  BigInt turnId,  BigInt revision)?  startAudio,TResult Function( String sessionId,  BigInt turnId,  BigInt revision)?  endAudio,TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)?  runAzookey,TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)?  runTranslation,TResult Function( String sessionId)?  stopSession,TResult Function( bool enabled)?  setTranslationEnabled,TResult Function( String sessionId,  String sourceText,  String translationText)?  updateBrowserSourceCaption,TResult Function( BigInt nonce)?  ping,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady() when sessionReady != null:
 return sessionReady(_that.sessionId,_that.route);case DesktopCommand_ConfigureRoute() when configureRoute != null:
@@ -151,7 +154,8 @@ return endAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand
 return runAzookey(_that.sessionId,_that.turnId,_that.revision,_that.text,_that.isFinal);case DesktopCommand_RunTranslation() when runTranslation != null:
 return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText,_that.isFinal);case DesktopCommand_StopSession() when stopSession != null:
 return stopSession(_that.sessionId);case DesktopCommand_SetTranslationEnabled() when setTranslationEnabled != null:
-return setTranslationEnabled(_that.enabled);case DesktopCommand_Ping() when ping != null:
+return setTranslationEnabled(_that.enabled);case DesktopCommand_UpdateBrowserSourceCaption() when updateBrowserSourceCaption != null:
+return updateBrowserSourceCaption(_that.sessionId,_that.sourceText,_that.translationText);case DesktopCommand_Ping() when ping != null:
 return ping(_that.nonce);case _:
   return orElse();
 
@@ -170,7 +174,7 @@ return ping(_that.nonce);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String sessionId,  PipelineRoute route)  sessionReady,required TResult Function( PipelineRoute route)  configureRoute,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision)  startAudio,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision)  endAudio,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)  runAzookey,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)  runTranslation,required TResult Function( String sessionId)  stopSession,required TResult Function( bool enabled)  setTranslationEnabled,required TResult Function( BigInt nonce)  ping,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String sessionId,  PipelineRoute route)  sessionReady,required TResult Function( PipelineRoute route)  configureRoute,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision)  startAudio,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision)  endAudio,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)  runAzookey,required TResult Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)  runTranslation,required TResult Function( String sessionId)  stopSession,required TResult Function( bool enabled)  setTranslationEnabled,required TResult Function( String sessionId,  String sourceText,  String translationText)  updateBrowserSourceCaption,required TResult Function( BigInt nonce)  ping,}) {final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady():
 return sessionReady(_that.sessionId,_that.route);case DesktopCommand_ConfigureRoute():
@@ -180,7 +184,8 @@ return endAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand
 return runAzookey(_that.sessionId,_that.turnId,_that.revision,_that.text,_that.isFinal);case DesktopCommand_RunTranslation():
 return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText,_that.isFinal);case DesktopCommand_StopSession():
 return stopSession(_that.sessionId);case DesktopCommand_SetTranslationEnabled():
-return setTranslationEnabled(_that.enabled);case DesktopCommand_Ping():
+return setTranslationEnabled(_that.enabled);case DesktopCommand_UpdateBrowserSourceCaption():
+return updateBrowserSourceCaption(_that.sessionId,_that.sourceText,_that.translationText);case DesktopCommand_Ping():
 return ping(_that.nonce);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -195,7 +200,7 @@ return ping(_that.nonce);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String sessionId,  PipelineRoute route)?  sessionReady,TResult? Function( PipelineRoute route)?  configureRoute,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision)?  startAudio,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision)?  endAudio,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)?  runAzookey,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)?  runTranslation,TResult? Function( String sessionId)?  stopSession,TResult? Function( bool enabled)?  setTranslationEnabled,TResult? Function( BigInt nonce)?  ping,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String sessionId,  PipelineRoute route)?  sessionReady,TResult? Function( PipelineRoute route)?  configureRoute,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision)?  startAudio,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision)?  endAudio,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision,  String text,  bool isFinal)?  runAzookey,TResult? Function( String sessionId,  BigInt turnId,  BigInt revision,  String sourceText,  bool isFinal)?  runTranslation,TResult? Function( String sessionId)?  stopSession,TResult? Function( bool enabled)?  setTranslationEnabled,TResult? Function( String sessionId,  String sourceText,  String translationText)?  updateBrowserSourceCaption,TResult? Function( BigInt nonce)?  ping,}) {final _that = this;
 switch (_that) {
 case DesktopCommand_SessionReady() when sessionReady != null:
 return sessionReady(_that.sessionId,_that.route);case DesktopCommand_ConfigureRoute() when configureRoute != null:
@@ -205,7 +210,8 @@ return endAudio(_that.sessionId,_that.turnId,_that.revision);case DesktopCommand
 return runAzookey(_that.sessionId,_that.turnId,_that.revision,_that.text,_that.isFinal);case DesktopCommand_RunTranslation() when runTranslation != null:
 return runTranslation(_that.sessionId,_that.turnId,_that.revision,_that.sourceText,_that.isFinal);case DesktopCommand_StopSession() when stopSession != null:
 return stopSession(_that.sessionId);case DesktopCommand_SetTranslationEnabled() when setTranslationEnabled != null:
-return setTranslationEnabled(_that.enabled);case DesktopCommand_Ping() when ping != null:
+return setTranslationEnabled(_that.enabled);case DesktopCommand_UpdateBrowserSourceCaption() when updateBrowserSourceCaption != null:
+return updateBrowserSourceCaption(_that.sessionId,_that.sourceText,_that.translationText);case DesktopCommand_Ping() when ping != null:
 return ping(_that.nonce);case _:
   return null;
 
@@ -762,6 +768,76 @@ class _$DesktopCommand_SetTranslationEnabledCopyWithImpl<$Res>
   return _then(DesktopCommand_SetTranslationEnabled(
 enabled: null == enabled ? _self.enabled : enabled // ignore: cast_nullable_to_non_nullable
 as bool,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class DesktopCommand_UpdateBrowserSourceCaption extends DesktopCommand {
+  const DesktopCommand_UpdateBrowserSourceCaption({required this.sessionId, required this.sourceText, required this.translationText}): super._();
+  
+
+ final  String sessionId;
+ final  String sourceText;
+ final  String translationText;
+
+/// Create a copy of DesktopCommand
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DesktopCommand_UpdateBrowserSourceCaptionCopyWith<DesktopCommand_UpdateBrowserSourceCaption> get copyWith => _$DesktopCommand_UpdateBrowserSourceCaptionCopyWithImpl<DesktopCommand_UpdateBrowserSourceCaption>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DesktopCommand_UpdateBrowserSourceCaption&&(identical(other.sessionId, sessionId) || other.sessionId == sessionId)&&(identical(other.sourceText, sourceText) || other.sourceText == sourceText)&&(identical(other.translationText, translationText) || other.translationText == translationText));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,sessionId,sourceText,translationText);
+
+@override
+String toString() {
+  return 'DesktopCommand.updateBrowserSourceCaption(sessionId: $sessionId, sourceText: $sourceText, translationText: $translationText)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DesktopCommand_UpdateBrowserSourceCaptionCopyWith<$Res> implements $DesktopCommandCopyWith<$Res> {
+  factory $DesktopCommand_UpdateBrowserSourceCaptionCopyWith(DesktopCommand_UpdateBrowserSourceCaption value, $Res Function(DesktopCommand_UpdateBrowserSourceCaption) _then) = _$DesktopCommand_UpdateBrowserSourceCaptionCopyWithImpl;
+@useResult
+$Res call({
+ String sessionId, String sourceText, String translationText
+});
+
+
+
+
+}
+/// @nodoc
+class _$DesktopCommand_UpdateBrowserSourceCaptionCopyWithImpl<$Res>
+    implements $DesktopCommand_UpdateBrowserSourceCaptionCopyWith<$Res> {
+  _$DesktopCommand_UpdateBrowserSourceCaptionCopyWithImpl(this._self, this._then);
+
+  final DesktopCommand_UpdateBrowserSourceCaption _self;
+  final $Res Function(DesktopCommand_UpdateBrowserSourceCaption) _then;
+
+/// Create a copy of DesktopCommand
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? sessionId = null,Object? sourceText = null,Object? translationText = null,}) {
+  return _then(DesktopCommand_UpdateBrowserSourceCaption(
+sessionId: null == sessionId ? _self.sessionId : sessionId // ignore: cast_nullable_to_non_nullable
+as String,sourceText: null == sourceText ? _self.sourceText : sourceText // ignore: cast_nullable_to_non_nullable
+as String,translationText: null == translationText ? _self.translationText : translationText // ignore: cast_nullable_to_non_nullable
+as String,
   ));
 }
 

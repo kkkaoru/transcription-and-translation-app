@@ -14,6 +14,10 @@ use caption_bridge_azookey_rust::{
 use caption_bridge_azookey_rust::{
     convert_with_verifier_with_limit, VerifierConversionOptions, VerifierPolicy,
 };
+use caption_bridge_browser_source::{
+    BrowserSourceConfig, BrowserSourceServer, BrowserSourceStyle, MOBILE_BROWSER_SOURCE_PORT,
+    NOTO_SANS_JP_VARIABLE_TTF,
+};
 #[cfg(feature = "mobile-gguf")]
 use caption_bridge_zenz_verifier::EmbeddedZenzDraftVerifier;
 #[cfg(feature = "mobile-quickmt")]
@@ -55,6 +59,7 @@ const QUICKMT_REQUIRED_FILES: &[&str] = &[
 ];
 
 static AZOOKEY_DICTIONARY: Mutex<Option<AzooKeyDictionary>> = Mutex::new(None);
+static MOBILE_BROWSER_SOURCE: Mutex<Option<BrowserSourceServer>> = Mutex::new(None);
 #[cfg(feature = "mobile-gguf")]
 static AZOOKEY_VERIFIER: Mutex<Option<ActiveAzooKeyVerifier>> = Mutex::new(None);
 #[cfg(feature = "mobile-quickmt")]
@@ -179,6 +184,104 @@ pub struct MobileStageResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MobileBrowserSourceStatus {
+    pub session_id: String,
+    pub enabled: bool,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MobileBrowserSourceStyle {
+    pub font_family: String,
+    pub font_weight: u16,
+    pub letter_spacing_px: f32,
+    pub line_height: f32,
+    pub source_size_px: f32,
+    pub source_color: String,
+    pub source_opacity: f32,
+    pub translation_size_px: f32,
+    pub translation_color: String,
+    pub translation_opacity: f32,
+    pub x_percent: f32,
+    pub y_percent: f32,
+    pub background_enabled: bool,
+    pub background_color: String,
+    pub background_opacity: f32,
+    pub shadow_enabled: bool,
+    pub shadow_color: String,
+    pub shadow_blur_px: f32,
+    pub shadow_offset_x: f32,
+    pub shadow_offset_y: f32,
+    pub outline_enabled: bool,
+    pub outline_color: String,
+    pub outline_width_px: f32,
+}
+
+impl Default for MobileBrowserSourceStyle {
+    fn default() -> Self {
+        let style = BrowserSourceStyle::default();
+        Self {
+            font_family: style.font_family,
+            font_weight: style.font_weight,
+            letter_spacing_px: style.letter_spacing_px,
+            line_height: style.line_height,
+            source_size_px: style.source_size_px,
+            source_color: style.source_color,
+            source_opacity: style.source_opacity,
+            translation_size_px: style.translation_size_px,
+            translation_color: style.translation_color,
+            translation_opacity: style.translation_opacity,
+            x_percent: style.x_percent,
+            y_percent: style.y_percent,
+            background_enabled: style.background_enabled,
+            background_color: style.background_color,
+            background_opacity: style.background_opacity,
+            shadow_enabled: style.shadow_enabled,
+            shadow_color: style.shadow_color,
+            shadow_blur_px: style.shadow_blur_px,
+            shadow_offset_x: style.shadow_offset_x,
+            shadow_offset_y: style.shadow_offset_y,
+            outline_enabled: style.outline_enabled,
+            outline_color: style.outline_color,
+            outline_width_px: style.outline_width_px,
+        }
+    }
+}
+
+impl TryFrom<MobileBrowserSourceStyle> for BrowserSourceStyle {
+    type Error = String;
+
+    fn try_from(style: MobileBrowserSourceStyle) -> Result<Self, Self::Error> {
+        validate_mobile_browser_source_style(&style)?;
+        Ok(Self {
+            font_family: style.font_family,
+            font_weight: style.font_weight,
+            letter_spacing_px: style.letter_spacing_px,
+            line_height: style.line_height,
+            source_size_px: style.source_size_px,
+            source_color: style.source_color,
+            source_opacity: style.source_opacity,
+            translation_size_px: style.translation_size_px,
+            translation_color: style.translation_color,
+            translation_opacity: style.translation_opacity,
+            x_percent: style.x_percent,
+            y_percent: style.y_percent,
+            background_enabled: style.background_enabled,
+            background_color: style.background_color,
+            background_opacity: style.background_opacity,
+            shadow_enabled: style.shadow_enabled,
+            shadow_color: style.shadow_color,
+            shadow_blur_px: style.shadow_blur_px,
+            shadow_offset_x: style.shadow_offset_x,
+            shadow_offset_y: style.shadow_offset_y,
+            outline_enabled: style.outline_enabled,
+            outline_color: style.outline_color,
+            outline_width_px: style.outline_width_px,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopCommand {
     SessionReady {
         session_id: String,
@@ -217,6 +320,11 @@ pub enum DesktopCommand {
     SetTranslationEnabled {
         enabled: bool,
     },
+    UpdateBrowserSourceCaption {
+        session_id: String,
+        source_text: String,
+        translation_text: String,
+    },
     Ping {
         nonce: u64,
     },
@@ -238,11 +346,15 @@ struct WireEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    translation_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     is_final: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     device_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -355,6 +467,66 @@ pub fn should_continue_on_mobile(route: PipelineRoute, completed_stage: Processi
     }
 }
 
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb)]
+pub fn start_mobile_browser_source() -> Result<u16, String> {
+    let mut active = MOBILE_BROWSER_SOURCE
+        .lock()
+        .map_err(|_| "Mobile Browser Source lock is unavailable".to_string())?;
+    if let Some(port) = active.as_ref().and_then(BrowserSourceServer::bound_port) {
+        return Ok(port);
+    }
+    let server = BrowserSourceServer::start_mobile(BrowserSourceConfig::mobile())
+        .map_err(|error| error.to_string())?;
+    let port = server.bound_port().unwrap_or(MOBILE_BROWSER_SOURCE_PORT);
+    *active = Some(server);
+    Ok(port)
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb)]
+pub fn stop_mobile_browser_source() -> Result<(), String> {
+    let server = {
+        let mut active = MOBILE_BROWSER_SOURCE
+            .lock()
+            .map_err(|_| "Mobile Browser Source lock is unavailable".to_string())?;
+        active.take()
+    };
+    drop(server);
+    Ok(())
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb)]
+pub fn update_mobile_browser_source_caption(
+    source: String,
+    translation: String,
+) -> Result<(), String> {
+    let source = bounded_text(source, MAX_TEXT_CHARACTERS, "Browser Source caption")?;
+    let translation = bounded_text(translation, MAX_TEXT_CHARACTERS, "Browser Source translation")?;
+    let active = MOBILE_BROWSER_SOURCE
+        .lock()
+        .map_err(|_| "Mobile Browser Source lock is unavailable".to_string())?;
+    let server =
+        active.as_ref().ok_or_else(|| "Mobile Browser Source is not running".to_string())?;
+    server.feed(&source, &translation);
+    Ok(())
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb)]
+pub fn update_mobile_browser_source_style(style: MobileBrowserSourceStyle) -> Result<(), String> {
+    let style = BrowserSourceStyle::try_from(style)?;
+    let active = MOBILE_BROWSER_SOURCE
+        .lock()
+        .map_err(|_| "Mobile Browser Source lock is unavailable".to_string())?;
+    let server =
+        active.as_ref().ok_or_else(|| "Mobile Browser Source is not running".to_string())?;
+    server.set_style(style);
+    Ok(())
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb)]
+pub fn mobile_browser_source_font_bytes() -> Vec<u8> {
+    NOTO_SANS_JP_VARIABLE_TTF.to_vec()
+}
+
 #[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
 pub fn encode_pair_request(
     token: String,
@@ -372,9 +544,11 @@ pub fn encode_pair_request(
         revision: None,
         text: None,
         source_text: None,
+        translation_text: None,
         is_final: None,
         token: Some(token),
         endpoint: None,
+        url: None,
         device_name: Some(device_name),
         device_id: Some(device_id),
         route: None,
@@ -424,9 +598,11 @@ pub fn encode_session_configure(
         revision: None,
         text: None,
         source_text: None,
+        translation_text: None,
         is_final: None,
         token: None,
         endpoint: None,
+        url: None,
         device_name: None,
         device_id: None,
         route: Some(route),
@@ -544,6 +720,55 @@ pub fn decode_mobile_stage_result(json: String) -> Result<MobileStageResult, Str
 }
 
 #[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
+pub fn encode_mobile_browser_source_status(
+    session_id: String,
+    enabled: bool,
+    url: Option<String>,
+) -> Result<String, String> {
+    let session_id = bounded_required_text(session_id, MAX_TEXT_CHARACTERS, "session ID")?;
+    let url = validate_browser_source_url(enabled, url)?;
+    let mut envelope = desktop_envelope("browser_source.status", session_id, None, None);
+    envelope.enabled = Some(enabled);
+    envelope.url = url;
+    encode(envelope)
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
+pub fn decode_mobile_browser_source_status(
+    json: String,
+) -> Result<MobileBrowserSourceStatus, String> {
+    let envelope = decode_wire(&json)?;
+    if envelope.kind != "browser_source.status" {
+        return Err(format!("expected browser_source.status, received {}", envelope.kind));
+    }
+    let enabled = required(envelope.enabled, "Browser Source enabled marker")?;
+    Ok(MobileBrowserSourceStatus {
+        session_id: bounded_required_text(
+            required(envelope.session_id, "session ID")?,
+            MAX_TEXT_CHARACTERS,
+            "session ID",
+        )?,
+        enabled,
+        url: validate_browser_source_url(enabled, envelope.url)?,
+    })
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
+pub fn encode_browser_source_caption(
+    session_id: String,
+    source_text: String,
+    translation_text: String,
+) -> Result<String, String> {
+    let session_id = bounded_required_text(session_id, MAX_TEXT_CHARACTERS, "session ID")?;
+    let mut envelope = desktop_envelope("browser_source.caption", session_id, None, None);
+    envelope.source_text =
+        Some(bounded_text(source_text, MAX_TEXT_CHARACTERS, "Browser Source caption")?);
+    envelope.translation_text =
+        Some(bounded_text(translation_text, MAX_TEXT_CHARACTERS, "Browser Source translation")?);
+    encode(envelope)
+}
+
+#[cfg_attr(feature = "flutter", flutter_rust_bridge::frb(sync))]
 pub fn encode_translation_enabled(session_id: String, enabled: bool) -> Result<String, String> {
     let session_id = bounded_required_text(session_id, MAX_TEXT_CHARACTERS, "session ID")?;
     let mut envelope = desktop_envelope("translation.enabled", session_id, None, None);
@@ -602,6 +827,23 @@ pub fn decode_desktop_command(json: String) -> Result<DesktopCommand, String> {
         "translation.enabled" => Ok(DesktopCommand::SetTranslationEnabled {
             enabled: required(envelope.enabled, "translation enabled marker")?,
         }),
+        "browser_source.caption" => Ok(DesktopCommand::UpdateBrowserSourceCaption {
+            session_id: bounded_required_text(
+                required(envelope.session_id, "session ID")?,
+                MAX_TEXT_CHARACTERS,
+                "session ID",
+            )?,
+            source_text: bounded_text(
+                required(envelope.source_text, "Browser Source caption")?,
+                MAX_TEXT_CHARACTERS,
+                "Browser Source caption",
+            )?,
+            translation_text: bounded_text(
+                required(envelope.translation_text, "Browser Source translation")?,
+                MAX_TEXT_CHARACTERS,
+                "Browser Source translation",
+            )?,
+        }),
         "ping" => Ok(DesktopCommand::Ping { nonce: required(envelope.nonce, "ping nonce")? }),
         message_type => Err(format!("unsupported desktop command: {message_type}")),
     }
@@ -631,9 +873,11 @@ pub fn encode_stage_result(
         revision: Some(revision),
         text: Some(text),
         source_text: None,
+        translation_text: None,
         is_final: Some(is_final),
         token: None,
         endpoint: None,
+        url: None,
         device_name: None,
         device_id: None,
         route: None,
@@ -978,9 +1222,11 @@ fn desktop_envelope(
         revision,
         text: None,
         source_text: None,
+        translation_text: None,
         is_final: None,
         token: None,
         endpoint: None,
+        url: None,
         device_name: None,
         device_id: None,
         route: None,
@@ -988,6 +1234,71 @@ fn desktop_envelope(
         nonce: None,
         enabled: None,
     }
+}
+
+fn validate_mobile_browser_source_style(style: &MobileBrowserSourceStyle) -> Result<(), String> {
+    bounded_required_text(style.font_family.clone(), 128, "Browser Source font family")?;
+    if !(100..=900).contains(&style.font_weight) {
+        return Err("Browser Source font weight must be between 100 and 900".to_string());
+    }
+    validate_style_number(style.letter_spacing_px, -2.0, 10.0, "letter spacing")?;
+    validate_style_number(style.line_height, 1.0, 2.0, "line height")?;
+    validate_style_number(style.source_size_px, 8.0, 200.0, "source size")?;
+    validate_style_number(style.source_opacity, 0.0, 1.0, "source opacity")?;
+    validate_style_number(style.translation_size_px, 8.0, 200.0, "translation size")?;
+    validate_style_number(style.translation_opacity, 0.0, 1.0, "translation opacity")?;
+    validate_style_number(style.x_percent, 0.0, 100.0, "horizontal position")?;
+    validate_style_number(style.y_percent, 0.0, 100.0, "vertical position")?;
+    validate_style_number(style.background_opacity, 0.0, 1.0, "background opacity")?;
+    validate_style_number(style.shadow_blur_px, 0.0, 40.0, "shadow blur")?;
+    validate_style_number(style.shadow_offset_x, -20.0, 20.0, "shadow horizontal offset")?;
+    validate_style_number(style.shadow_offset_y, -20.0, 20.0, "shadow vertical offset")?;
+    validate_style_number(style.outline_width_px, 0.0, 12.0, "outline width")?;
+    validate_hex_color(&style.source_color, "source color")?;
+    validate_hex_color(&style.translation_color, "translation color")?;
+    validate_hex_color(&style.background_color, "background color")?;
+    validate_hex_color(&style.shadow_color, "shadow color")?;
+    validate_hex_color(&style.outline_color, "outline color")
+}
+
+fn validate_style_number(
+    value: f32,
+    minimum: f32,
+    maximum: f32,
+    label: &str,
+) -> Result<(), String> {
+    if value.is_finite() && (minimum..=maximum).contains(&value) {
+        return Ok(());
+    }
+    Err(format!("Browser Source {label} is outside its supported range"))
+}
+
+fn validate_hex_color(value: &str, label: &str) -> Result<(), String> {
+    if value.len() == 7
+        && value.starts_with('#')
+        && value.bytes().skip(1).all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Ok(());
+    }
+    Err(format!("Browser Source {label} must use #RRGGBB"))
+}
+
+fn validate_browser_source_url(
+    enabled: bool,
+    url: Option<String>,
+) -> Result<Option<String>, String> {
+    if !enabled {
+        return Ok(None);
+    }
+    let url = bounded_required_text(
+        required(url, "Browser Source URL")?,
+        MAX_TEXT_CHARACTERS,
+        "Browser Source URL",
+    )?;
+    if !url.starts_with("http://") {
+        return Err("Browser Source URL must use http://".to_string());
+    }
+    Ok(Some(url))
 }
 
 fn validate_mobile_capabilities(
@@ -1070,15 +1381,19 @@ fn encode(envelope: WireEnvelope) -> Result<String, String> {
         .map_err(|error| format!("could not encode companion message: {error}"))
 }
 
+fn bounded_text(value: String, max_bytes: usize, label: &str) -> Result<String, String> {
+    if value.len() > max_bytes {
+        return Err(format!("{label} exceeds {max_bytes} UTF-8 bytes"));
+    }
+    Ok(value)
+}
+
 fn bounded_required_text(value: String, max_bytes: usize, label: &str) -> Result<String, String> {
     let value = value.trim().to_string();
     if value.is_empty() {
         return Err(format!("{label} is required"));
     }
-    if value.len() > max_bytes {
-        return Err(format!("{label} exceeds {max_bytes} UTF-8 bytes"));
-    }
-    Ok(value)
+    bounded_text(value, max_bytes, label)
 }
 
 fn required<T>(value: Option<T>, label: &str) -> Result<T, String> {
@@ -1091,18 +1406,21 @@ mod tests {
 
     use super::{
         all_pipeline_routes, decode_desktop_command, decode_dictionary_bytes,
-        decode_discovery_request, decode_discovery_response, decode_mobile_stage_result,
-        decode_pair_request, decode_session_configuration, default_azookey_model,
-        default_pipeline_route, encode_audio_boundary, encode_discovery_request,
-        encode_discovery_response, encode_pair_request, encode_route_configuration,
+        decode_discovery_request, decode_discovery_response, decode_mobile_browser_source_status,
+        decode_mobile_stage_result, decode_pair_request, decode_session_configuration,
+        default_azookey_model, default_pipeline_route, encode_audio_boundary,
+        encode_browser_source_caption, encode_discovery_request, encode_discovery_response,
+        encode_mobile_browser_source_status, encode_pair_request, encode_route_configuration,
         encode_session_configure, encode_session_ready, encode_stage_request, encode_stage_result,
         encode_translation_enabled, initialize_azookey_dictionary, pipeline_route_id,
         prepare_azookey_model, prepare_mobile_rust_asr, prepare_quickmt_translation,
         quickmt_config, quickmt_options, release_azookey_dictionary, release_azookey_model,
         release_mobile_rust_asr, should_continue_on_mobile, stage_owner,
-        transcribe_mobile_rust_asr, AzooKeyModel, DesktopCommand, DiscoveryResponse,
-        ExecutionDevice, MobileCapabilities, MobileStageResult, PairRequest, PipelineRoute,
-        ProcessingStage, SessionConfiguration,
+        start_mobile_browser_source, stop_mobile_browser_source, transcribe_mobile_rust_asr,
+        update_mobile_browser_source_caption, update_mobile_browser_source_style, AzooKeyModel,
+        DesktopCommand, DiscoveryResponse, ExecutionDevice, MobileBrowserSourceStatus,
+        MobileBrowserSourceStyle, MobileCapabilities, MobileStageResult, PairRequest,
+        PipelineRoute, ProcessingStage, SessionConfiguration,
     };
 
     #[test]
@@ -1466,6 +1784,80 @@ mod tests {
                 text: "こんにちは".to_string(),
                 is_final: false,
             }
+        );
+    }
+
+    #[test]
+    fn browser_source_protocol_preserves_authenticated_status_and_caption_text() {
+        let status = encode_mobile_browser_source_status(
+            "session-browser".to_string(),
+            true,
+            Some("http://192.168.1.20:1522/".to_string()),
+        )
+        .expect("encode enabled Browser Source status");
+        assert_eq!(
+            decode_mobile_browser_source_status(status).expect("decode Browser Source status"),
+            MobileBrowserSourceStatus {
+                session_id: "session-browser".to_string(),
+                enabled: true,
+                url: Some("http://192.168.1.20:1522/".to_string()),
+            }
+        );
+        assert_eq!(
+            encode_mobile_browser_source_status("session-browser".to_string(), false, None)
+                .expect("encode disabled Browser Source status"),
+            r#"{"version":1,"type":"browser_source.status","session_id":"session-browser","enabled":false}"#
+        );
+        assert_eq!(
+            decode_desktop_command(
+                encode_browser_source_caption(
+                    "session-browser".to_string(),
+                    "こんにちは".to_string(),
+                    "Hello".to_string(),
+                )
+                .expect("encode Browser Source caption")
+            )
+            .expect("decode Browser Source caption"),
+            DesktopCommand::UpdateBrowserSourceCaption {
+                session_id: "session-browser".to_string(),
+                source_text: "こんにちは".to_string(),
+                translation_text: "Hello".to_string(),
+            }
+        );
+        assert_eq!(
+            encode_mobile_browser_source_status(
+                "session-browser".to_string(),
+                true,
+                Some("https://example.test/".to_string()),
+            )
+            .expect_err("HTTPS is not the local cleartext Browser Source contract"),
+            "Browser Source URL must use http://"
+        );
+    }
+
+    #[test]
+    fn mobile_browser_source_wrapper_starts_updates_and_stops_once() {
+        stop_mobile_browser_source().expect("reset Browser Source");
+        assert_eq!(start_mobile_browser_source().expect("start Browser Source"), 1522);
+        assert_eq!(start_mobile_browser_source().expect("reuse Browser Source"), 1522);
+        update_mobile_browser_source_caption("字幕".to_string(), "Caption".to_string())
+            .expect("feed Browser Source");
+        update_mobile_browser_source_style(MobileBrowserSourceStyle::default())
+            .expect("style Browser Source");
+
+        let invalid = MobileBrowserSourceStyle {
+            source_color: "white".to_string(),
+            ..MobileBrowserSourceStyle::default()
+        };
+        assert_eq!(
+            update_mobile_browser_source_style(invalid).expect_err("reject invalid color"),
+            "Browser Source source color must use #RRGGBB"
+        );
+        stop_mobile_browser_source().expect("stop Browser Source");
+        assert_eq!(
+            update_mobile_browser_source_caption("字幕".to_string(), "Caption".to_string())
+                .expect_err("stopped server cannot accept captions"),
+            "Mobile Browser Source is not running"
         );
     }
 

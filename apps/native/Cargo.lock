@@ -6819,6 +6819,7 @@ name = "rust_lib_kotoba_beacon_companion"
 version = "0.1.0"
 dependencies = [
  "caption-bridge-azookey-rust",
+ "caption-bridge-browser-source",
  "flate2",
  "serde",
  "serde_json",
