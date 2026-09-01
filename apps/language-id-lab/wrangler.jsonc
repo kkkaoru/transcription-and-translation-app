@@ -13,9 +13,6 @@
     "logs": { "head_sampling_rate": 1 },
     "traces": { "enabled": true, "head_sampling_rate": 0.05 }
   },
-  "secrets": {
-    "required": ["CLOUDFLARE_ANALYTICS_TOKEN"]
-  },
   "containers": [
     {
       "name": "language-id-basic",
