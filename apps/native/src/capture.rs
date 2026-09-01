@@ -1658,7 +1658,7 @@ mod tests {
         ExecutionDevice, MobileStageResult, PipelineRoute,
     };
 
-    use crate::companion::{CompanionHandle, CompanionInbound, CompanionOutbound};
+    use crate::companion::{CompanionHandle, CompanionInbound, CompanionOutbound, CompanionServer};
 
     use super::{
         apply_caption_update, apply_turn_caption_update, disconnected_current_session,
@@ -1679,6 +1679,30 @@ mod tests {
         assert!(controller.expire_caption_at(now));
         assert!(controller.snapshot.source_text.is_empty());
         assert!(controller.snapshot.translation_text.is_empty());
+    }
+
+    #[test]
+    fn mobile_browser_caption_forwarding_requires_an_enabled_companion_host() {
+        let mut controller = CaptureController::new();
+        assert!(!controller
+            .publish_mobile_browser_caption("字幕", "Caption")
+            .expect("missing companion is not a forwarding error"));
+
+        let companion = CompanionServer::start_for_test(super::desktop_pipeline_route())
+            .expect("start isolated companion server");
+        controller.companion_server = Some(companion);
+        assert!(!controller
+            .publish_mobile_browser_caption("字幕", "Caption")
+            .expect("disabled Mobile Browser Source does not receive captions"));
+
+        controller
+            .companion_server
+            .as_ref()
+            .expect("companion server")
+            .enable_browser_source_for_test();
+        assert!(controller
+            .publish_mobile_browser_caption("字幕", "Caption")
+            .expect("enabled Mobile Browser Source receives captions"));
     }
 
     #[test]

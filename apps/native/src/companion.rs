@@ -257,6 +257,18 @@ impl CompanionServer {
         ))
     }
 
+    #[cfg(test)]
+    pub(crate) fn start_for_test(route: PipelineRoute) -> Result<Self, String> {
+        Self::start_on_ports(route, "127.0.0.1", 0, 0, "127.0.0.1").map(|(server, _, _)| server)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_browser_source_for_test(&self) {
+        let mut state = self.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.session_id = Some("browser-source-test-session".to_string());
+        state.browser_source_enabled = true;
+    }
+
     pub fn snapshot(&self) -> CompanionConnectionSnapshot {
         self.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
     }
