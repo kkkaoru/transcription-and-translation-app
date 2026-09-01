@@ -8,13 +8,14 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "vite dev --port 3000",
+    "copy:vad-assets": "bun scripts/copy-vad-assets.ts",
+    "dev": "bun run copy:vad-assets && vite dev --port 3000",
     "generate-routes": "tsr generate",
-    "build": "vite build",
+    "build": "bun run copy:vad-assets && vite build",
     "preview": "vite preview",
     "typecheck": "wrangler types --include-runtime=false --check && tsc --noEmit --pretty false",
-    "lint": "biome check src/i18n.ts src/i18n.test.ts src/language-harness.tsx src/language-harness.test.tsx src/scenarios.ts src/scenarios.test.ts src/router.tsx src/routes vite.config.ts vitest.config.ts",
-    "format:check": "biome format src/i18n.ts src/i18n.test.ts src/language-harness.tsx src/language-harness.test.tsx src/scenarios.ts src/scenarios.test.ts src/router.tsx src/routes vite.config.ts vitest.config.ts",
+    "lint": "biome check src scripts vite.config.ts vitest.config.ts",
+    "format:check": "biome format src scripts vite.config.ts vitest.config.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "cf-typegen": "wrangler types --include-runtime=false",
@@ -22,8 +23,11 @@
     "deploy:dry-run": "bun run build && wrangler deploy --dry-run"
   },
   "dependencies": {
+    "@cloudflare/containers": "0.3.7",
+    "@ricky0123/vad-web": "0.0.30",
     "@tanstack/react-router": "1.170.32",
     "@tanstack/react-start": "1.168.49",
+    "onnxruntime-web": "1.27.0",
     "react": "19.2.0",
     "react-dom": "19.2.0"
   },

@@ -1,29 +1,19 @@
 // Runs with Bun during build and test.
-import type { LanguageCode } from "./scenarios";
 
 export type UiLocale = "ja" | "en";
-
-export interface ScenarioCopy {
-  label: string;
-  description: string;
-  expected: string;
-}
 
 export interface UiMessages {
   localeSwitcherLabel: string;
   brandSubtitle: string;
   edgeStatus: string;
-  syntheticEvidence: string;
+  liveInference: string;
   heroEyebrow: string;
-  heroTitleFirst: string;
-  heroTitleSecond: string;
+  heroTitle: string;
   heroDescription: string;
   stableHeading: string;
-  syntheticRunning: string;
-  syntheticPaused: string;
-  switchCandidate: string;
-  noActiveCandidate: string;
-  llrLabel: string;
+  waitingForSpeech: string;
+  listening: string;
+  processing: string;
   microphoneInput: string;
   defaultMicrophone: string;
   microphoneName: (number: number) => string;
@@ -32,220 +22,199 @@ export interface UiMessages {
   requestingMicrophone: string;
   microphoneUnavailable: string;
   microphoneFailed: string;
-  privateByDefault: string;
-  audioNotUploaded: string;
-  scenariosEyebrow: string;
-  scenariosHeading: string;
-  runScenario: string;
-  pauseRun: string;
-  resumeRun: string;
-  runAgain: string;
-  scenarioTabsLabel: string;
-  sampledSeconds: (seconds: string) => string;
-  syntheticTranscript: string;
-  revision: (number: number) => string;
-  timelineLabel: string;
-  rawAcoustic: string;
-  modelPosterior: string;
-  fusedEvidence: string;
-  fusedEvidenceEyebrow: string;
-  onlineHmm: string;
-  realtimeTracker: string;
-  fixtureStatus: string;
-  diagnosticsEyebrow: string;
-  diagnosticsHeading: string;
-  rustSourceOfTruth: string;
+  inputLevel: string;
+  speechProbability: string;
+  computeTier: string;
+  basic: string;
+  standard: string;
+  ecapaPattern: string;
+  utterancePattern: string;
+  rollingPattern: string;
+  utteranceDetail: string;
+  rollingDetail: string;
+  privacyNotice: string;
+  actualAudioNotice: string;
+  rawPosterior: string;
+  hsmmPosterior: string;
+  confidence: string;
+  currentInference: string;
+  speechLength: string;
   observationQuality: string;
-  calibratedInput: string;
-  speechCoverage: string;
-  voicedContext: string;
-  trackerUpdate: string;
-  simulatedEndToEnd: string;
-  pendingQueue: string;
-  boundedTicks: string;
-  backpressure: string;
-  explicitEvents: string;
-  transport: string;
-  ready: string;
-  cloudflareWorker: string;
-  footerProduct: string;
-  footerMilestone: string;
-  languageNames: Record<LanguageCode, string>;
-  scenarios: Record<string, ScenarioCopy>;
+  inferenceLatency: string;
+  diagnostics: string;
+  hsmm: string;
+  hsmmDuration: string;
+  hsmmHazard: string;
+  sprt: string;
+  sprtCandidate: string;
+  sprtLlr: string;
+  sprtBounds: string;
+  hysteresis: string;
+  enterThreshold: string;
+  retainThreshold: string;
+  stablePosterior: string;
+  noCandidate: string;
+  containerCost: string;
+  actualUsage: string;
+  grossResourceCost: string;
+  estimatedOverage: string;
+  currentSessionRange: string;
+  hourlyPrice: string;
+  provisioned: string;
+  maximumCpu: string;
+  usageUnavailable: string;
+  refreshUsage: string;
+  idleShutdown: string;
+  modelCoverage: string;
+  unknownLanguage: string;
+  seconds: (value: string) => string;
+  milliseconds: (value: string) => string;
+  dollars: (value: string) => string;
+  perHour: (value: string) => string;
 }
 
 const ENGLISH_MESSAGES: UiMessages = {
   localeSwitcherLabel: "Interface language",
-  brandSubtitle: "Language Harness",
+  brandSubtitle: "Language ID Lab",
   edgeStatus: "Cloudflare edge",
-  syntheticEvidence: "Synthetic evidence",
-  heroEyebrow: "Realtime multilingual state",
-  heroTitleFirst: "Track the language.",
-  heroTitleSecond: "Keep the context.",
+  liveInference: "Live Rust inference",
+  heroEyebrow: "Realtime multilingual language identification",
+  heroTitle: "Speak. See the evidence change.",
   heroDescription:
-    "A live observability surface for the Rust language harness. Inspect stable state, switching evidence, posterior layers, and transport health without turning a borrowed word into a false language switch.",
+    "Your voiced segments are sent to a private Cloudflare Container. SpeechBrain ECAPA identifies across 107 languages, while Rust HSMM, SPRT, and hysteresis stabilize the result.",
   stableHeading: "Current stable language",
-  syntheticRunning: "synthetic running",
-  syntheticPaused: "synthetic paused",
-  switchCandidate: "Switch candidate",
-  noActiveCandidate: "No active candidate",
-  llrLabel: "LLR",
+  waitingForSpeech: "Waiting for speech",
+  listening: "Listening",
+  processing: "Running inference",
   microphoneInput: "Microphone input",
   defaultMicrophone: "Default microphone",
   microphoneName: (number) => `Microphone ${number}`,
-  enableMicrophone: "Enable microphone",
-  stopMicrophone: "Stop microphone",
-  requestingMicrophone: "Requesting…",
+  enableMicrophone: "Start microphone",
+  stopMicrophone: "Stop and release",
+  requestingMicrophone: "Starting…",
   microphoneUnavailable: "This browser does not expose microphone capture.",
   microphoneFailed: "Microphone access failed.",
-  privateByDefault: "Private by default",
-  audioNotUploaded: "Audio is not uploaded in this UI milestone.",
-  scenariosEyebrow: "Verification scenarios",
-  scenariosHeading: "Exercise the state surface",
-  runScenario: "Run scenario",
-  pauseRun: "Pause run",
-  resumeRun: "Resume run",
-  runAgain: "Run again",
-  scenarioTabsLabel: "Harness scenarios",
-  sampledSeconds: (seconds) => `${seconds}s sampled`,
-  syntheticTranscript: "Synthetic transcript",
-  revision: (number) => `revision ${number}`,
-  timelineLabel: "Language switch timeline",
-  rawAcoustic: "Raw acoustic",
-  modelPosterior: "Model posterior",
-  fusedEvidence: "Fused evidence",
-  fusedEvidenceEyebrow: "Acoustic + optional Nova",
-  onlineHmm: "Online HMM",
-  realtimeTracker: "Realtime tracker",
-  fixtureStatus: "fixture",
-  diagnosticsEyebrow: "Runtime diagnostics",
-  diagnosticsHeading: "Bounded, observable, privacy-safe",
-  rustSourceOfTruth: "Rust source of truth",
+  inputLevel: "Input level",
+  speechProbability: "Speech probability",
+  computeTier: "Container tier",
+  basic: "Basic",
+  standard: "Standard",
+  ecapaPattern: "ECAPA input pattern",
+  utterancePattern: "Per utterance",
+  rollingPattern: "Rolling 6 s context",
+  utteranceDetail: "Classify each VAD segment independently.",
+  rollingDetail: "Retain up to six seconds of voiced context across short segments.",
+  privacyNotice: "Voiced PCM only; no transcript is produced or stored.",
+  actualAudioNotice: "Results below come from your microphone, not a fixture.",
+  rawPosterior: "Raw ECAPA posterior",
+  hsmmPosterior: "Rust HSMM posterior",
+  confidence: "confidence",
+  currentInference: "Latest voiced segment",
+  speechLength: "Speech length",
   observationQuality: "Observation quality",
-  calibratedInput: "calibrated input",
-  speechCoverage: "Speech coverage",
-  voicedContext: "voiced context",
-  trackerUpdate: "Tracker update",
-  simulatedEndToEnd: "simulated end-to-end",
-  pendingQueue: "Pending queue",
-  boundedTicks: "bounded ticks",
-  backpressure: "Backpressure",
-  explicitEvents: "explicit events",
-  transport: "Transport",
-  ready: "Ready",
-  cloudflareWorker: "Cloudflare Worker",
-  footerProduct: "Kotoba Beacon · Language ID Lab",
-  footerMilestone: "UI milestone · inference bridge pending",
-  languageNames: {
-    ja: "Japanese",
-    en: "English",
-    unknown: "Unknown",
-    unsupported: "Unsupported",
-  },
-  scenarios: {
-    "ja-ambiguous": {
-      label: "JA + ambiguous",
-      description: "Long Japanese context followed by short, ambiguous borrowed terms.",
-      expected: "Stable language remains Japanese.",
-    },
-    "ja-en-ja": {
-      label: "JA → EN → JA",
-      description: "Sustained evidence switches in both directions without fixed timers.",
-      expected: "Two deliberate switches, no flapping.",
-    },
-    unsupported: {
-      label: "Unsupported",
-      description: "High-confidence Korean evidence remains distinct from supported languages.",
-      expected: "Never forced to JA or EN.",
-    },
-  },
+  inferenceLatency: "Inference latency",
+  diagnostics: "State diagnostics",
+  hsmm: "HSMM",
+  hsmmDuration: "Current duration",
+  hsmmHazard: "Transition hazard",
+  sprt: "SPRT",
+  sprtCandidate: "Candidate",
+  sprtLlr: "Current LLR",
+  sprtBounds: "Reject / accept",
+  hysteresis: "Hysteresis",
+  enterThreshold: "Enter threshold",
+  retainThreshold: "Retain threshold",
+  stablePosterior: "Stable posterior",
+  noCandidate: "None",
+  containerCost: "Cloudflare Container cost",
+  actualUsage: "Account month-to-date usage estimate",
+  grossResourceCost: "Gross resource cost",
+  estimatedOverage: "Estimated overage after included usage",
+  currentSessionRange: "Current session price range",
+  hourlyPrice: "Published hourly price",
+  provisioned: "memory + disk",
+  maximumCpu: "at 100% allocated CPU",
+  usageUnavailable: "Live usage is unavailable",
+  refreshUsage: "Refresh usage",
+  idleShutdown: "Explicit release on stop; automatic destroy after 30 s idle.",
+  modelCoverage: "SpeechBrain VoxLingua107 · 107 spoken languages",
+  unknownLanguage: "Unknown",
+  seconds: (value) => `${value} s`,
+  milliseconds: (value) => `${value} ms`,
+  dollars: (value) => `$${value}`,
+  perHour: (value) => `$${value}/h`,
 };
 
 const JAPANESE_MESSAGES: UiMessages = {
   localeSwitcherLabel: "表示言語",
-  brandSubtitle: "言語ハーネス",
+  brandSubtitle: "言語IDラボ",
   edgeStatus: "Cloudflare エッジ",
-  syntheticEvidence: "合成エビデンス",
-  heroEyebrow: "リアルタイム多言語状態",
-  heroTitleFirst: "言語を捉える。",
-  heroTitleSecond: "文脈を保つ。",
+  liveInference: "Rust実推論",
+  heroEyebrow: "リアルタイム多言語識別",
+  heroTitle: "話す。推論の変化を見る。",
   heroDescription:
-    "Rust言語ハーネスの可観測性画面です。借用語を誤った言語切り替えにせず、安定状態、切り替えエビデンス、事後確率、通信状態を確認できます。",
+    "有声区間をprivate Cloudflare Containerへ送信します。SpeechBrain ECAPAが107言語を識別し、RustのHSMM・SPRT・Hysteresisが結果を安定化します。",
   stableHeading: "現在の安定言語",
-  syntheticRunning: "合成シナリオ実行中",
-  syntheticPaused: "合成シナリオ停止中",
-  switchCandidate: "切り替え候補",
-  noActiveCandidate: "候補なし",
-  llrLabel: "LLR",
+  waitingForSpeech: "発話待ち",
+  listening: "入力中",
+  processing: "推論中",
   microphoneInput: "マイク入力",
   defaultMicrophone: "デフォルトのマイク",
   microphoneName: (number) => `マイク ${number}`,
-  enableMicrophone: "マイクを有効化",
-  stopMicrophone: "マイクを停止",
-  requestingMicrophone: "許可を確認中…",
+  enableMicrophone: "マイクを開始",
+  stopMicrophone: "停止して解放",
+  requestingMicrophone: "起動中…",
   microphoneUnavailable: "このブラウザではマイクを利用できません。",
   microphoneFailed: "マイクへのアクセスに失敗しました。",
-  privateByDefault: "プライバシーを優先",
-  audioNotUploaded: "このUIマイルストーンでは音声をアップロードしません。",
-  scenariosEyebrow: "検証シナリオ",
-  scenariosHeading: "言語状態の表示を検証",
-  runScenario: "シナリオを実行",
-  pauseRun: "一時停止",
-  resumeRun: "再開",
-  runAgain: "もう一度実行",
-  scenarioTabsLabel: "ハーネス検証シナリオ",
-  sampledSeconds: (seconds) => `${seconds}秒を表示`,
-  syntheticTranscript: "合成トランスクリプト",
-  revision: (number) => `リビジョン ${number}`,
-  timelineLabel: "言語切り替えタイムライン",
-  rawAcoustic: "音響モデル出力",
-  modelPosterior: "モデル事後確率",
-  fusedEvidence: "統合エビデンス",
-  fusedEvidenceEyebrow: "音響 + 任意のNova",
-  onlineHmm: "オンラインHMM",
-  realtimeTracker: "リアルタイムトラッカー",
-  fixtureStatus: "フィクスチャ",
-  diagnosticsEyebrow: "ランタイム診断",
-  diagnosticsHeading: "上限付き・観測可能・プライバシー保護",
-  rustSourceOfTruth: "Rustがsource of truth",
+  inputLevel: "入力レベル",
+  speechProbability: "発話確率",
+  computeTier: "Container種別",
+  basic: "Basic",
+  standard: "Standard",
+  ecapaPattern: "ECAPA入力パターン",
+  utterancePattern: "発話ごと",
+  rollingPattern: "直近6秒の文脈",
+  utteranceDetail: "VADで区切った発話を個別に識別します。",
+  rollingDetail: "短い発話をまたいで最大6秒の有声文脈を維持します。",
+  privacyNotice: "有声PCMのみ送信し、文字起こしや音声保存は行いません。",
+  actualAudioNotice: "以下はfixtureではなく、マイク入力の実推論結果です。",
+  rawPosterior: "ECAPA生事後確率",
+  hsmmPosterior: "Rust HSMM事後確率",
+  confidence: "確信度",
+  currentInference: "最新の有声区間",
+  speechLength: "発話長",
   observationQuality: "観測品質",
-  calibratedInput: "較正済み入力",
-  speechCoverage: "発話カバレッジ",
-  voicedContext: "有声区間の文脈",
-  trackerUpdate: "トラッカー更新",
-  simulatedEndToEnd: "合成E2E",
-  pendingQueue: "待機キュー",
-  boundedTicks: "上限付きtick",
-  backpressure: "バックプレッシャー",
-  explicitEvents: "明示イベント",
-  transport: "通信",
-  ready: "準備完了",
-  cloudflareWorker: "Cloudflare Worker",
-  footerProduct: "Kotoba Beacon · 言語IDラボ",
-  footerMilestone: "UIマイルストーン · 推論ブリッジ未接続",
-  languageNames: {
-    ja: "日本語",
-    en: "英語",
-    unknown: "不明",
-    unsupported: "未対応言語",
-  },
-  scenarios: {
-    "ja-ambiguous": {
-      label: "日本語 + 曖昧語",
-      description: "長い日本語の文脈に、短く曖昧な借用語が続くケースです。",
-      expected: "安定言語は日本語を維持します。",
-    },
-    "ja-en-ja": {
-      label: "日本語 → 英語 → 日本語",
-      description: "固定タイマーではなく、継続したエビデンスで双方向に切り替えます。",
-      expected: "フラッピングせず2回切り替わります。",
-    },
-    unsupported: {
-      label: "未対応言語",
-      description: "確信度の高い韓国語エビデンスを対応言語と区別します。",
-      expected: "日本語や英語へ強制しません。",
-    },
-  },
+  inferenceLatency: "推論レイテンシ",
+  diagnostics: "状態診断",
+  hsmm: "HSMM",
+  hsmmDuration: "現在の継続長",
+  hsmmHazard: "遷移ハザード",
+  sprt: "SPRT",
+  sprtCandidate: "切り替え候補",
+  sprtLlr: "現在のLLR",
+  sprtBounds: "棄却 / 採択",
+  hysteresis: "Hysteresis",
+  enterThreshold: "遷移閾値",
+  retainThreshold: "維持閾値",
+  stablePosterior: "安定言語の事後確率",
+  noCandidate: "なし",
+  containerCost: "Cloudflare Container費用",
+  actualUsage: "アカウント月初来の利用見積",
+  grossResourceCost: "リソース総額",
+  estimatedOverage: "無料枠適用後の超過見積",
+  currentSessionRange: "現在セッションの価格範囲",
+  hourlyPrice: "公開時間単価",
+  provisioned: "メモリ + ディスク",
+  maximumCpu: "割当CPU 100%時",
+  usageUnavailable: "実利用量を取得できません",
+  refreshUsage: "利用量を更新",
+  idleShutdown: "停止時に明示解放し、無操作30秒後にも自動destroyします。",
+  modelCoverage: "SpeechBrain VoxLingua107 · 音声107言語",
+  unknownLanguage: "不明",
+  seconds: (value) => `${value}秒`,
+  milliseconds: (value) => `${value} ms`,
+  dollars: (value) => `$${value}`,
+  perHour: (value) => `$${value}/時`,
 };
 
 export const messagesFor = (locale: UiLocale): UiMessages =>
@@ -256,3 +225,9 @@ export const isUiLocale = (value: string | null): value is UiLocale =>
 
 export const preferredUiLocale = (browserLanguage: string): UiLocale =>
   browserLanguage.toLowerCase().startsWith("ja") ? "ja" : "en";
+
+export const displayLanguageName = (code: string, locale: UiLocale): string => {
+  if (code === "unknown") return messagesFor(locale).unknownLanguage;
+  const displayNames = new Intl.DisplayNames([locale], { type: "language" });
+  return displayNames.of(code) ?? code.toUpperCase();
+};

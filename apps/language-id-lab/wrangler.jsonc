@@ -4,9 +4,48 @@
   "account_id": "78109ec18c7c85b194b19fb32e3bb149",
   "compatibility_date": "2026-08-31",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry",
+  "main": "src/server.ts",
+  "vars": {
+    "CLOUDFLARE_ACCOUNT_ID": "78109ec18c7c85b194b19fb32e3bb149"
+  },
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
-  }
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  },
+  "secrets": {
+    "required": ["CLOUDFLARE_ANALYTICS_TOKEN"]
+  },
+  "containers": [
+    {
+      "name": "language-id-basic",
+      "class_name": "LanguageIdBasicContainer",
+      "image": "../../crates/language-harness-service/Dockerfile",
+      "image_build_context": "../../crates",
+      "instance_type": "basic",
+      "max_instances": 4,
+      "constraints": { "regions": ["APAC"] }
+    },
+    {
+      "name": "language-id-standard",
+      "class_name": "LanguageIdStandardContainer",
+      "image": "../../crates/language-harness-service/Dockerfile",
+      "image_build_context": "../../crates",
+      "instance_type": "standard-1",
+      "max_instances": 4,
+      "constraints": { "regions": ["APAC"] }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "LANGUAGE_ID_BASIC", "class_name": "LanguageIdBasicContainer" },
+      { "name": "LANGUAGE_ID_STANDARD", "class_name": "LanguageIdStandardContainer" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-language-id-containers",
+      "new_sqlite_classes": ["LanguageIdBasicContainer", "LanguageIdStandardContainer"]
+    }
+  ]
 }
