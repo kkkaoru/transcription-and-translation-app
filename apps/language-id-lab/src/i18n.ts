@@ -20,6 +20,8 @@ export interface UiMessages {
   microphoneName: (number: number) => string;
   enableMicrophone: string;
   stopMicrophone: string;
+  muteMicrophone: string;
+  unmuteMicrophone: string;
   requestingMicrophone: string;
   microphoneUnavailable: string;
   microphoneFailed: string;
@@ -42,7 +44,8 @@ export interface UiMessages {
   privacyNotice: string;
   actualAudioNotice: string;
   rawPosterior: string;
-  hsmmPosterior: string;
+  temporalStatePosterior: string;
+  temporalStatePosteriorHelp: string;
   providerPosterior: string;
   confidence: string;
   currentInference: string;
@@ -57,18 +60,29 @@ export interface UiMessages {
   sprtCandidate: string;
   sprtLlr: string;
   sprtBounds: string;
+  sprtIdle: string;
+  sprtAccumulating: string;
+  sprtAccepted: string;
+  sprtEvidenceHelp: string;
   hysteresis: string;
   enterThreshold: string;
   retainThreshold: string;
   stablePosterior: string;
+  decisionState: string;
+  challengerLanguage: string;
+  hysteresisUnlocked: string;
+  hysteresisRetaining: string;
+  hysteresisChallenged: string;
+  hysteresisSwitched: string;
+  hysteresisStateHelp: string;
   noCandidate: string;
   containerCost: string;
   workersAiCost: string;
   workersAiSessionEstimate: string;
   workersAiRate: string;
+  vadBilledAudio: string;
   rustTrackerCost: string;
   combinedSessionEstimate: string;
-  actualUsage: string;
   grossResourceCost: string;
   estimatedOverage: string;
   currentSessionRange: string;
@@ -120,6 +134,8 @@ const ENGLISH_MESSAGES: UiMessages = {
   microphoneName: (number) => `Microphone ${number}`,
   enableMicrophone: "Start microphone",
   stopMicrophone: "Stop and release",
+  muteMicrophone: "Mute",
+  unmuteMicrophone: "Unmute",
   requestingMicrophone: "Starting…",
   microphoneUnavailable: "This browser does not expose microphone capture.",
   microphoneFailed: "Microphone access failed.",
@@ -139,10 +155,13 @@ const ENGLISH_MESSAGES: UiMessages = {
   rollingPattern: "Rolling 6 s context",
   utteranceDetail: "Classify each VAD segment independently.",
   rollingDetail: "Retain up to six seconds of voiced context across short segments.",
-  privacyNotice: "Voiced PCM only; no transcript is produced or stored.",
+  privacyNotice:
+    "VAD sends only completed voiced segments. Muting pauses VAD and sends no audio; no transcript is produced or stored.",
   actualAudioNotice: "Results below come from your microphone, not a fixture.",
   rawPosterior: "Raw model posterior",
-  hsmmPosterior: "Rust HSMM posterior",
+  temporalStatePosterior: "Temporal language state posterior",
+  temporalStatePosteriorHelp:
+    "Rust calibrates model or Nova-3 evidence with observation quality and unknown mass, then Online HSMM smooths it over duration. This is the current language-state distribution; SPRT and hysteresis separately decide whether the stable language may switch.",
   providerPosterior: "Workers AI language detection",
   confidence: "confidence",
   currentInference: "Latest voiced segment",
@@ -157,19 +176,31 @@ const ENGLISH_MESSAGES: UiMessages = {
   sprtCandidate: "Candidate",
   sprtLlr: "Current LLR",
   sprtBounds: "Reject / accept",
+  sprtIdle: "No active challenge",
+  sprtAccumulating: "Accumulating evidence",
+  sprtAccepted: "Switch accepted",
+  sprtEvidenceHelp: "A switch requires cumulative LLR to reach the accept bound.",
   hysteresis: "Hysteresis",
   enterThreshold: "Enter threshold",
   retainThreshold: "Retain threshold",
-  stablePosterior: "Stable posterior",
+  stablePosterior: "Stable-language posterior",
+  decisionState: "Current state",
+  challengerLanguage: "Leading challenger",
+  hysteresisUnlocked: "Waiting for initial lock",
+  hysteresisRetaining: "Retaining stable language",
+  hysteresisChallenged: "Challenger above retain bound",
+  hysteresisSwitched: "Stable language switched",
+  hysteresisStateHelp:
+    "Hysteresis retains the stable language until a challenger clears both the posterior enter threshold and SPRT acceptance.",
   noCandidate: "None",
   containerCost: "Cloudflare Container cost",
   workersAiCost: "Cloudflare Workers AI cost",
   workersAiSessionEstimate: "Current Workers AI audio estimate",
   workersAiRate: "Nova-3 regular HTTP rate",
+  vadBilledAudio: "Cumulative VAD audio",
   rustTrackerCost: "Rust tracker Container estimate",
   combinedSessionEstimate: "Combined current session estimate",
-  actualUsage: "Account month-to-date usage estimate",
-  grossResourceCost: "Gross resource cost",
+  grossResourceCost: "Gross month-to-date resource cost",
   estimatedOverage: "Estimated overage after included usage",
   currentSessionRange: "Current session price range",
   hourlyPrice: "Published hourly price",
@@ -177,7 +208,8 @@ const ENGLISH_MESSAGES: UiMessages = {
   maximumCpu: "at 100% allocated CPU",
   usageUnavailable: "Live usage is unavailable",
   refreshUsage: "Refresh usage",
-  idleShutdown: "Explicit release on stop; automatic destroy after 30 s idle.",
+  idleShutdown:
+    "Estimate counts active windows only: explicit release on stop and scale-to-zero after 30 s idle.",
   modelCoverage: "Selected model",
   unknownLanguage: "Unknown",
   voiceTestTitle: "Translation and synthetic voice check",
@@ -195,9 +227,9 @@ const ENGLISH_MESSAGES: UiMessages = {
   detectedLanguage: "Detected",
   realtimeDiagram: "How the live decision evolves",
   realtimeDiagramDetail:
-    "D3 renders raw evidence, the HSMM state posterior, and thresholds after every voiced segment.",
+    "D3 renders raw evidence, the temporal state posterior, and thresholds after every voiced segment.",
   providerDiagnostics:
-    "Workers AI evidence is stabilized by the Rust HSMM, two-sided SPRT, and hysteresis tracker.",
+    "Each completed VAD segment is sent once to Nova-3, then its language evidence is processed immediately by the Rust Online HSMM, two-sided SPRT, and hysteresis tracker.",
   seconds: (value) => `${value} s`,
   milliseconds: (value) => `${value} ms`,
   dollars: (value) => `$${value}`,
@@ -223,6 +255,8 @@ const JAPANESE_MESSAGES: UiMessages = {
   microphoneName: (number) => `マイク ${number}`,
   enableMicrophone: "マイクを開始",
   stopMicrophone: "停止して解放",
+  muteMicrophone: "ミュート",
+  unmuteMicrophone: "ミュート解除",
   requestingMicrophone: "起動中…",
   microphoneUnavailable: "このブラウザではマイクを利用できません。",
   microphoneFailed: "マイクへのアクセスに失敗しました。",
@@ -242,10 +276,13 @@ const JAPANESE_MESSAGES: UiMessages = {
   rollingPattern: "直近6秒の文脈",
   utteranceDetail: "VADで区切った発話を個別に識別します。",
   rollingDetail: "短い発話をまたいで最大6秒の有声文脈を維持します。",
-  privacyNotice: "有声PCMのみ送信し、文字起こしや音声保存は行いません。",
+  privacyNotice:
+    "VADで完了した有声区間だけを送信します。ミュート中はVADを停止し、音声を送信しません。文字起こしや音声保存も行いません。",
   actualAudioNotice: "以下はfixtureではなく、マイク入力の実推論結果です。",
   rawPosterior: "モデルの生事後確率",
-  hsmmPosterior: "Rust HSMM事後確率",
+  temporalStatePosterior: "時間平滑化した言語状態確率",
+  temporalStatePosteriorHelp:
+    "RustがモデルまたはNova-3の証拠へ観測品質とunknown質量を反映し、Online HSMMで継続時間に沿って平滑化した現在の言語状態分布です。安定言語を切り替えるかは、SPRTとHysteresisが別途判定します。",
   providerPosterior: "Workers AI言語検出",
   confidence: "確信度",
   currentInference: "最新の有声区間",
@@ -260,19 +297,31 @@ const JAPANESE_MESSAGES: UiMessages = {
   sprtCandidate: "切り替え候補",
   sprtLlr: "現在のLLR",
   sprtBounds: "棄却 / 採択",
+  sprtIdle: "切替候補なし",
+  sprtAccumulating: "証拠を累積中",
+  sprtAccepted: "切替を採択",
+  sprtEvidenceHelp: "切替には累積LLRが採択境界へ到達する必要があります。",
   hysteresis: "Hysteresis",
   enterThreshold: "遷移閾値",
   retainThreshold: "維持閾値",
-  stablePosterior: "安定言語の事後確率",
+  stablePosterior: "安定言語の状態確率",
+  decisionState: "現在の状態",
+  challengerLanguage: "最上位の対抗言語",
+  hysteresisUnlocked: "初期言語の確定待ち",
+  hysteresisRetaining: "安定言語を維持",
+  hysteresisChallenged: "対抗言語が維持閾値以上",
+  hysteresisSwitched: "安定言語を切替済み",
+  hysteresisStateHelp:
+    "対抗言語が状態確率の遷移閾値とSPRT採択の両方を満たすまで、現在の安定言語を維持します。",
   noCandidate: "なし",
   containerCost: "Cloudflare Container費用",
   workersAiCost: "Cloudflare Workers AI費用",
   workersAiSessionEstimate: "現在のWorkers AI音声見積",
   workersAiRate: "Nova-3 通常HTTP単価",
+  vadBilledAudio: "VAD送信音声の累計",
   rustTrackerCost: "Rust tracker Container見積",
   combinedSessionEstimate: "現在セッションの合計見積",
-  actualUsage: "アカウント月初来の利用見積",
-  grossResourceCost: "リソース総額",
+  grossResourceCost: "月初来のリソース総額",
   estimatedOverage: "無料枠適用後の超過見積",
   currentSessionRange: "現在セッションの価格範囲",
   hourlyPrice: "公開時間単価",
@@ -280,7 +329,8 @@ const JAPANESE_MESSAGES: UiMessages = {
   maximumCpu: "割当CPU 100%時",
   usageUnavailable: "実利用量を取得できません",
   refreshUsage: "利用量を更新",
-  idleShutdown: "停止時に明示解放し、無操作30秒後にも自動destroyします。",
+  idleShutdown:
+    "有効時間枠だけを見積ります。停止時は明示解放し、無操作30秒後はscale-to-zeroします。",
   modelCoverage: "選択中のモデル",
   unknownLanguage: "不明",
   voiceTestTitle: "翻訳・合成音声による動作確認",
@@ -297,8 +347,10 @@ const JAPANESE_MESSAGES: UiMessages = {
   expectedLanguage: "期待言語",
   detectedLanguage: "識別結果",
   realtimeDiagram: "リアルタイム判定の仕組み",
-  realtimeDiagramDetail: "有声区間ごとに、生の証拠・HSMM状態事後確率・判定閾値をD3で描画します。",
-  providerDiagnostics: "Workers AIの証拠をRustのHSMM・両側SPRT・Hysteresis trackerで安定化します。",
+  realtimeDiagramDetail:
+    "有声区間ごとに、生の証拠・時間平滑化した状態確率・判定閾値をD3で描画します。",
+  providerDiagnostics:
+    "完了したVAD有声区間をNova-3へ1回だけ送り、その言語証拠をRustのOnline HSMM・両側SPRT・Hysteresis trackerで同じ応答内に処理します。",
   seconds: (value) => `${value}秒`,
   milliseconds: (value) => `${value} ms`,
   dollars: (value) => `$${value}`,

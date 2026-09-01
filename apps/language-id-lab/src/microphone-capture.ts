@@ -16,6 +16,14 @@ export interface MicrophoneCaptureOptions {
   events: MicrophoneCaptureEvents;
 }
 
+export interface AudioTrackToggle {
+  enabled: boolean;
+}
+
+export interface AudioTrackSource {
+  getAudioTracks: () => readonly AudioTrackToggle[];
+}
+
 const VAD_ASSET_PATH: string = "/vad/vad-web-0.0.30-ort-1.27.0/";
 const LEVEL_BUFFER_SIZE: number = 1_024;
 const LEVEL_REFERENCE_RMS: number = 0.18;
@@ -29,6 +37,13 @@ export const normalizedAudioLevel = (samples: Float32Array): number => {
   const squareSum: number = samples.reduce((sum, sample) => sum + sample * sample, 0);
   const rms: number = Math.sqrt(squareSum / Math.max(1, samples.length));
   return Math.min(1, rms / LEVEL_REFERENCE_RMS);
+};
+
+export const setStreamEnabled = (stream: AudioTrackSource, enabled: boolean): void => {
+  stream.getAudioTracks().map((track) => {
+    track.enabled = enabled;
+    return track;
+  });
 };
 
 export class MicrophoneCapture {
@@ -79,7 +94,14 @@ export class MicrophoneCapture {
         minSpeechMs: MINIMUM_SPEECH_MS,
         submitUserSpeechOnPause: false,
         getStream: () => Promise.resolve(stream),
-        resumeStream: () => Promise.resolve(stream),
+        pauseStream: (activeStream) => {
+          setStreamEnabled(activeStream, false);
+          return Promise.resolve();
+        },
+        resumeStream: (activeStream) => {
+          setStreamEnabled(activeStream, true);
+          return Promise.resolve(activeStream);
+        },
         onSpeechStart: this.options.events.onSpeechStart,
         onSpeechEnd: this.handleSpeechEnd,
         onVADMisfire: () => this.options.events.onSpeechProbability(0),
@@ -93,6 +115,18 @@ export class MicrophoneCapture {
       await this.stop();
       throw error;
     }
+  }
+
+  public async setMuted(muted: boolean): Promise<void> {
+    const vad: MicVAD | null = this.vad;
+    if (vad === null) return;
+    if (muted) {
+      await vad.pause();
+      this.options.events.onLevel(0);
+      this.options.events.onSpeechProbability(0);
+      return;
+    }
+    await vad.start();
   }
 
   public async stop(): Promise<void> {
@@ -113,14 +147,14 @@ export class MicrophoneCapture {
     this.options.events.onSpeechProbability(probabilities.isSpeech);
   };
 
-  private readonly handleSpeechEnd = (samples: Float32Array): void => {
-    void this.options.events
-      .onSpeechEnd(samples, Date.now())
-      .catch((error: unknown) =>
-        this.options.events.onError(
-          error instanceof Error ? error.message : "Language inference failed",
-        ),
+  private readonly handleSpeechEnd = async (samples: Float32Array): Promise<void> => {
+    try {
+      await this.options.events.onSpeechEnd(samples, Date.now());
+    } catch (error) {
+      this.options.events.onError(
+        error instanceof Error ? error.message : "Language inference failed",
       );
+    }
   };
 
   private readonly sampleLevel = (): void => {

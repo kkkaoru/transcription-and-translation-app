@@ -2,6 +2,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComputeTier } from "./container-backend";
 import {
+  type ContainerActivityMeter,
+  emptyContainerActivityMeter,
+  estimatedContainerActiveMs,
+  releaseContainerActivity,
+  touchContainerActivity,
+} from "./container-session-meter";
+import {
   displayLanguageName,
   isUiLocale,
   messagesFor,
@@ -17,11 +24,13 @@ import {
 } from "./inference-methods";
 import {
   type EcapaPattern,
+  type HysteresisState,
   inferLanguage,
   type LanguageInference,
   type LanguageProbability,
   releaseLanguageContainer,
   resetLanguageInference,
+  type SprtState,
   warmLanguageContainer,
 } from "./language-api";
 import { MicrophoneCapture } from "./microphone-capture";
@@ -38,6 +47,7 @@ type CaptureStatus = "idle" | "requesting" | "live" | "processing" | "error";
 
 interface PosteriorPanelProps {
   title: string;
+  tooltip: string | null;
   values: readonly LanguageProbability[];
   locale: UiLocale;
 }
@@ -88,10 +98,23 @@ const FALLBACK_PRICES: readonly ContainerPrice[] = [
   },
 ];
 
-const PosteriorPanel = ({ title, values, locale }: PosteriorPanelProps) => (
+const PosteriorPanel = ({ title, tooltip, values, locale }: PosteriorPanelProps) => (
   <article className="posterior-card panel">
     <div className="panel-heading">
-      <h3>{title}</h3>
+      <h3 className="tooltip-heading">
+        {title}
+        {tooltip === null ? null : (
+          <button
+            type="button"
+            className="info-tooltip"
+            data-tooltip={tooltip}
+            title={tooltip}
+            aria-label={tooltip}
+          >
+            ?
+          </button>
+        )}
+      </h3>
     </div>
     <div className="posterior-list">
       {values.map((value) => (
@@ -144,6 +167,22 @@ const captureStatusLabel = (status: CaptureStatus, messages: UiMessages): string
   return messages.waitingForSpeech;
 };
 
+export const sprtStateLabel = (state: SprtState | undefined, messages: UiMessages): string => {
+  if (state === "accepted") return messages.sprtAccepted;
+  if (state === "accumulating") return messages.sprtAccumulating;
+  return messages.sprtIdle;
+};
+
+export const hysteresisStateLabel = (
+  state: HysteresisState | undefined,
+  messages: UiMessages,
+): string => {
+  if (state === "switched") return messages.hysteresisSwitched;
+  if (state === "challenged") return messages.hysteresisChallenged;
+  if (state === "retaining") return messages.hysteresisRetaining;
+  return messages.hysteresisUnlocked;
+};
+
 const voiceActionLabel = (
   status: "idle" | "generating" | "inferring",
   messages: UiMessages,
@@ -162,14 +201,14 @@ export function LanguageHarness() {
   const [captureError, setCaptureError] = useState<string>("");
   const [devices, setDevices] = useState<readonly MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
-  const [method, setMethod] = useState<InferenceMethod>("speechbrain-ecapa-basic");
+  const [method, setMethod] = useState<InferenceMethod>("workers-ai-nova-3");
   const [pattern, setPattern] = useState<EcapaPattern>("rolling-context");
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [speechProbability, setSpeechProbability] = useState<number>(0);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
   const [inference, setInference] = useState<LanguageInference | null>(null);
   const [usage, setUsage] = useState<ContainerUsage | null>(null);
   const [usageError, setUsageError] = useState<string>("");
-  const [containerStartedAt, setContainerStartedAt] = useState<number | null>(null);
   const [sessionElapsedMs, setSessionElapsedMs] = useState<number>(0);
   const [history, setHistory] = useState<readonly InferenceTimelineEntry[]>([]);
   const [voiceText, setVoiceText] = useState<string>("Hello, welcome to Kotoba Beacon.");
@@ -180,12 +219,15 @@ export function LanguageHarness() {
   const [voiceError, setVoiceError] = useState<string>("");
   const [voiceDetected, setVoiceDetected] = useState<LanguageInference | null>(null);
   const [workersAiSessionCostUsd, setWorkersAiSessionCostUsd] = useState<number>(0);
+  const [workersAiSessionAudioSeconds, setWorkersAiSessionAudioSeconds] = useState<number>(0);
   const captureRef = useRef<MicrophoneCapture | null>(null);
   const sessionIdRef = useRef<string>(crypto.randomUUID());
   const methodRef = useRef<InferenceMethod>(method);
   const sequenceRef = useRef<number>(0);
   const patternRef = useRef<EcapaPattern>(pattern);
   const containerActiveRef = useRef<boolean>(false);
+  const mutedRef = useRef<boolean>(false);
+  const containerMeterRef = useRef<ContainerActivityMeter>(emptyContainerActivityMeter());
   const messages = useMemo(() => messagesFor(locale), [locale]);
   const prices: readonly ContainerPrice[] = usage?.prices ?? FALLBACK_PRICES;
   const tier: ComputeTier = inferenceMethod(method).tier ?? "basic";
@@ -199,6 +241,7 @@ export function LanguageHarness() {
 
   methodRef.current = method;
   patternRef.current = pattern;
+  mutedRef.current = isMuted;
 
   const recordInference = useCallback((result: LanguageInference) => {
     sequenceRef.current += 1;
@@ -207,6 +250,9 @@ export function LanguageHarness() {
       [...current, { sequence: sequenceRef.current, inference: result }].slice(-30),
     );
     setWorkersAiSessionCostUsd((current) => current + (result.providerBilling?.estimatedUsd ?? 0));
+    setWorkersAiSessionAudioSeconds(
+      (current) => current + (result.providerBilling?.audioSeconds ?? 0),
+    );
   }, []);
 
   const refreshDevices = useCallback(async () => {
@@ -225,10 +271,24 @@ export function LanguageHarness() {
     }
   }, []);
 
+  const touchContainerMeter = useCallback((atMs: number) => {
+    const nextMeter: ContainerActivityMeter = touchContainerActivity(
+      containerMeterRef.current,
+      atMs,
+    );
+    containerMeterRef.current = nextMeter;
+    setSessionElapsedMs(estimatedContainerActiveMs(nextMeter, atMs));
+  }, []);
+
   const stopCapture = useCallback(async () => {
     const capture: MicrophoneCapture | null = captureRef.current;
     captureRef.current = null;
+    mutedRef.current = false;
+    setIsMuted(false);
     await capture?.stop();
+    const releasedAtMs: number = Date.now();
+    containerMeterRef.current = releaseContainerActivity(containerMeterRef.current, releasedAtMs);
+    setSessionElapsedMs(estimatedContainerActiveMs(containerMeterRef.current, releasedAtMs));
     if (containerActiveRef.current) {
       containerActiveRef.current = false;
       await releaseLanguageContainer({
@@ -238,14 +298,16 @@ export function LanguageHarness() {
         setCaptureError(error instanceof Error ? error.message : "Container release failed"),
       );
     }
-    setContainerStartedAt(null);
-    setSessionElapsedMs(0);
     setCaptureStatus("idle");
   }, []);
 
   const handleSpeechEnd = useCallback(
     async (samples: Float32Array, capturedAtMs: number): Promise<void> => {
+      if (mutedRef.current) return;
       setCaptureStatus("processing");
+      const requestAtMs: number = Date.now();
+      touchContainerMeter(requestAtMs);
+      containerActiveRef.current = true;
       const result: LanguageInference = await inferLanguage({
         samples,
         capturedAtMs,
@@ -255,9 +317,8 @@ export function LanguageHarness() {
       });
       recordInference(result);
       setCaptureStatus("live");
-      await refreshUsage();
     },
-    [recordInference, refreshUsage],
+    [recordInference, touchContainerMeter],
   );
 
   const startCapture = useCallback(async () => {
@@ -269,6 +330,12 @@ export function LanguageHarness() {
     setCaptureStatus("requesting");
     setCaptureError("");
     setWorkersAiSessionCostUsd(0);
+    setWorkersAiSessionAudioSeconds(0);
+    setSessionElapsedMs(0);
+    setIsMuted(false);
+    mutedRef.current = false;
+    containerActiveRef.current = false;
+    containerMeterRef.current = emptyContainerActivityMeter();
     const capture = new MicrophoneCapture({
       deviceId: selectedDeviceId,
       events: {
@@ -285,9 +352,12 @@ export function LanguageHarness() {
     try {
       await capture.start();
       captureRef.current = capture;
-      await warmLanguageContainer({ method, sessionId: sessionIdRef.current });
-      containerActiveRef.current = true;
-      setContainerStartedAt(Date.now());
+      if (isContainerInferenceMethod(method)) {
+        const warmupAtMs: number = Date.now();
+        touchContainerMeter(warmupAtMs);
+        await warmLanguageContainer({ method, sessionId: sessionIdRef.current });
+        containerActiveRef.current = true;
+      }
       setCaptureStatus("live");
       await refreshDevices();
     } catch (error) {
@@ -295,7 +365,7 @@ export function LanguageHarness() {
       setCaptureStatus("error");
       setCaptureError(error instanceof Error ? error.message : messages.microphoneFailed);
     }
-  }, [handleSpeechEnd, messages, method, refreshDevices, selectedDeviceId]);
+  }, [handleSpeechEnd, messages, method, refreshDevices, selectedDeviceId, touchContainerMeter]);
 
   const identifyVoice = useCallback(
     async (voice: VoiceTestResult): Promise<void> => {
@@ -303,7 +373,9 @@ export function LanguageHarness() {
       const voiceSessionId: string = crypto.randomUUID();
       try {
         const samples: Float32Array = await decodeVoiceTestPcm(voice);
-        await warmLanguageContainer({ method, sessionId: voiceSessionId });
+        if (isContainerInferenceMethod(method)) {
+          await warmLanguageContainer({ method, sessionId: voiceSessionId });
+        }
         const result: LanguageInference = await inferLanguage({
           samples,
           capturedAtMs: Date.now(),
@@ -358,15 +430,31 @@ export function LanguageHarness() {
     try {
       await resetLanguageInference({ method, sessionId: sessionIdRef.current });
       sequenceRef.current = 0;
+      containerMeterRef.current = emptyContainerActivityMeter();
       setInference(null);
       setHistory([]);
       setVoiceDetected(null);
       setWorkersAiSessionCostUsd(0);
+      setWorkersAiSessionAudioSeconds(0);
+      setSessionElapsedMs(0);
       setCaptureError("");
     } catch (error) {
       setCaptureError(error instanceof Error ? error.message : "Language state reset failed");
     }
   }, [method]);
+
+  const toggleMute = useCallback(async () => {
+    const capture: MicrophoneCapture | null = captureRef.current;
+    if (capture === null) return;
+    const nextMuted: boolean = !mutedRef.current;
+    try {
+      await capture.setMuted(nextMuted);
+      mutedRef.current = nextMuted;
+      setIsMuted(nextMuted);
+    } catch (error) {
+      setCaptureError(error instanceof Error ? error.message : "Microphone mute failed");
+    }
+  }, []);
 
   const selectLocale = (nextLocale: UiLocale) => {
     setLocale(nextLocale);
@@ -399,13 +487,12 @@ export function LanguageHarness() {
   }, [refreshDevices, refreshUsage]);
 
   useEffect(() => {
-    if (containerStartedAt === null) return;
-    const timer: number = window.setInterval(
-      () => setSessionElapsedMs(Date.now() - containerStartedAt),
-      SESSION_CLOCK_MS,
-    );
+    const timer: number = window.setInterval(() => {
+      const nowMs: number = Date.now();
+      setSessionElapsedMs(estimatedContainerActiveMs(containerMeterRef.current, nowMs));
+    }, SESSION_CLOCK_MS);
     return () => window.clearInterval(timer);
-  }, [containerStartedAt]);
+  }, []);
 
   useEffect(() => {
     const releaseOnExit = () => {
@@ -526,11 +613,11 @@ export function LanguageHarness() {
               }}
               disabled={captureStatus !== "idle" && captureStatus !== "error"}
             >
-              <option value="speechbrain-ecapa-basic">{messages.speechbrainBasic}</option>
-              <option value="speechbrain-ecapa-standard">{messages.speechbrainStandard}</option>
+              <option value="workers-ai-nova-3">{messages.workersAiNova}</option>
               <option value="nvidia-ambernet-basic">{messages.ambernetBasic}</option>
               <option value="nvidia-ambernet-standard">{messages.ambernetStandard}</option>
-              <option value="workers-ai-nova-3">{messages.workersAiNova}</option>
+              <option value="speechbrain-ecapa-basic">{messages.speechbrainBasic}</option>
+              <option value="speechbrain-ecapa-standard">{messages.speechbrainStandard}</option>
             </select>
           </label>
           <label>
@@ -563,6 +650,15 @@ export function LanguageHarness() {
               : captureStatus === "live" || captureStatus === "processing"
                 ? messages.stopMicrophone
                 : messages.enableMicrophone}
+          </button>
+          <button
+            className={`secondary-button mute-button${isMuted ? " active" : ""}`}
+            type="button"
+            aria-pressed={isMuted}
+            onClick={() => void toggleMute()}
+            disabled={captureRef.current === null}
+          >
+            {isMuted ? messages.unmuteMicrophone : messages.muteMicrophone}
           </button>
         </div>
         <div className="meter-grid">
@@ -696,11 +792,13 @@ export function LanguageHarness() {
       <section className="posterior-grid">
         <PosteriorPanel
           title={`${messages.rawPosterior} · ${inference?.model ?? inferenceMethod(method).model}`}
+          tooltip={null}
           values={inference?.rawLanguages ?? []}
           locale={locale}
         />
         <PosteriorPanel
-          title={messages.hsmmPosterior}
+          title={messages.temporalStatePosterior}
+          tooltip={messages.temporalStatePosteriorHelp}
           values={inference?.hsmm.posterior ?? []}
           locale={locale}
         />
@@ -741,9 +839,18 @@ export function LanguageHarness() {
           <article className="diagnostic-card panel">
             <h3>{messages.sprt}</h3>
             <DiagnosticMetric
+              label={messages.decisionState}
+              value={sprtStateLabel(inference?.sprt.state, messages)}
+              detail={
+                inference?.sprt.candidateLanguage
+                  ? displayLanguageName(inference.sprt.candidateLanguage, locale)
+                  : messages.noCandidate
+              }
+            />
+            <DiagnosticMetric
               label={messages.sprtLlr}
               value={(inference?.sprt.llr ?? 0).toFixed(2)}
-              detail={messages.sprtCandidate}
+              detail={messages.sprtEvidenceHelp}
             />
             <DiagnosticMetric
               label={messages.sprtBounds}
@@ -753,6 +860,20 @@ export function LanguageHarness() {
           </article>
           <article className="diagnostic-card panel">
             <h3>{messages.hysteresis}</h3>
+            <DiagnosticMetric
+              label={messages.decisionState}
+              value={hysteresisStateLabel(inference?.hysteresis.state, messages)}
+              detail={messages.hysteresisStateHelp}
+            />
+            <DiagnosticMetric
+              label={messages.challengerLanguage}
+              value={
+                inference?.hysteresis.challengerLanguage
+                  ? displayLanguageName(inference.hysteresis.challengerLanguage, locale)
+                  : messages.noCandidate
+              }
+              detail={`${((inference?.hysteresis.challengerPosterior ?? 0) * 100).toFixed(1)}%`}
+            />
             <DiagnosticMetric
               label={messages.stablePosterior}
               value={`${((inference?.hysteresis.stablePosterior ?? 0) * 100).toFixed(1)}%`}
@@ -781,7 +902,9 @@ export function LanguageHarness() {
         </div>
         <div className="cost-grid">
           <div className="cost-primary">
-            <span>{isWorkersAi ? messages.workersAiSessionEstimate : messages.actualUsage}</span>
+            <span>
+              {isWorkersAi ? messages.workersAiSessionEstimate : messages.estimatedOverage}
+            </span>
             <strong>
               {isWorkersAi
                 ? messages.dollars(workersAiSessionCostUsd.toFixed(6))
@@ -802,7 +925,7 @@ export function LanguageHarness() {
             }
             detail={
               isWorkersAi
-                ? messages.seconds((inference?.providerBilling?.audioSeconds ?? 0).toFixed(2))
+                ? `${messages.vadBilledAudio}: ${messages.seconds(workersAiSessionAudioSeconds.toFixed(2))}`
                 : `${usage?.periodStart ?? "—"} — ${usage?.periodEnd ?? "—"}`
             }
           />

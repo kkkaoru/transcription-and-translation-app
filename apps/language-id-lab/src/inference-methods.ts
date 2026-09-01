@@ -20,18 +20,11 @@ export interface InferenceMethodDefinition {
 
 export const INFERENCE_METHODS: readonly InferenceMethodDefinition[] = [
   {
-    id: "speechbrain-ecapa-basic",
-    provider: "private-container",
-    model: "speechbrain/lang-id-voxlingua107-ecapa",
-    tier: "basic",
-    languageCount: 107,
-  },
-  {
-    id: "speechbrain-ecapa-standard",
-    provider: "private-container",
-    model: "speechbrain/lang-id-voxlingua107-ecapa",
-    tier: "standard",
-    languageCount: 107,
+    id: "workers-ai-nova-3",
+    provider: "workers-ai",
+    model: "@cf/deepgram/nova-3",
+    tier: null,
+    languageCount: null,
   },
   {
     id: "nvidia-ambernet-basic",
@@ -48,11 +41,18 @@ export const INFERENCE_METHODS: readonly InferenceMethodDefinition[] = [
     languageCount: 107,
   },
   {
-    id: "workers-ai-nova-3",
-    provider: "workers-ai",
-    model: "@cf/deepgram/nova-3",
-    tier: null,
-    languageCount: null,
+    id: "speechbrain-ecapa-basic",
+    provider: "private-container",
+    model: "speechbrain/lang-id-voxlingua107-ecapa",
+    tier: "basic",
+    languageCount: 107,
+  },
+  {
+    id: "speechbrain-ecapa-standard",
+    provider: "private-container",
+    model: "speechbrain/lang-id-voxlingua107-ecapa",
+    tier: "standard",
+    languageCount: 107,
   },
 ];
 

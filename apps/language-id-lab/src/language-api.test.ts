@@ -23,11 +23,15 @@ const RESPONSE = {
     llr: 0,
     accept_llr: 3,
     reject_llr: -1.5,
+    state: "idle",
   },
   hysteresis: {
     stable_posterior: 0.81,
     enter_posterior: 0.72,
     retain_posterior: 0.42,
+    state: "retaining",
+    challenger_language: null,
+    challenger_posterior: 0,
   },
   quality: 0.95,
   speech_seconds: 2.4,
@@ -51,8 +55,21 @@ it("validates a multilingual Rust inference response", () => {
       transitionHazard: 0.12,
       posterior: [{ language: "ko", probability: 0.81 }],
     },
-    sprt: { candidateLanguage: null, llr: 0, acceptLlr: 3, rejectLlr: -1.5 },
-    hysteresis: { stablePosterior: 0.81, enterPosterior: 0.72, retainPosterior: 0.42 },
+    sprt: {
+      candidateLanguage: null,
+      llr: 0,
+      acceptLlr: 3,
+      rejectLlr: -1.5,
+      state: "idle",
+    },
+    hysteresis: {
+      stablePosterior: 0.81,
+      enterPosterior: 0.72,
+      retainPosterior: 0.42,
+      state: "retaining",
+      challengerLanguage: null,
+      challengerPosterior: 0,
+    },
     quality: 0.95,
     speechSeconds: 2.4,
     inferenceMs: 37.2,
@@ -93,6 +110,21 @@ it("rejects malformed inference diagnostics", () => {
       sprt: { ...RESPONSE.sprt, candidate_language: 3 },
     }),
   ).toThrow("candidate language is invalid");
+  expect(() =>
+    parseLanguageInference({ ...RESPONSE, sprt: { ...RESPONSE.sprt, state: "waiting" } }),
+  ).toThrow("SPRT state is invalid");
+  expect(() =>
+    parseLanguageInference({
+      ...RESPONSE,
+      hysteresis: { ...RESPONSE.hysteresis, state: "waiting" },
+    }),
+  ).toThrow("Hysteresis state is invalid");
+  expect(() =>
+    parseLanguageInference({
+      ...RESPONSE,
+      hysteresis: { ...RESPONSE.hysteresis, challenger_language: 3 },
+    }),
+  ).toThrow("Hysteresis challenger language is invalid");
   expect(() => parseLanguageInference({ ...RESPONSE, pattern: "other" })).toThrow(
     "pattern is invalid",
   );
@@ -123,7 +155,13 @@ it("accepts an utterance response with an active SPRT candidate", () => {
   const parsed = parseLanguageInference({
     ...RESPONSE,
     pattern: "utterance",
-    sprt: { ...RESPONSE.sprt, candidate_language: "ja" },
+    sprt: { ...RESPONSE.sprt, candidate_language: "ja", state: "accumulating" },
+    hysteresis: {
+      ...RESPONSE.hysteresis,
+      state: "challenged",
+      challenger_language: "ja",
+      challenger_posterior: 0.998,
+    },
   });
   expect(parsed.pattern).toBe("utterance");
   expect(parsed.sprt.candidateLanguage).toBe("ja");

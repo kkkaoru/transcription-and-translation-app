@@ -14,17 +14,24 @@ export interface HsmmDiagnostics {
   posterior: readonly LanguageProbability[];
 }
 
+export type SprtState = "idle" | "accumulating" | "accepted";
+export type HysteresisState = "unlocked" | "retaining" | "challenged" | "switched";
+
 export interface SprtDiagnostics {
   candidateLanguage: string | null;
   llr: number;
   acceptLlr: number;
   rejectLlr: number;
+  state: SprtState;
 }
 
 export interface HysteresisDiagnostics {
   stablePosterior: number;
   enterPosterior: number;
   retainPosterior: number;
+  state: HysteresisState;
+  challengerLanguage: string | null;
+  challengerPosterior: number;
 }
 
 export interface ProviderBilling {
@@ -104,15 +111,41 @@ const providerBilling = (value: unknown): ProviderBilling | null => {
   };
 };
 
+const sprtState = (value: unknown): SprtState => {
+  if (value === "idle" || value === "accumulating" || value === "accepted") return value;
+  throw new Error("SPRT state is invalid");
+};
+
+const hysteresisState = (value: unknown): HysteresisState => {
+  if (
+    value === "unlocked" ||
+    value === "retaining" ||
+    value === "challenged" ||
+    value === "switched"
+  ) {
+    return value;
+  }
+  throw new Error("Hysteresis state is invalid");
+};
+
+const optionalLanguage = (value: unknown, error: string): string | null => {
+  if (value === null || typeof value === "string") return value;
+  throw new Error(error);
+};
+
 export const parseLanguageInference = (value: unknown): LanguageInference => {
   if (!isRecord(value) || !isRecord(value.hsmm) || !isRecord(value.sprt)) {
     throw new Error("Language inference response is invalid");
   }
   if (!isRecord(value.hysteresis)) throw new Error("Hysteresis diagnostics are invalid");
-  const candidate: unknown = value.sprt.candidate_language;
-  if (candidate !== null && typeof candidate !== "string") {
-    throw new Error("SPRT candidate language is invalid");
-  }
+  const candidate: string | null = optionalLanguage(
+    value.sprt.candidate_language,
+    "SPRT candidate language is invalid",
+  );
+  const challenger: string | null = optionalLanguage(
+    value.hysteresis.challenger_language,
+    "Hysteresis challenger language is invalid",
+  );
   const pattern: string = stringValue(value, "pattern");
   if (pattern !== "utterance" && pattern !== "rolling-context") {
     throw new Error("ECAPA pattern is invalid");
@@ -132,11 +165,15 @@ export const parseLanguageInference = (value: unknown): LanguageInference => {
       llr: numberValue(value.sprt, "llr"),
       acceptLlr: numberValue(value.sprt, "accept_llr"),
       rejectLlr: numberValue(value.sprt, "reject_llr"),
+      state: sprtState(value.sprt.state),
     },
     hysteresis: {
       stablePosterior: numberValue(value.hysteresis, "stable_posterior"),
       enterPosterior: numberValue(value.hysteresis, "enter_posterior"),
       retainPosterior: numberValue(value.hysteresis, "retain_posterior"),
+      state: hysteresisState(value.hysteresis.state),
+      challengerLanguage: challenger,
+      challengerPosterior: numberValue(value.hysteresis, "challenger_posterior"),
     },
     quality: numberValue(value, "quality"),
     speechSeconds: numberValue(value, "speech_seconds"),

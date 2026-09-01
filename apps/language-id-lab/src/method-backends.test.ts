@@ -22,8 +22,21 @@ const containerMocks = vi.hoisted(() => ({
           transition_hazard: 0.1,
           posterior: [{ language: "fr", probability: 0.88 }],
         },
-        sprt: { candidate_language: null, llr: 1.2, accept_llr: 3, reject_llr: -1.5 },
-        hysteresis: { stable_posterior: 0.88, enter_posterior: 0.72, retain_posterior: 0.42 },
+        sprt: {
+          candidate_language: null,
+          llr: 1.2,
+          accept_llr: 3,
+          reject_llr: -1.5,
+          state: "idle",
+        },
+        hysteresis: {
+          stable_posterior: 0.88,
+          enter_posterior: 0.72,
+          retain_posterior: 0.42,
+          state: "retaining",
+          challenger_language: null,
+          challenger_posterior: 0,
+        },
         quality: 0.91,
         speech_seconds: 0.00025,
         inference_ms: 12,
@@ -87,6 +100,13 @@ afterEach(() => vi.unstubAllGlobals());
 
 it("enumerates five inference methods and distinguishes stateless Workers AI", () => {
   expect(INFERENCE_METHODS).toHaveLength(5);
+  expect(INFERENCE_METHODS.map((method) => method.id)).toStrictEqual([
+    "workers-ai-nova-3",
+    "nvidia-ambernet-basic",
+    "nvidia-ambernet-standard",
+    "speechbrain-ecapa-basic",
+    "speechbrain-ecapa-standard",
+  ]);
   expect(isInferenceMethod("nvidia-ambernet-standard")).toBe(true);
   expect(isInferenceMethod("other")).toBe(false);
   expect(isContainerInferenceMethod("speechbrain-ecapa-basic")).toBe(true);

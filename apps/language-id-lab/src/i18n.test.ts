@@ -21,6 +21,12 @@ describe("language-id-lab i18n", () => {
     expect(japanese.perHour("0.01")).toBe("$0.01/時");
     expect(english.microphoneName(2)).toBe("Microphone 2");
     expect(japanese.microphoneName(2)).toBe("マイク 2");
+    expect(english.temporalStatePosterior).toBe("Temporal language state posterior");
+    expect(japanese.temporalStatePosterior).toBe("時間平滑化した言語状態確率");
+    expect(english.sprtAccumulating).toBe("Accumulating evidence");
+    expect(japanese.hysteresisChallenged).toBe("対抗言語が維持閾値以上");
+    expect(english.muteMicrophone).toBe("Mute");
+    expect(japanese.unmuteMicrophone).toBe("ミュート解除");
   });
 
   it("resolves UI locale and multilingual display names", () => {

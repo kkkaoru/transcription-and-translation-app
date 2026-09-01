@@ -309,7 +309,7 @@ button {
 
 .capture-controls {
   display: grid;
-  grid-template-columns: minmax(150px, 0.7fr) minmax(320px, 1.55fr) minmax(180px, 0.8fr) auto;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(320px, 1.55fr) minmax(180px, 0.8fr) auto auto;
   gap: 14px;
   align-items: end;
 }
@@ -364,6 +364,17 @@ textarea {
   color: var(--green);
   background: transparent;
   border: 1px solid #b8c8ba;
+}
+
+.mute-button {
+  min-width: 108px;
+  height: 46px;
+}
+
+.mute-button.active {
+  color: #fffaf4;
+  background: var(--orange);
+  border-color: var(--orange);
 }
 
 .meter-grid {
@@ -482,6 +493,56 @@ textarea {
 .panel-heading h3,
 .diagnostic-card h3 {
   font-size: 19px;
+}
+
+.tooltip-heading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.info-tooltip {
+  position: relative;
+  display: inline-grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  color: var(--green);
+  font-family: "DM Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0;
+  background: var(--green-soft);
+  border: 1px solid #bfd1c1;
+  border-radius: 50%;
+  cursor: help;
+}
+
+.info-tooltip::after {
+  position: absolute;
+  z-index: 10;
+  top: 27px;
+  left: 50%;
+  width: min(330px, 75vw);
+  padding: 10px 12px;
+  color: #fffaf4;
+  font-family: "DM Sans", sans-serif;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: 0;
+  pointer-events: none;
+  visibility: hidden;
+  content: attr(data-tooltip);
+  background: var(--ink);
+  border-radius: 8px;
+  opacity: 0;
+  transform: translateX(-50%);
+}
+
+.info-tooltip:hover::after,
+.info-tooltip:focus::after {
+  visibility: visible;
+  opacity: 1;
 }
 
 .posterior-list {
