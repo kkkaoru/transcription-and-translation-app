@@ -2,10 +2,112 @@
 
 const VOICE_TEST_PATH: string = "/api/voice-test";
 const TRANSLATION_MODEL = "@cf/meta/m2m100-1.2b";
-const LANGUAGE_DETECTION_MODEL = "@cf/meta/llama-3.2-1b-instruct";
+const LANGUAGE_DETECTION_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 const FISH_TTS_URL: string = "https://api.fish.audio/v1/tts";
 const MAXIMUM_TEXT_LENGTH: number = 500;
 const LANGUAGE_CODE: RegExp = /^[a-z]{2,3}$/u;
+const M2M100_LANGUAGE_CODES: ReadonlySet<string> = new Set([
+  "af",
+  "am",
+  "ar",
+  "ast",
+  "az",
+  "ba",
+  "be",
+  "bg",
+  "bn",
+  "br",
+  "bs",
+  "ca",
+  "ceb",
+  "cs",
+  "cy",
+  "da",
+  "de",
+  "el",
+  "en",
+  "es",
+  "et",
+  "fa",
+  "ff",
+  "fi",
+  "fr",
+  "fy",
+  "ga",
+  "gd",
+  "gl",
+  "gu",
+  "ha",
+  "he",
+  "hi",
+  "hr",
+  "ht",
+  "hu",
+  "hy",
+  "id",
+  "ig",
+  "ilo",
+  "is",
+  "it",
+  "ja",
+  "jv",
+  "ka",
+  "kk",
+  "km",
+  "kn",
+  "ko",
+  "lb",
+  "lg",
+  "ln",
+  "lo",
+  "lt",
+  "lv",
+  "mg",
+  "mk",
+  "ml",
+  "mn",
+  "mr",
+  "ms",
+  "my",
+  "ne",
+  "nl",
+  "no",
+  "ns",
+  "oc",
+  "or",
+  "pa",
+  "pl",
+  "ps",
+  "pt",
+  "ro",
+  "ru",
+  "sd",
+  "si",
+  "sk",
+  "sl",
+  "so",
+  "sq",
+  "sr",
+  "ss",
+  "su",
+  "sv",
+  "sw",
+  "ta",
+  "th",
+  "tl",
+  "tn",
+  "tr",
+  "uk",
+  "ur",
+  "uz",
+  "vi",
+  "wo",
+  "xh",
+  "yi",
+  "yo",
+  "zh",
+  "zu",
+]);
 
 interface VoiceTestEnvironment {
   AI: {
@@ -54,8 +156,12 @@ export const parseDetectedLanguage = (value: unknown): string => {
     /\b(?:language|code)(?:\s+is|\s*[:=])\s*["'`]?(?<code>[a-z]{2,3})\b/u,
   );
   const language: string | undefined = direct?.groups?.code ?? labeled?.groups?.code;
-  if (language === undefined || !LANGUAGE_CODE.test(language)) {
-    throw new Error("Workers AI language detection returned an invalid language code");
+  if (
+    language === undefined ||
+    !LANGUAGE_CODE.test(language) ||
+    !M2M100_LANGUAGE_CODES.has(language)
+  ) {
+    throw new Error("Workers AI language detection returned an unsupported language code");
   }
   return language;
 };

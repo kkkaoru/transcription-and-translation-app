@@ -286,9 +286,10 @@ it("handles voice API routing and invalid request payloads", async () => {
 it("parses decorated text-language detection responses without guessing names", () => {
   expect(parseDetectedLanguage({ response: '"EN"' })).toBe("en");
   expect(parseDetectedLanguage({ response: "```text\nja\n```" })).toBe("ja");
-  expect(parseDetectedLanguage({ response: "Language: fra (French)" })).toBe("fra");
+  expect(parseDetectedLanguage({ response: "Language: ceb (Cebuano)" })).toBe("ceb");
   expect(() => parseDetectedLanguage(null)).toThrow("returned no result");
-  expect(() => parseDetectedLanguage({ response: "English" })).toThrow("invalid language code");
+  expect(() => parseDetectedLanguage({ response: "English" })).toThrow("unsupported language code");
+  expect(() => parseDetectedLanguage({ response: "guy" })).toThrow("unsupported language code");
 });
 
 it("validates voice test text and language codes", () => {
@@ -311,7 +312,7 @@ it("validates voice test text and language codes", () => {
 it("translates text and returns Fish Audio bytes without exposing its secret", async () => {
   const translate = vi.fn((model: string) =>
     Promise.resolve(
-      model === "@cf/meta/llama-3.2-1b-instruct"
+      model === "@cf/meta/llama-3.2-3b-instruct"
         ? { response: "en" }
         : { translated_text: "こんにちは" },
     ),
@@ -348,7 +349,7 @@ it("translates text and returns Fish Audio bytes without exposing its secret", a
 it("skips translation for matching languages and reports Fish or translation failures", async () => {
   const translate = vi.fn((model: string) =>
     Promise.resolve(
-      model === "@cf/meta/llama-3.2-1b-instruct"
+      model === "@cf/meta/llama-3.2-3b-instruct"
         ? { response: "en" }
         : { translated_text: "unused" },
     ),
@@ -377,7 +378,7 @@ it("skips translation for matching languages and reports Fish or translation fai
     {
       AI: {
         run: vi.fn((model: string) =>
-          Promise.resolve(model === "@cf/meta/llama-3.2-1b-instruct" ? { response: "en" } : {}),
+          Promise.resolve(model === "@cf/meta/llama-3.2-3b-instruct" ? { response: "en" } : {}),
         ),
       },
       FISH_AUDIO_API_KEY: "secret",

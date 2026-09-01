@@ -17,7 +17,7 @@ The interface is localized in Japanese and English. Language inference is not re
 
 ## Translation and synthesized-voice check
 
-The verification panel automatically identifies arbitrary input text with Workers AI `@cf/meta/llama-3.2-1b-instruct`, translates it with `@cf/meta/m2m100-1.2b`, synthesizes 16 kHz WAV with Fish Audio `s2.1-pro-free`, plays it, and automatically submits that exact audio to the selected identification method. Only the synthesized target language is selected manually. Configure Fish Audio only as a Worker secret:
+The verification panel automatically identifies arbitrary input text with Workers AI `@cf/meta/llama-3.2-3b-instruct`, translates it with `@cf/meta/m2m100-1.2b`, synthesizes 16 kHz WAV with Fish Audio `s2.1-pro-free`, plays it, and automatically submits that exact audio to the selected identification method. Only the synthesized target language is selected manually. Configure Fish Audio only as a Worker secret:
 
 ```sh
 cd apps/language-id-lab
