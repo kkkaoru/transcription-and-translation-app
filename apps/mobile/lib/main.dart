@@ -487,23 +487,31 @@ class _CompanionHomePageState extends State<CompanionHomePage> {
       if (enabled) {
         await _startBrowserSource();
       } else {
-        await widget.browserSourceBackend.stop();
-        if (!mounted) return;
-        setState(() {
-          _browserSourceUrl = null;
-          _browserSourceBusy = false;
-        });
-        _companion?.publishBrowserSourceStatus();
+        await _stopBrowserSource();
       }
       _scheduleBrowserSourceSave();
     } on Object catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _browserSourceEnabled = !enabled;
-        _browserSourceBusy = false;
-      });
-      _reportBrowserSourceFailure(error);
+      _restoreBrowserSourceToggle(enabled, error);
     }
+  }
+
+  Future<void> _stopBrowserSource() async {
+    await widget.browserSourceBackend.stop();
+    if (!mounted) return;
+    setState(() {
+      _browserSourceUrl = null;
+      _browserSourceBusy = false;
+    });
+    _companion?.publishBrowserSourceStatus();
+  }
+
+  void _restoreBrowserSourceToggle(bool enabled, Object error) {
+    if (!mounted) return;
+    setState(() {
+      _browserSourceEnabled = !enabled;
+      _browserSourceBusy = false;
+    });
+    _reportBrowserSourceFailure(error);
   }
 
   Future<void> _startBrowserSource() async {
