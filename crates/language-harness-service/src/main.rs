@@ -12,7 +12,7 @@ use std::{
 };
 
 use axum::{
-    Router,
+    Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Query, State},
     http::{HeaderMap, StatusCode},
@@ -42,6 +42,7 @@ const ECAPA_MODEL_FILE: &str = "lang-id-ecapa.onnx";
 const AMBERNET_MODEL_FILE: &str = "ambernet.onnx";
 const LABELS_FILE: &str = "labels.json";
 const AMBERNET_PREPROCESSOR_FILE: &str = "preprocessor.json";
+const WORKERS_AI_NOVA_MODEL: &str = "@cf/deepgram/nova-3";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ModelKind {
@@ -84,7 +85,7 @@ struct RuntimeHandle {
     sender: mpsc::Sender<RuntimeCommand>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum EcapaPattern {
     Utterance,
@@ -106,9 +107,17 @@ struct InferInput {
 }
 
 #[derive(Debug)]
+struct TrackInput {
+    session_id: String,
+    request: ProviderTrackRequest,
+}
+
+#[derive(Debug)]
 enum RuntimeCommand {
     Warmup { response: oneshot::Sender<Result<WarmupResponse, ServiceError>> },
     Infer { input: InferInput, response: oneshot::Sender<Result<InferenceResponse, ServiceError>> },
+    Track { input: TrackInput, response: oneshot::Sender<Result<InferenceResponse, ServiceError>> },
+    Reset { session_id: String, response: oneshot::Sender<()> },
 }
 
 #[derive(Debug, Serialize)]
@@ -126,10 +135,42 @@ struct WarmupResponse {
     languages: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct LanguageProbability {
     language: String,
     probability: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderTrackRequest {
+    at_ms: u64,
+    pattern: EcapaPattern,
+    raw_languages: Vec<LanguageProbability>,
+    quality: f32,
+    speech_seconds: f32,
+    inference_ms: f64,
+    model: String,
+}
+
+struct TrackerUpdate<'a> {
+    session_id: &'a str,
+    at_ms: u64,
+    raw_probabilities: &'a [f32],
+    quality: f32,
+}
+
+struct TrackerSnapshot {
+    stable_language: String,
+    stable_confidence: f32,
+    candidate_language: Option<String>,
+    posterior: Vec<LanguageProbability>,
+    hsmm_duration_ticks: usize,
+    hsmm_transition_hazard: f32,
+    sprt_llr: f32,
+    sprt_accept_llr: f32,
+    sprt_reject_llr: f32,
+    hysteresis_enter_posterior: f32,
+    hysteresis_retain_posterior: f32,
 }
 
 #[derive(Debug, Serialize)]
@@ -166,7 +207,7 @@ struct InferenceResponse {
     quality: f32,
     speech_seconds: f32,
     inference_ms: f64,
-    model: &'static str,
+    model: String,
     pattern: EcapaPattern,
 }
 
@@ -266,6 +307,26 @@ impl RuntimeHandle {
             ServiceError::unavailable(format!("Inference response dropped: {error}"))
         })?
     }
+
+    async fn track(&self, input: TrackInput) -> Result<InferenceResponse, ServiceError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender.send(RuntimeCommand::Track { input, response }).map_err(|error| {
+            ServiceError::unavailable(format!("Tracker runtime stopped: {error}"))
+        })?;
+        receiver.await.map_err(|error| {
+            ServiceError::unavailable(format!("Tracker response dropped: {error}"))
+        })?
+    }
+
+    async fn reset(&self, session_id: String) -> Result<(), ServiceError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender.send(RuntimeCommand::Reset { session_id, response }).map_err(|error| {
+            ServiceError::unavailable(format!("Tracker runtime stopped: {error}"))
+        })?;
+        receiver.await.map_err(|error| {
+            ServiceError::unavailable(format!("Tracker reset response dropped: {error}"))
+        })
+    }
 }
 
 impl RuntimeService {
@@ -324,13 +385,133 @@ impl RuntimeService {
                 self.labels.len()
             )));
         }
-        let tracker_probabilities = calibrated_tracker_probabilities(&raw_probabilities, quality);
+        let snapshot = self.update_tracker(TrackerUpdate {
+            session_id: &input.session_id,
+            at_ms: input.at_ms,
+            raw_probabilities: &raw_probabilities,
+            quality,
+        })?;
+        Ok(InferenceResponse {
+            session_id: input.session_id,
+            stable_language: snapshot.stable_language,
+            stable_confidence: snapshot.stable_confidence,
+            raw_languages: top_probabilities(&self.labels, &raw_probabilities),
+            hsmm: HsmmDiagnostics {
+                duration_ticks: snapshot.hsmm_duration_ticks,
+                transition_hazard: snapshot.hsmm_transition_hazard,
+                posterior: snapshot.posterior,
+            },
+            sprt: SprtDiagnostics {
+                candidate_language: snapshot.candidate_language,
+                llr: snapshot.sprt_llr,
+                accept_llr: snapshot.sprt_accept_llr,
+                reject_llr: snapshot.sprt_reject_llr,
+            },
+            hysteresis: HysteresisDiagnostics {
+                stable_posterior: snapshot.stable_confidence,
+                enter_posterior: snapshot.hysteresis_enter_posterior,
+                retain_posterior: snapshot.hysteresis_retain_posterior,
+            },
+            quality,
+            speech_seconds: input.samples.len() as f32 / SAMPLE_RATE_HZ as f32,
+            inference_ms: started_at.elapsed().as_secs_f64() * 1_000.0,
+            model: self.model_kind.model_name().into(),
+            pattern: input.pattern,
+        })
+    }
+
+    fn track(&mut self, input: TrackInput) -> Result<InferenceResponse, ServiceError> {
+        let request = input.request;
+        if request.model != WORKERS_AI_NOVA_MODEL {
+            return Err(ServiceError::bad_request("Provider model is not supported"));
+        }
+        if !request.quality.is_finite() || !(0.0..=1.0).contains(&request.quality) {
+            return Err(ServiceError::bad_request("Provider quality must be between zero and one"));
+        }
+        if !request.speech_seconds.is_finite() || request.speech_seconds <= 0.0 {
+            return Err(ServiceError::bad_request("Provider speech duration must be positive"));
+        }
+        if !request.inference_ms.is_finite() || request.inference_ms < 0.0 {
+            return Err(ServiceError::bad_request("Provider inference time is invalid"));
+        }
+        let raw_probabilities = self.provider_probabilities(&request.raw_languages)?;
+        let snapshot = self.update_tracker(TrackerUpdate {
+            session_id: &input.session_id,
+            at_ms: request.at_ms,
+            raw_probabilities: &raw_probabilities,
+            quality: request.quality,
+        })?;
+        Ok(InferenceResponse {
+            session_id: input.session_id,
+            stable_language: snapshot.stable_language,
+            stable_confidence: snapshot.stable_confidence,
+            raw_languages: request.raw_languages,
+            hsmm: HsmmDiagnostics {
+                duration_ticks: snapshot.hsmm_duration_ticks,
+                transition_hazard: snapshot.hsmm_transition_hazard,
+                posterior: snapshot.posterior,
+            },
+            sprt: SprtDiagnostics {
+                candidate_language: snapshot.candidate_language,
+                llr: snapshot.sprt_llr,
+                accept_llr: snapshot.sprt_accept_llr,
+                reject_llr: snapshot.sprt_reject_llr,
+            },
+            hysteresis: HysteresisDiagnostics {
+                stable_posterior: snapshot.stable_confidence,
+                enter_posterior: snapshot.hysteresis_enter_posterior,
+                retain_posterior: snapshot.hysteresis_retain_posterior,
+            },
+            quality: request.quality,
+            speech_seconds: request.speech_seconds,
+            inference_ms: request.inference_ms,
+            model: request.model,
+            pattern: request.pattern,
+        })
+    }
+
+    fn provider_probabilities(
+        &self,
+        languages: &[LanguageProbability],
+    ) -> Result<Vec<f32>, ServiceError> {
+        if languages.is_empty() {
+            return Err(ServiceError::bad_request("Provider returned no language probabilities"));
+        }
+        let mut probabilities = vec![0.0_f32; self.labels.len()];
+        for language in languages {
+            if !language.probability.is_finite() || !(0.0..=1.0).contains(&language.probability) {
+                return Err(ServiceError::bad_request("Provider probability is invalid"));
+            }
+            let normalized = normalized_language_code(&language.language);
+            if normalized == "unknown" {
+                continue;
+            }
+            let Some(index) = self.labels.iter().position(|label| label == &normalized) else {
+                return Err(ServiceError::bad_request(format!(
+                    "Provider language is not supported: {}",
+                    language.language
+                )));
+            };
+            probabilities[index] += language.probability;
+            if probabilities[index] > 1.0 {
+                return Err(ServiceError::bad_request("Provider probabilities exceed one"));
+            }
+        }
+        Ok(probabilities)
+    }
+
+    fn update_tracker(
+        &mut self,
+        input: TrackerUpdate<'_>,
+    ) -> Result<TrackerSnapshot, ServiceError> {
+        let tracker_probabilities =
+            calibrated_tracker_probabilities(input.raw_probabilities, input.quality);
         let labels = tracker_labels(&self.labels);
-        let session = self.session_mut(&input.session_id, labels)?;
+        let session = self.session_mut(input.session_id, labels)?;
         let observation = MultilingualObservation::from_probabilities(
             input.at_ms,
             tracker_probabilities,
-            quality,
+            input.quality,
             true,
         );
         if !session.tracker.push_observation(observation).is_accepted() {
@@ -341,37 +522,24 @@ impl RuntimeService {
         }
         session.tracker.advance_to(input.at_ms);
         let state = session.tracker.state();
-        let tracker_labels = session.tracker.labels();
-        let stable_language = tracker_labels[state.stable_index].clone();
-        let candidate_language = state.candidate_index.map(|index| tracker_labels[index].clone());
-        let posterior = top_probabilities(tracker_labels, &state.posterior);
-        Ok(InferenceResponse {
-            session_id: input.session_id,
-            stable_language,
+        let labels = session.tracker.labels();
+        Ok(TrackerSnapshot {
+            stable_language: labels[state.stable_index].clone(),
             stable_confidence: state.stable_confidence,
-            raw_languages: top_probabilities(&self.labels, &raw_probabilities),
-            hsmm: HsmmDiagnostics {
-                duration_ticks: state.hsmm_duration_ticks,
-                transition_hazard: state.hsmm_transition_hazard,
-                posterior,
-            },
-            sprt: SprtDiagnostics {
-                candidate_language,
-                llr: state.sprt_llr,
-                accept_llr: state.sprt_accept_llr,
-                reject_llr: state.sprt_reject_llr,
-            },
-            hysteresis: HysteresisDiagnostics {
-                stable_posterior: state.stable_confidence,
-                enter_posterior: state.hysteresis_enter_posterior,
-                retain_posterior: state.hysteresis_retain_posterior,
-            },
-            quality,
-            speech_seconds: input.samples.len() as f32 / SAMPLE_RATE_HZ as f32,
-            inference_ms: started_at.elapsed().as_secs_f64() * 1_000.0,
-            model: self.model_kind.model_name(),
-            pattern: input.pattern,
+            candidate_language: state.candidate_index.map(|index| labels[index].clone()),
+            posterior: top_probabilities(labels, &state.posterior),
+            hsmm_duration_ticks: state.hsmm_duration_ticks,
+            hsmm_transition_hazard: state.hsmm_transition_hazard,
+            sprt_llr: state.sprt_llr,
+            sprt_accept_llr: state.sprt_accept_llr,
+            sprt_reject_llr: state.sprt_reject_llr,
+            hysteresis_enter_posterior: state.hysteresis_enter_posterior,
+            hysteresis_retain_posterior: state.hysteresis_retain_posterior,
         })
+    }
+
+    fn reset(&mut self, session_id: &str) {
+        self.sessions.remove(session_id);
     }
 
     fn ensure_model(&mut self) -> Result<(), ServiceError> {
@@ -608,6 +776,15 @@ fn softmax(logits: &[f32]) -> Vec<f32> {
     exponentials.into_iter().map(|value| value / total.max(f32::EPSILON)).collect()
 }
 
+fn normalized_language_code(language: &str) -> String {
+    let primary = language.split(['-', '_']).next().unwrap_or(language).to_ascii_lowercase();
+    match primary.as_str() {
+        "iw" => "he".into(),
+        "jw" => "jv".into(),
+        _ => primary,
+    }
+}
+
 fn tracker_labels(model_labels: &[String]) -> Vec<String> {
     std::iter::once("unknown".into()).chain(model_labels.iter().cloned()).collect()
 }
@@ -618,7 +795,9 @@ fn calibrated_tracker_probabilities(raw: &[f32], quality: f32) -> Vec<f32> {
         / UNKNOWN_CONFIDENCE_BOUNDARY)
         .clamp(0.0, 1.0);
     let quality_unknown = (1.0 - quality) * UNKNOWN_QUALITY_WEIGHT;
-    let unknown_probability = confidence_unknown.max(quality_unknown).clamp(0.0, 0.9);
+    let missing_probability = (1.0 - raw.iter().sum::<f32>()).clamp(0.0, 1.0);
+    let unknown_probability =
+        confidence_unknown.max(quality_unknown).max(missing_probability).clamp(0.0, 0.9);
     std::iter::once(unknown_probability)
         .chain(raw.iter().map(|probability| probability * (1.0 - unknown_probability)))
         .collect()
@@ -708,6 +887,24 @@ async fn infer(
         .map(axum::Json)
 }
 
+async fn track(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ProviderTrackRequest>,
+) -> Result<axum::Json<InferenceResponse>, ServiceError> {
+    let session_id = validated_session_id(&headers)?;
+    state.runtime.track(TrackInput { session_id, request }).await.map(axum::Json)
+}
+
+async fn reset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<serde_json::Value>, ServiceError> {
+    let session_id = validated_session_id(&headers)?;
+    state.runtime.reset(session_id).await?;
+    Ok(axum::Json(serde_json::json!({ "ok": true, "state": "reset" })))
+}
+
 fn spawn_runtime(
     model_dir: PathBuf,
     model_kind: ModelKind,
@@ -730,6 +927,13 @@ fn spawn_runtime(
                 }
                 RuntimeCommand::Infer { input, response } => {
                     drop(response.send(service.infer(input)));
+                }
+                RuntimeCommand::Track { input, response } => {
+                    drop(response.send(service.track(input)));
+                }
+                RuntimeCommand::Reset { session_id, response } => {
+                    service.reset(&session_id);
+                    let _send_result = response.send(());
                 }
             }
         }
@@ -756,6 +960,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/health", get(health))
         .route("/warmup", post(warmup))
         .route("/infer", post(infer))
+        .route("/track", post(track))
+        .route("/reset", post(reset))
         .layer(DefaultBodyLimit::max(MAXIMUM_AUDIO_BYTES))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
@@ -847,9 +1053,8 @@ mod tests {
         assert!(probabilities[2] > probabilities[1]);
     }
 
-    #[test]
-    fn rolling_pattern_retains_only_the_latest_six_seconds() {
-        let mut service = RuntimeService {
+    fn test_service() -> RuntimeService {
+        RuntimeService {
             model_kind: ModelKind::SpeechbrainEcapa,
             model_path: PathBuf::new(),
             labels: vec![
@@ -859,12 +1064,127 @@ mod tests {
                 "fr".into(),
                 "de".into(),
                 "es".into(),
-                "it".into(),
-                "zh".into(),
+                "he".into(),
+                "jv".into(),
             ],
             model: None,
             sessions: HashMap::new(),
-        };
+        }
+    }
+
+    fn provider_request(language: &str, probability: f32) -> ProviderTrackRequest {
+        ProviderTrackRequest {
+            at_ms: 1_000,
+            pattern: EcapaPattern::Utterance,
+            raw_languages: vec![LanguageProbability { language: language.into(), probability }],
+            quality: probability,
+            speech_seconds: 1.0,
+            inference_ms: 12.0,
+            model: WORKERS_AI_NOVA_MODEL.into(),
+        }
+    }
+
+    #[test]
+    fn provider_tracking_uses_the_rust_tracker_and_resets_only_the_session() {
+        let mut service = test_service();
+        let response = service
+            .track(TrackInput {
+                session_id: "provider-session".into(),
+                request: provider_request("EN-us", 0.9),
+            })
+            .unwrap();
+        assert_eq!(response.session_id, "provider-session");
+        assert_eq!(response.raw_languages[0].language, "EN-us");
+        assert_eq!(response.model, WORKERS_AI_NOVA_MODEL);
+        assert_eq!(response.pattern, EcapaPattern::Utterance);
+        assert!(service.sessions.contains_key("provider-session"));
+
+        let labels = tracker_labels(&service.labels);
+        service.sessions.insert("other-session".into(), LanguageSession::new(labels).unwrap());
+        service.reset("provider-session");
+        assert!(!service.sessions.contains_key("provider-session"));
+        assert!(service.sessions.contains_key("other-session"));
+        assert_eq!(normalized_language_code("iw_IL"), "he");
+        assert_eq!(normalized_language_code("JW"), "jv");
+    }
+
+    #[test]
+    fn provider_tracking_rejects_untrusted_provider_fields() {
+        let mut service = test_service();
+        let mut request = provider_request("en", 0.9);
+        request.model = "other/model".into();
+        assert_eq!(
+            service.track(TrackInput { session_id: "session".into(), request }).unwrap_err(),
+            ServiceError::bad_request("Provider model is not supported")
+        );
+
+        let mut request = provider_request("en", 0.9);
+        request.quality = f32::NAN;
+        assert_eq!(
+            service.track(TrackInput { session_id: "session".into(), request }).unwrap_err(),
+            ServiceError::bad_request("Provider quality must be between zero and one")
+        );
+        let mut request = provider_request("en", 0.9);
+        request.speech_seconds = 0.0;
+        assert_eq!(
+            service.track(TrackInput { session_id: "session".into(), request }).unwrap_err(),
+            ServiceError::bad_request("Provider speech duration must be positive")
+        );
+        let mut request = provider_request("en", 0.9);
+        request.inference_ms = -1.0;
+        assert_eq!(
+            service.track(TrackInput { session_id: "session".into(), request }).unwrap_err(),
+            ServiceError::bad_request("Provider inference time is invalid")
+        );
+    }
+
+    #[test]
+    fn provider_probabilities_validate_and_map_language_codes() {
+        let service = test_service();
+        assert_eq!(
+            service.provider_probabilities(&[]).unwrap_err(),
+            ServiceError::bad_request("Provider returned no language probabilities")
+        );
+        assert_eq!(
+            service
+                .provider_probabilities(&[LanguageProbability {
+                    language: "en".into(),
+                    probability: f32::INFINITY,
+                }])
+                .unwrap_err(),
+            ServiceError::bad_request("Provider probability is invalid")
+        );
+        assert_eq!(
+            service
+                .provider_probabilities(&[LanguageProbability {
+                    language: "unsupported".into(),
+                    probability: 0.5,
+                }])
+                .unwrap_err(),
+            ServiceError::bad_request("Provider language is not supported: unsupported")
+        );
+        assert_eq!(
+            service
+                .provider_probabilities(&[
+                    LanguageProbability { language: "en".into(), probability: 0.6 },
+                    LanguageProbability { language: "EN-us".into(), probability: 0.6 },
+                ])
+                .unwrap_err(),
+            ServiceError::bad_request("Provider probabilities exceed one")
+        );
+        let mapped = service
+            .provider_probabilities(&[
+                LanguageProbability { language: "unknown".into(), probability: 0.2 },
+                LanguageProbability { language: "iw-IL".into(), probability: 0.7 },
+            ])
+            .unwrap();
+        assert_eq!(mapped[6], 0.7);
+        assert_eq!(mapped.iter().sum::<f32>(), 0.7);
+    }
+
+    #[test]
+    fn rolling_pattern_retains_only_the_latest_six_seconds() {
+        let mut service = test_service();
         let first = service
             .samples_for_pattern(&InferInput {
                 session_id: "session".into(),
