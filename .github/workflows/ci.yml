@@ -201,6 +201,11 @@ jobs:
         run: |
           make -C apps/mobile setup
           make -C apps/mobile ios
+      # The real-host integration remains an explicit manual Make target. On Xcode 26.6,
+      # `flutter test -d <simulator>` can deadlock three clang `-E -dM` compiler probes
+      # on full 16 KiB stdout/stderr pipes. Unit loopback coverage plus this packaged
+      # Simulator build stay deterministic; do not turn that known toolchain deadlock
+      # into a required CI job without a verified upstream-safe execution path.
       - name: Upload iOS simulator companion
         uses: actions/upload-artifact@v4
         with:

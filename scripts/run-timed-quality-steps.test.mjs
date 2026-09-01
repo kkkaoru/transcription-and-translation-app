@@ -86,6 +86,8 @@ describe("timed quality steps", () => {
         "rust:wasm:lint",
         "rust:wasm:test",
         "rust:wasm:build",
+        "rust:language-harness:wasm:build",
+        "rust:language-harness:coverage",
       ],
     );
   });
@@ -96,7 +98,7 @@ describe("timed quality steps", () => {
 
   it("gives every planned step a stable identity and semantic asset labels", () => {
     const described = describeQualitySteps(QUALITY_GATE_STEPS);
-    assert.equal(described.length, 60);
+    assert.equal(described.length, 62);
     assert.equal(new Set(described.map(({ id }) => id)).size, described.length);
     assert.deepEqual(described[13], {
       id: "assets:verify:checkout-baseline",
@@ -237,9 +239,9 @@ describe("timed quality steps", () => {
     const payload = serializeTimingSummary(
       {
         exitCode: 0,
-        plannedStepCount: 60,
-        totalMs: 620,
-        stepsTotalMs: 600,
+        plannedStepCount: 62,
+        totalMs: 640,
+        stepsTotalMs: 620,
         overheadMs: 20,
         records,
       },
@@ -264,14 +266,14 @@ describe("timed quality steps", () => {
         recordedAt: "2026-08-15T18:52:00.000Z",
         outcome: "passed",
         exitCode: 0,
-        plannedStepCount: 60,
-        recordedStepCount: 60,
-        totalMs: 620,
-        stepsTotalMs: 600,
+        plannedStepCount: 62,
+        recordedStepCount: 62,
+        totalMs: 640,
+        stepsTotalMs: 620,
         overheadMs: 20,
       },
     );
-    assert.equal(parsed.steps.length, 60);
+    assert.equal(parsed.steps.length, 62);
     assert.deepEqual(Object.keys(parsed.steps[0]), [
       "id",
       "script",

@@ -2,6 +2,7 @@
 
 PARAPPER_MANIFEST := packages/parapper-asr/Cargo.toml
 NATIVE_MANIFEST := apps/native/Cargo.toml
+LANGUAGE_HARNESS_CORE_MANIFEST := crates/language-harness-core/Cargo.toml
 NATIVE_BINARY := apps/native/target/release/kotoba-beacon-native
 MOBILE_DIR := apps/mobile
 RUST_COVERAGE_RUNNER := node scripts/run-rust-coverage.mjs
@@ -9,7 +10,8 @@ RUST_COVERAGE_ARGS ?=
 
 .PHONY: help build native-release native-package native-install native-replace \
 	parapper-fetch parapper-check setup-git-hooks rust-native-coverage \
-	rust-parapper-engine-coverage clean-build-artifacts mobile-help mobile-setup \
+	rust-parapper-engine-coverage rust-language-harness-coverage \
+	clean-build-artifacts mobile-help mobile-setup \
 	mobile-generate mobile-check \
 	mobile-test mobile-coverage mobile-build mobile-build-android mobile-build-ios \
 	mobile-build-ios-device mobile-install-ios-device mobile-run-ios-device \
@@ -28,6 +30,7 @@ help:
 		'  make setup-git-hooks     Enable the tracked pre-push coverage gate' \
 		'  make rust-native-coverage Run serialized Native Rust coverage with automatic disk cleanup' \
 		'  make rust-parapper-engine-coverage Run serialized engine coverage with automatic disk cleanup' \
+		'  make rust-language-harness-coverage Run serialized Language Harness coverage at 95%' \
 		'  make clean-build-artifacts Remove rebuildable Rust, Flutter, and coverage artifacts' \
 		'  make mobile-help         List every Flutter companion target' \
 		'  make mobile-setup        Resolve Flutter and locked Mobile Rust dependencies' \
@@ -86,6 +89,15 @@ rust-parapper-engine-coverage:
 	$(RUST_COVERAGE_RUNNER) crates/parapper-engine/Cargo.toml \
 		--changed-lines=95 \
 		--changed-path=crates/parapper-engine/src \
+		$(RUST_COVERAGE_ARGS)
+
+rust-language-harness-coverage:
+	$(RUST_COVERAGE_RUNNER) $(LANGUAGE_HARNESS_CORE_MANIFEST) \
+		--locked \
+		--all-targets \
+		--fail-under-lines=95 \
+		--fail-under-functions=95 \
+		--fail-under-regions=95 \
 		$(RUST_COVERAGE_ARGS)
 
 clean-build-artifacts:

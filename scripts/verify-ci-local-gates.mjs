@@ -64,6 +64,23 @@ export const ciGateMappings = new Map([
     "rust:native:test",
   ],
   ["cargo build --locked --release --manifest-path apps/native/Cargo.toml", "rust:native:build"],
+  [
+    "cargo fmt --manifest-path crates/language-harness-core/Cargo.toml -- --check",
+    "rust:language-harness:fmt",
+  ],
+  [
+    "cargo clippy --locked --manifest-path crates/language-harness-core/Cargo.toml --all-targets -- -D warnings",
+    "rust:language-harness:lint",
+  ],
+  [
+    "cargo test --locked --manifest-path crates/language-harness-core/Cargo.toml",
+    "rust:language-harness:test",
+  ],
+  ["make rust-language-harness-coverage", "rust:language-harness:coverage"],
+  [
+    "cargo build --locked --manifest-path crates/language-harness-core/Cargo.toml --target wasm32-unknown-unknown --release",
+    "rust:language-harness:wasm:build",
+  ],
 ]);
 
 /**
@@ -210,7 +227,8 @@ export const assertBuildCleanupTestManifest = ({
 const isGateCommand = (command) =>
   command === matrixCommand ||
   /^bun run \S+$/u.test(command) ||
-  /^cargo (?:build|test|clippy|fmt)\b/u.test(command);
+  /^cargo (?:build|test|clippy|fmt)\b/u.test(command) ||
+  /^make \S+$/u.test(command);
 
 export const extractQualityJob = (workflow) => {
   const match = workflow.match(/\n {2}quality:\n([\s\S]*?)(?=\n {2}[A-Za-z0-9_-]+:|\n?$)/u);
@@ -303,8 +321,15 @@ export const verifyCiLocalGateParity = ({ workflow, packageJson }) => {
 
 export const main = () => {
   const workflow = readFileSync(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
+  const languageHarnessWorkflow = readFileSync(
+    resolve(repositoryRoot, ".github/workflows/language-harness.yml"),
+    "utf8",
+  );
   const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8"));
-  const result = verifyCiLocalGateParity({ workflow, packageJson });
+  const result = verifyCiLocalGateParity({
+    workflow: `${workflow}\n${languageHarnessWorkflow}`,
+    packageJson,
+  });
   const failures = [
     ...result.missingLocalScripts.map((value) => `CI gate missing from check:all: ${value}`),
     ...result.unknownCiCommands.map((value) => `unclassified CI gate: ${value}`),

@@ -2,8 +2,9 @@
 
 ## ビルド生成物とディスク容量
 
-- Rust coverage は必ず `make rust-native-coverage` または
-  `make rust-parapper-engine-coverage` から実行する。裸の
+- Rust coverage は必ず `make rust-native-coverage`、
+  `make rust-parapper-engine-coverage`、または
+  `make rust-language-harness-coverage` から実行する。裸の
   `cargo llvm-cov`、独自の `CARGO_TARGET_DIR`、エージェントごとの並列coverageは
   禁止する。Native診断Analyzerのcoverageは
   `bun run native:diagnostics:test:coverage` から実行する。
@@ -25,7 +26,8 @@
 
 - Nativeのcaption pipeline（`apps/native/src/capture.rs` と
   `apps/native/src/pipeline_diagnostics.rs`）、Parapper Engineの変更された実行可能行、
-  Native診断Analyzerは95%以上を必須とする。閾値を下げたり、対象ソースを除外したり、
+  Language Harness coreのline/function/region、Native診断Analyzerは95%以上を必須とする。
+  閾値を下げたり、対象ソースを除外したり、
   計測対象コードへcoverage無効化属性を追加して通過させてはならない。
 - Rustの独立した`tests.rs`はcargo-llvm-covの実行コードレポートに現れないため、変更行の
   分母には含めない。一方、通常の`.rs`がレポートに存在しない場合は設定漏れとして失敗

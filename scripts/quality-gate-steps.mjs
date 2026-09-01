@@ -59,4 +59,6 @@ export const QUALITY_GATE_STEPS = [
   "rust:wasm:lint",
   "rust:wasm:test",
   "rust:wasm:build",
+  "rust:language-harness:wasm:build",
+  "rust:language-harness:coverage",
 ];
