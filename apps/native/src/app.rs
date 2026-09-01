@@ -99,6 +99,8 @@ pub struct MainView {
     stale_render_images: Vec<Arc<RenderImage>>,
     last_published_caption: Option<(String, String)>,
     last_browser_caption: Option<(String, String)>,
+    last_mobile_browser_caption: Option<(String, String)>,
+    last_mobile_browser_state: Option<(bool, Option<String>)>,
     last_output_window_check: Instant,
     browser_source: BrowserSourceServer,
     output_window_requested: bool,
@@ -274,6 +276,8 @@ impl MainView {
             stale_render_images: Vec::new(),
             last_published_caption: None,
             last_browser_caption: None,
+            last_mobile_browser_caption: None,
+            last_mobile_browser_state: None,
             last_output_window_check: Instant::now() - OUTPUT_WINDOW_HEALTH_INTERVAL,
             browser_source,
             output_window_requested: false,
@@ -293,6 +297,18 @@ impl MainView {
         if browser_changed {
             self.browser_source.feed(source, translation);
             self.last_browser_caption = Some((source.to_string(), translation.to_string()));
+        }
+        let mobile_browser_changed =
+            caption_changed(self.last_mobile_browser_caption.as_ref(), source, translation);
+        if mobile_browser_changed {
+            match self.capture.publish_mobile_browser_caption(source, translation) {
+                Ok(true) => {
+                    self.last_mobile_browser_caption =
+                        Some((source.to_string(), translation.to_string()));
+                }
+                Ok(false) => self.last_mobile_browser_caption = None,
+                Err(error) => self.persist_error = Some(error),
+            }
         }
         let surface_changed = match self.surfaces.borrow_mut().publish_caption(
             &self.style,
@@ -544,11 +560,21 @@ impl MainView {
     }
 
     fn sync_companion_device_settings(&mut self) -> bool {
-        let device_id = self.capture.companion_snapshot().and_then(|snapshot| snapshot.device_id);
-        if self.active_companion_device_id == device_id {
+        let snapshot = self.capture.companion_snapshot();
+        let device_id = snapshot.as_ref().and_then(|snapshot| snapshot.device_id.clone());
+        let browser_state = snapshot
+            .as_ref()
+            .map(|snapshot| (snapshot.browser_source_enabled, snapshot.browser_source_url.clone()));
+        if self.active_companion_device_id == device_id
+            && self.last_mobile_browser_state == browser_state
+        {
             return false;
         }
         self.active_companion_device_id = device_id;
+        if self.last_mobile_browser_state != browser_state {
+            self.last_mobile_browser_caption = None;
+        }
+        self.last_mobile_browser_state = browser_state;
         true
     }
 
@@ -634,6 +660,17 @@ impl MainView {
             }
         }
         cx.write_to_clipboard(ClipboardItem::new_string(NATIVE_BROWSER_SOURCE_HINT.to_string()));
+    }
+
+    fn copy_mobile_browser_source_url(&mut self, cx: &mut Context<Self>) {
+        let url = self
+            .capture
+            .companion_snapshot()
+            .filter(|snapshot| snapshot.browser_source_enabled)
+            .and_then(|snapshot| snapshot.browser_source_url);
+        if let Some(url) = url {
+            cx.write_to_clipboard(ClipboardItem::new_string(url));
+        }
     }
 
     fn persist_dictionary(&mut self, next: Vec<CustomDictionaryEntry>) {
@@ -769,6 +806,10 @@ impl Render for MainView {
         let persist = self.persist_error.clone();
         let companion_snapshot = self.capture.companion_snapshot();
         let companion_pairing_qr = self.companion_pairing_qr_image(companion_snapshot.as_ref());
+        let mobile_browser_source_url = companion_snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.browser_source_enabled)
+            .and_then(|snapshot| snapshot.browser_source_url.as_deref());
         let settings_error = persist.as_deref().or_else(|| {
             companion_snapshot.as_ref().and_then(|snapshot| snapshot.last_error.as_deref())
         });
@@ -801,6 +842,7 @@ impl Render for MainView {
                     &self.app_settings,
                     &self.style,
                     persist.as_deref(),
+                    mobile_browser_source_url,
                     cx,
                     OutputCallbacks {
                         on_open_window: |view| view.output_window_requested = true,
@@ -810,6 +852,7 @@ impl Render for MainView {
                             view.persist_settings();
                         },
                         on_copy_url: |view, cx| view.copy_browser_source_url(cx),
+                        on_copy_mobile_url: |view, cx| view.copy_mobile_browser_source_url(cx),
                         on_background_color: |view, color| {
                             let mut next = view.style.clone();
                             next.capture_background_color = color.to_string();

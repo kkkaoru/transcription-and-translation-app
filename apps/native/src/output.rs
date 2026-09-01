@@ -19,6 +19,7 @@ pub struct OutputCallbacks<V> {
     pub on_open_window: fn(&mut V),
     pub on_toggle_window_startup: fn(&mut V),
     pub on_copy_url: fn(&mut V, &mut Context<V>),
+    pub on_copy_mobile_url: fn(&mut V, &mut Context<V>),
     pub on_background_color: fn(&mut V, &str),
 }
 
@@ -26,6 +27,7 @@ pub fn render_output<V: 'static>(
     settings: &NativeAppSettings,
     style: &NativeStyleSettings,
     persist_error: Option<&str>,
+    mobile_browser_source_url: Option<&str>,
     cx: &mut Context<V>,
     callbacks: OutputCallbacks<V>,
 ) -> impl IntoElement {
@@ -80,8 +82,25 @@ pub fn render_output<V: 'static>(
                         .on_click(cx.listener(move |view, _event, _window, cx| {
                             (callbacks.on_copy_url)(view, cx);
                         })),
-                ),
+                )
+                .when(mobile_browser_source_url.is_some(), |this| {
+                    this.child(
+                        Button::new("output-mobile-browser-copy-url")
+                            .label(text(language, TextKey::CopyMobileBrowserUrl))
+                            .on_click(cx.listener(move |view, _event, _window, cx| {
+                                (callbacks.on_copy_mobile_url)(view, cx);
+                            })),
+                    )
+                }),
         )
+        .when_some(mobile_browser_source_url.map(str::to_string), |this, url| {
+            this.child(
+                v_flex()
+                    .gap_2()
+                    .child(heading(text(language, TextKey::MobileBrowserUrl)))
+                    .child(url),
+            )
+        })
         .child(
             v_flex()
                 .gap_2()

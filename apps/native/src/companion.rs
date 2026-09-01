@@ -11,10 +11,10 @@ use std::time::Duration;
 use getrandom::fill as fill_random;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use rust_lib_kotoba_beacon_companion::api::simple::{
-    decode_discovery_request, decode_mobile_route_request, decode_mobile_stage_result,
-    decode_pair_request, decode_session_configuration, encode_discovery_response,
-    encode_route_configuration, encode_session_ready, MobileCapabilities, MobileStageResult,
-    PipelineRoute,
+    decode_discovery_request, decode_mobile_browser_source_status, decode_mobile_route_request,
+    decode_mobile_stage_result, decode_pair_request, decode_session_configuration,
+    encode_browser_source_caption, encode_discovery_response, encode_route_configuration,
+    encode_session_ready, MobileCapabilities, MobileStageResult, PipelineRoute,
 };
 use tungstenite::{accept, Error as WebSocketError, Message, WebSocket};
 
@@ -45,6 +45,8 @@ pub struct CompanionConnectionSnapshot {
     pub session_id: Option<String>,
     pub route: PipelineRoute,
     pub capabilities: Option<MobileCapabilities>,
+    pub browser_source_enabled: bool,
+    pub browser_source_url: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -58,6 +60,8 @@ impl CompanionConnectionSnapshot {
             session_id: None,
             route,
             capabilities: None,
+            browser_source_enabled: false,
+            browser_source_url: None,
             last_error: None,
         }
     }
@@ -269,6 +273,29 @@ impl CompanionServer {
         self.outbound_tx
             .try_send(CompanionOutbound::Text(encode_route_configuration(route)?))
             .map_err(format_outbound_error)
+    }
+
+    pub fn publish_browser_source_caption(
+        &self,
+        source: &str,
+        translation: &str,
+    ) -> Result<bool, String> {
+        let session_id = {
+            let state = self.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !state.browser_source_enabled {
+                return Ok(false);
+            }
+            state.session_id.clone()
+        };
+        let Some(session_id) = session_id else {
+            return Ok(false);
+        };
+        let message =
+            encode_browser_source_caption(session_id, source.to_string(), translation.to_string())?;
+        self.outbound_tx
+            .try_send(CompanionOutbound::Text(message))
+            .map_err(format_outbound_error)?;
+        Ok(true)
     }
 
     pub fn handle(&self) -> CompanionHandle {
@@ -515,6 +542,15 @@ fn handle_mobile_text(
             Err(TrySendError::Disconnected(_)) => Ok(()),
         };
     }
+    if let Ok(status) = decode_mobile_browser_source_status(text.clone()) {
+        let mut state = snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.session_id.as_deref() != Some(status.session_id.as_str()) {
+            return Err("mobile Browser Source status has the wrong session ID".to_string());
+        }
+        state.browser_source_enabled = status.enabled;
+        state.browser_source_url = status.url;
+        return Ok(());
+    }
     let requested = decode_mobile_route_request(text)?;
     let accepted = {
         let mut state = snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -578,6 +614,8 @@ fn mark_disconnected(snapshot: &Arc<Mutex<CompanionConnectionSnapshot>>) {
     state.device_name = None;
     state.session_id = None;
     state.capabilities = None;
+    state.browser_source_enabled = false;
+    state.browser_source_url = None;
 }
 
 fn set_error(snapshot: &Arc<Mutex<CompanionConnectionSnapshot>>, error: String) {
@@ -597,10 +635,11 @@ mod tests {
         COMPANION_PORT,
     };
     use rust_lib_kotoba_beacon_companion::api::simple::{
-        decode_discovery_response, default_pipeline_route, encode_discovery_request,
-        encode_pair_request, encode_route_configuration, encode_route_request,
-        encode_session_configure, encode_stage_result, ExecutionDevice, MobileCapabilities,
-        PipelineRoute, ProcessingStage,
+        decode_desktop_command, decode_discovery_response, default_pipeline_route,
+        encode_discovery_request, encode_mobile_browser_source_status, encode_pair_request,
+        encode_route_configuration, encode_route_request, encode_session_configure,
+        encode_stage_result, DesktopCommand, ExecutionDevice, MobileCapabilities, PipelineRoute,
+        ProcessingStage,
     };
     use tungstenite::{connect, Message};
 
@@ -724,6 +763,38 @@ mod tests {
                 .unwrap_or_else(|error| panic!("session ready failed: {error}; {:?}", server.snapshot())),
             Message::Text(text) if text.contains("session.ready")
         ));
+        socket
+            .send(Message::Text(
+                encode_mobile_browser_source_status(
+                    "session-1".to_string(),
+                    true,
+                    Some("http://127.0.0.1:1522/".to_string()),
+                )
+                .expect("Mobile Browser Source status")
+                .into(),
+            ))
+            .expect("send Mobile Browser Source status");
+        thread::sleep(Duration::from_millis(25));
+        assert!(server.snapshot().browser_source_enabled);
+        assert_eq!(server.snapshot().browser_source_url.as_deref(), Some("http://127.0.0.1:1522/"));
+        assert!(server
+            .publish_browser_source_caption("こんにちは", "Hello")
+            .expect("publish Browser Source caption"));
+        assert_eq!(
+            socket
+                .read()
+                .expect("Mobile Browser Source caption")
+                .into_text()
+                .map(|text| text.as_str().to_string())
+                .map_err(|error| error.to_string())
+                .and_then(decode_desktop_command)
+                .expect("decode Mobile Browser Source caption"),
+            DesktopCommand::UpdateBrowserSourceCaption {
+                session_id: "session-1".to_string(),
+                source_text: "こんにちは".to_string(),
+                translation_text: "Hello".to_string(),
+            }
+        );
         socket
             .send(Message::Text(
                 encode_stage_result(

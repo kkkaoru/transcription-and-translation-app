@@ -559,12 +559,14 @@ fn command_line_has_no_overlay_flag() {
 }
 
 #[test]
-fn live_tab_contains_capture_output_controls_without_html_display_fields() {
+fn live_tab_contains_native_and_authenticated_mobile_html_output_controls() {
     let output = include_str!("output.rs");
     let live = include_str!("live.rs");
     let app = include_str!("app.rs");
     assert!(output.contains("output-window-open"));
     assert!(output.contains("output-browser-copy-url"));
+    assert!(output.contains("output-mobile-browser-copy-url"));
+    assert!(output.contains("mobile_browser_source_url"));
     assert!(output.contains("CHROMA_KEY_COLORS"));
     assert!(output.contains("TRANSPARENT_BACKGROUND"));
     assert!(output.contains("TextKey::Transparent"));
@@ -587,6 +589,8 @@ fn live_tab_contains_capture_output_controls_without_html_display_fields() {
     assert!(app.contains("WindowBackgroundAppearance::Transparent"));
     assert!(app.contains(".bg(transparent_black())"));
     assert!(app.contains("copy_browser_source_url"));
+    assert!(app.contains("copy_mobile_browser_source_url"));
+    assert!(app.contains("publish_mobile_browser_caption"));
 }
 
 #[test]

@@ -241,6 +241,17 @@ impl CaptureController {
         self.companion_server.as_ref().map(CompanionServer::snapshot)
     }
 
+    pub fn publish_mobile_browser_caption(
+        &self,
+        source: &str,
+        translation: &str,
+    ) -> Result<bool, String> {
+        let Some(server) = &self.companion_server else {
+            return Ok(false);
+        };
+        server.publish_browser_source_caption(source, translation)
+    }
+
     pub fn configure_companion(&mut self, route: PipelineRoute) -> Result<(), String> {
         if self.worker.is_some() {
             return Err("Stop capture before changing companion processing locations".to_string());
