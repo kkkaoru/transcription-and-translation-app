@@ -137,6 +137,14 @@ export const handleWorkersAiLanguageRequest = async (
   if (operation !== "infer" || request.method !== "POST") {
     return Response.json({ error: "Unknown Workers AI operation" }, { status: 404 });
   }
+  const decisionPolicyJson: string =
+    url.searchParams.get("decision_policy") ?? JSON.stringify({ mode: "hysteresis-only" });
+  let decisionPolicy: unknown;
+  try {
+    decisionPolicy = JSON.parse(decisionPolicyJson);
+  } catch {
+    return Response.json({ error: "Decision policy is invalid" }, { status: 400 });
+  }
   const body: ArrayBuffer = await request.arrayBuffer();
   if (body.byteLength === 0 || body.byteLength > MAXIMUM_BYTES || body.byteLength % 4 !== 0) {
     return Response.json({ error: "Audio must be bounded float32 PCM" }, { status: 400 });
@@ -171,6 +179,7 @@ export const handleWorkersAiLanguageRequest = async (
     body: JSON.stringify({
       at_ms: timestampFromUrl(url),
       pattern: patternFromUrl(url),
+      decision_policy: decisionPolicy,
       raw_languages: [{ language: detection.language, probability: detection.confidence }],
       quality: detection.confidence,
       speech_seconds: speechSeconds,

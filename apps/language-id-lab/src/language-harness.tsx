@@ -23,6 +23,8 @@ import {
   isInferenceMethod,
 } from "./inference-methods";
 import {
+  type DecisionMode,
+  type DecisionPolicy,
   type EcapaPattern,
   type HysteresisState,
   inferLanguage,
@@ -161,6 +163,16 @@ const containerUsageValue = (usage: ContainerUsage | null, messages: UiMessages)
 const containerTierLabel = (tier: ComputeTier, messages: UiMessages): string =>
   tier === "basic" ? messages.basic : messages.standard;
 
+const selectedDecisionMode = (value: string): DecisionMode => {
+  if (value === "responsive" || value === "wald" || value === "custom") return value;
+  return "hysteresis-only";
+};
+
+const boundedNumber = (value: string, minimum: number, maximum: number): number | null => {
+  const parsed: number = Number(value);
+  return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : null;
+};
+
 const captureStatusLabel = (status: CaptureStatus, messages: UiMessages): string => {
   if (status === "processing") return messages.processing;
   if (status === "live") return messages.listening;
@@ -168,6 +180,7 @@ const captureStatusLabel = (status: CaptureStatus, messages: UiMessages): string
 };
 
 export const sprtStateLabel = (state: SprtState | undefined, messages: UiMessages): string => {
+  if (state === "disabled") return messages.sprtDisabled;
   if (state === "accepted") return messages.sprtAccepted;
   if (state === "accumulating") return messages.sprtAccumulating;
   return messages.sprtIdle;
@@ -203,6 +216,11 @@ export function LanguageHarness() {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const [method, setMethod] = useState<InferenceMethod>("workers-ai-nova-3");
   const [pattern, setPattern] = useState<EcapaPattern>("rolling-context");
+  const [decisionMode, setDecisionMode] = useState<DecisionMode>("hysteresis-only");
+  const [falseSwitchProbability, setFalseSwitchProbability] = useState<number>(0.1);
+  const [missedSwitchProbability, setMissedSwitchProbability] = useState<number>(0.2);
+  const [customAcceptLlr, setCustomAcceptLlr] = useState<number>(2.0);
+  const [customRejectLlr, setCustomRejectLlr] = useState<number>(-1.5);
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [speechProbability, setSpeechProbability] = useState<number>(0);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -229,6 +247,21 @@ export function LanguageHarness() {
   const mutedRef = useRef<boolean>(false);
   const containerMeterRef = useRef<ContainerActivityMeter>(emptyContainerActivityMeter());
   const messages = useMemo(() => messagesFor(locale), [locale]);
+  const decisionPolicy = useMemo<DecisionPolicy>(() => {
+    if (decisionMode === "wald") {
+      return { mode: decisionMode, falseSwitchProbability, missedSwitchProbability };
+    }
+    if (decisionMode === "custom") {
+      return { mode: decisionMode, acceptLlr: customAcceptLlr, rejectLlr: customRejectLlr };
+    }
+    return { mode: decisionMode };
+  }, [
+    customAcceptLlr,
+    customRejectLlr,
+    decisionMode,
+    falseSwitchProbability,
+    missedSwitchProbability,
+  ]);
   const prices: readonly ContainerPrice[] = usage?.prices ?? FALLBACK_PRICES;
   const tier: ComputeTier = inferenceMethod(method).tier ?? "basic";
   const price: ContainerPrice = selectedPrice(prices, tier);
@@ -314,11 +347,12 @@ export function LanguageHarness() {
         method: methodRef.current,
         pattern: patternRef.current,
         sessionId: sessionIdRef.current,
+        decisionPolicy,
       });
       recordInference(result);
       setCaptureStatus("live");
     },
-    [recordInference, touchContainerMeter],
+    [decisionPolicy, recordInference, touchContainerMeter],
   );
 
   const startCapture = useCallback(async () => {
@@ -382,6 +416,7 @@ export function LanguageHarness() {
           method,
           pattern,
           sessionId: voiceSessionId,
+          decisionPolicy,
         });
         recordInference(result);
         setVoiceDetected(result);
@@ -391,7 +426,7 @@ export function LanguageHarness() {
         );
       }
     },
-    [method, pattern, recordInference],
+    [decisionPolicy, method, pattern, recordInference],
   );
 
   const generateVoice = useCallback(async () => {
@@ -661,6 +696,102 @@ export function LanguageHarness() {
             {isMuted ? messages.unmuteMicrophone : messages.muteMicrophone}
           </button>
         </div>
+        <div className="decision-policy-panel">
+          <label>
+            <span>{messages.decisionPolicy}</span>
+            <select
+              value={decisionMode}
+              onChange={(event) => setDecisionMode(selectedDecisionMode(event.currentTarget.value))}
+              disabled={captureStatus !== "idle" && captureStatus !== "error"}
+            >
+              <option value="hysteresis-only">{messages.hysteresisOnly}</option>
+              <option value="responsive">{messages.responsiveSprt}</option>
+              <option value="wald">{messages.waldSprt}</option>
+              <option value="custom">{messages.customSprt}</option>
+            </select>
+          </label>
+          {decisionMode === "wald" ? (
+            <>
+              <label>
+                <span>{messages.falseSwitchProbability}</span>
+                <input
+                  type="number"
+                  min="0.001"
+                  max="0.4"
+                  step="0.01"
+                  value={falseSwitchProbability}
+                  onChange={(event) => {
+                    const value: number | null = boundedNumber(
+                      event.currentTarget.value,
+                      0.001,
+                      0.4,
+                    );
+                    if (value !== null) setFalseSwitchProbability(value);
+                  }}
+                  disabled={captureStatus !== "idle" && captureStatus !== "error"}
+                />
+              </label>
+              <label>
+                <span>{messages.missedSwitchProbability}</span>
+                <input
+                  type="number"
+                  min="0.001"
+                  max="0.4"
+                  step="0.01"
+                  value={missedSwitchProbability}
+                  onChange={(event) => {
+                    const value: number | null = boundedNumber(
+                      event.currentTarget.value,
+                      0.001,
+                      0.4,
+                    );
+                    if (value !== null) setMissedSwitchProbability(value);
+                  }}
+                  disabled={captureStatus !== "idle" && captureStatus !== "error"}
+                />
+              </label>
+            </>
+          ) : null}
+          {decisionMode === "custom" ? (
+            <>
+              <label>
+                <span>{messages.acceptBoundary}</span>
+                <input
+                  type="number"
+                  min="0.25"
+                  max="10"
+                  step="0.25"
+                  value={customAcceptLlr}
+                  onChange={(event) => {
+                    const value: number | null = boundedNumber(event.currentTarget.value, 0.25, 10);
+                    if (value !== null) setCustomAcceptLlr(value);
+                  }}
+                  disabled={captureStatus !== "idle" && captureStatus !== "error"}
+                />
+              </label>
+              <label>
+                <span>{messages.rejectBoundary}</span>
+                <input
+                  type="number"
+                  min="-10"
+                  max="-0.1"
+                  step="0.1"
+                  value={customRejectLlr}
+                  onChange={(event) => {
+                    const value: number | null = boundedNumber(
+                      event.currentTarget.value,
+                      -10,
+                      -0.1,
+                    );
+                    if (value !== null) setCustomRejectLlr(value);
+                  }}
+                  disabled={captureStatus !== "idle" && captureStatus !== "error"}
+                />
+              </label>
+            </>
+          ) : null}
+          <p>{messages.decisionPolicyHelp}</p>
+        </div>
         <div className="meter-grid">
           <label>
             <span>{messages.inputLevel}</span>
@@ -860,6 +991,15 @@ export function LanguageHarness() {
           </article>
           <article className="diagnostic-card panel">
             <h3>{messages.hysteresis}</h3>
+            <DiagnosticMetric
+              label={messages.stableHeading}
+              value={
+                inference === null
+                  ? messages.unknownLanguage
+                  : displayLanguageName(inference.stableLanguage, locale)
+              }
+              detail={inference?.stableLanguage ?? "—"}
+            />
             <DiagnosticMetric
               label={messages.decisionState}
               value={hysteresisStateLabel(inference?.hysteresis.state, messages)}

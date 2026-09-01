@@ -27,6 +27,9 @@ describe("language-id-lab i18n", () => {
     expect(japanese.hysteresisChallenged).toBe("対抗言語が維持閾値以上");
     expect(english.muteMicrophone).toBe("Mute");
     expect(japanese.unmuteMicrophone).toBe("ミュート解除");
+    expect(english.waldSprt).toBe("Wald SPRT from error rates");
+    expect(japanese.hysteresisOnly).toBe("SPRTオフ · HSMM + Hysteresis（デフォルト）");
+    expect(english.sprtDisabled).toBe("Disabled · hysteresis only");
   });
 
   it("resolves UI locale and multilingual display names", () => {

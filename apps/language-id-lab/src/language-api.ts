@@ -2,6 +2,13 @@
 import type { InferenceMethod } from "./inference-methods";
 
 export type EcapaPattern = "utterance" | "rolling-context";
+export type DecisionMode = "responsive" | "wald" | "custom" | "hysteresis-only";
+
+export type DecisionPolicy =
+  | { mode: "responsive" }
+  | { mode: "wald"; falseSwitchProbability: number; missedSwitchProbability: number }
+  | { mode: "custom"; acceptLlr: number; rejectLlr: number }
+  | { mode: "hysteresis-only" };
 
 export interface LanguageProbability {
   language: string;
@@ -14,10 +21,12 @@ export interface HsmmDiagnostics {
   posterior: readonly LanguageProbability[];
 }
 
-export type SprtState = "idle" | "accumulating" | "accepted";
+export type SprtState = "disabled" | "idle" | "accumulating" | "accepted";
 export type HysteresisState = "unlocked" | "retaining" | "challenged" | "switched";
 
 export interface SprtDiagnostics {
+  enabled: boolean;
+  mode: DecisionMode;
   candidateLanguage: string | null;
   llr: number;
   acceptLlr: number;
@@ -63,6 +72,7 @@ interface InferOptions {
   method: InferenceMethod;
   pattern: EcapaPattern;
   sessionId: string;
+  decisionPolicy?: DecisionPolicy;
 }
 
 interface ReleaseOptions {
@@ -84,6 +94,12 @@ const numberValue = (record: Record<string, unknown>, key: string): number => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`Inference response is missing ${key}`);
   }
+  return value;
+};
+
+const booleanValue = (record: Record<string, unknown>, key: string): boolean => {
+  const value: unknown = record[key];
+  if (typeof value !== "boolean") throw new Error(`Inference response is missing ${key}`);
   return value;
 };
 
@@ -112,8 +128,27 @@ const providerBilling = (value: unknown): ProviderBilling | null => {
 };
 
 const sprtState = (value: unknown): SprtState => {
-  if (value === "idle" || value === "accumulating" || value === "accepted") return value;
+  if (
+    value === "disabled" ||
+    value === "idle" ||
+    value === "accumulating" ||
+    value === "accepted"
+  ) {
+    return value;
+  }
   throw new Error("SPRT state is invalid");
+};
+
+const decisionMode = (value: unknown): DecisionMode => {
+  if (
+    value === "responsive" ||
+    value === "wald" ||
+    value === "custom" ||
+    value === "hysteresis-only"
+  ) {
+    return value;
+  }
+  throw new Error("Decision mode is invalid");
 };
 
 const hysteresisState = (value: unknown): HysteresisState => {
@@ -161,6 +196,8 @@ export const parseLanguageInference = (value: unknown): LanguageInference => {
       posterior: probabilities(value.hsmm.posterior),
     },
     sprt: {
+      enabled: booleanValue(value.sprt, "enabled"),
+      mode: decisionMode(value.sprt.mode),
       candidateLanguage: candidate,
       llr: numberValue(value.sprt, "llr"),
       acceptLlr: numberValue(value.sprt, "accept_llr"),
@@ -192,10 +229,31 @@ const errorFromResponse = async (response: Response): Promise<Error> => {
   );
 };
 
+const serializedDecisionPolicy = (policy: DecisionPolicy): string => {
+  if (policy.mode === "wald") {
+    return JSON.stringify({
+      mode: policy.mode,
+      false_switch_probability: policy.falseSwitchProbability,
+      missed_switch_probability: policy.missedSwitchProbability,
+    });
+  }
+  if (policy.mode === "custom") {
+    return JSON.stringify({
+      mode: policy.mode,
+      accept_llr: policy.acceptLlr,
+      reject_llr: policy.rejectLlr,
+    });
+  }
+  return JSON.stringify({ mode: policy.mode });
+};
+
 export const inferLanguage = async (options: InferOptions): Promise<LanguageInference> => {
   const query = new URLSearchParams({
     at_ms: String(options.capturedAtMs),
     pattern: options.pattern,
+    decision_policy: serializedDecisionPolicy(
+      options.decisionPolicy ?? { mode: "hysteresis-only" },
+    ),
   });
   const body = new ArrayBuffer(options.samples.byteLength);
   new Uint8Array(body).set(

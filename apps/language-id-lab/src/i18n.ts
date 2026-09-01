@@ -37,6 +37,16 @@ export interface UiMessages {
   basic: string;
   standard: string;
   ecapaPattern: string;
+  decisionPolicy: string;
+  responsiveSprt: string;
+  waldSprt: string;
+  customSprt: string;
+  hysteresisOnly: string;
+  falseSwitchProbability: string;
+  missedSwitchProbability: string;
+  acceptBoundary: string;
+  rejectBoundary: string;
+  decisionPolicyHelp: string;
   utterancePattern: string;
   rollingPattern: string;
   utteranceDetail: string;
@@ -60,6 +70,7 @@ export interface UiMessages {
   sprtCandidate: string;
   sprtLlr: string;
   sprtBounds: string;
+  sprtDisabled: string;
   sprtIdle: string;
   sprtAccumulating: string;
   sprtAccepted: string;
@@ -151,6 +162,17 @@ const ENGLISH_MESSAGES: UiMessages = {
   basic: "Basic",
   standard: "Standard",
   ecapaPattern: "ECAPA input pattern",
+  decisionPolicy: "Language switch policy",
+  responsiveSprt: "Responsive SPRT (+2.0 / −1.5)",
+  waldSprt: "Wald SPRT from error rates",
+  customSprt: "Custom SPRT boundaries",
+  hysteresisOnly: "SPRT off · HSMM + hysteresis (default)",
+  falseSwitchProbability: "False-switch α",
+  missedSwitchProbability: "Missed-switch β",
+  acceptBoundary: "Accept LLR",
+  rejectBoundary: "Reject LLR",
+  decisionPolicyHelp:
+    "Wald uses ln((1−β)/α) and ln(β/(1−α)). Settings apply to every language equally and remain fixed for one session.",
   utterancePattern: "Per utterance",
   rollingPattern: "Rolling 6 s context",
   utteranceDetail: "Classify each VAD segment independently.",
@@ -176,6 +198,7 @@ const ENGLISH_MESSAGES: UiMessages = {
   sprtCandidate: "Candidate",
   sprtLlr: "Current LLR",
   sprtBounds: "Reject / accept",
+  sprtDisabled: "Disabled · hysteresis only",
   sprtIdle: "No active challenge",
   sprtAccumulating: "Accumulating evidence",
   sprtAccepted: "Switch accepted",
@@ -272,6 +295,17 @@ const JAPANESE_MESSAGES: UiMessages = {
   basic: "Basic",
   standard: "Standard",
   ecapaPattern: "ECAPA入力パターン",
+  decisionPolicy: "言語切替ポリシー",
+  responsiveSprt: "応答性重視SPRT（+2.0 / −1.5）",
+  waldSprt: "誤り率から算出するWald SPRT",
+  customSprt: "SPRT境界を直接指定",
+  hysteresisOnly: "SPRTオフ · HSMM + Hysteresis（デフォルト）",
+  falseSwitchProbability: "誤切替率 α",
+  missedSwitchProbability: "切替見逃し率 β",
+  acceptBoundary: "採択LLR",
+  rejectBoundary: "棄却LLR",
+  decisionPolicyHelp:
+    "Waldは ln((1−β)/α) と ln(β/(1−α)) から境界をRustで算出します。設定は全言語へ同一に適用し、1セッション中は固定します。",
   utterancePattern: "発話ごと",
   rollingPattern: "直近6秒の文脈",
   utteranceDetail: "VADで区切った発話を個別に識別します。",
@@ -297,6 +331,7 @@ const JAPANESE_MESSAGES: UiMessages = {
   sprtCandidate: "切り替え候補",
   sprtLlr: "現在のLLR",
   sprtBounds: "棄却 / 採択",
+  sprtDisabled: "無効 · Hysteresisのみ",
   sprtIdle: "切替候補なし",
   sprtAccumulating: "証拠を累積中",
   sprtAccepted: "切替を採択",

@@ -7,13 +7,26 @@ TanStack Start UI with private Cloudflare Containers and Workers AI for realtime
 - `@ricky0123/vad-web` runs Silero VAD in the browser and emits 16 kHz mono voiced PCM.
 - The input-level meter uses the live microphone waveform; the speech meter uses Silero probability.
 - Select one method: SpeechBrain ECAPA or NVIDIA LangID AmberNet in an independent Basic/Standard Container, or Cloudflare Workers AI Deepgram Nova-3.
-- Container methods return probabilities across all 107 model languages. Rust `language-harness-core` owns their Online HSMM, two-sided SPRT, and hysteresis state; the UI only renders returned diagnostics.
-- Nova-3 supplies provider language evidence to the same Rust Online HSMM, two-sided SPRT, and hysteresis implementation through a private Basic tracker Container; TypeScript does not duplicate the state machine.
+- Container methods return probabilities across all 107 model languages. Rust `language-harness-core` owns their Online HSMM, configurable two-sided SPRT, and hysteresis state; the UI only renders returned diagnostics.
+- Nova-3 supplies provider language evidence to the same Rust Online HSMM, configurable decision policy, and hysteresis implementation through a private Basic tracker Container; TypeScript does not duplicate the state machine.
 - **Per utterance** classifies each VAD segment independently. **Rolling 6 s context** retains voiced context across short segments for acoustic Container methods while every method retains language-state evidence in Rust.
 - The reset action removes only the active session's Rust inference state. Stopping the microphone explicitly destroys the selected acoustic or tracker Container. Idle instances are destroyed after 30 seconds.
 - A D3.js timeline renders live raw evidence, stable posterior, and Rust enter/retain thresholds.
 
 The interface is localized in Japanese and English. Language inference is not restricted to those UI locales.
+
+## Language-switch policies
+
+The switch policy is session-scoped, implemented in Rust, and applied identically to every model language:
+
+- **Hysteresis only** is the default. It disables SPRT accumulation and switches when the temporally smoothed challenger clears the shared hysteresis entry threshold.
+- **Responsive SPRT** uses accept/reject LLR boundaries `+2.0 / -1.5`.
+- **Wald SPRT** derives boundaries from user-selected false-switch probability `α` and missed-switch probability `β`: `ln((1-β)/α)` and `ln(β/(1-α))`.
+- **Custom SPRT** accepts bounded positive/negative LLR boundaries directly.
+
+Changing policy requires a new or reset session so evidence accumulated under different error semantics is never mixed. The Wald formulas follow the classical [SPRT construction](https://ucb-stat-159-s21.github.io/site/Notes/sprt.html), but its nominal errors assume fully specified observation distributions. The app therefore does not silently shrink boundaries over time for non-i.i.d. model posteriors.
+
+CUSUM was considered because it is criterion-aligned with quickest abrupt-change detection under Lorden's formulation, while Shiryaev–Roberts targets different average-delay criteria ([comparison](https://par.nsf.gov/servlets/purl/10225483)). Bayesian online changepoint detection was also considered, but it maintains a run-length posterior that substantially overlaps the existing Online HSMM duration state ([BOCPD](https://proceedings.mlr.press/v124/agudelo-espana20a.html)). Neither is exposed without calibration against multilingual transition sequences; Hysteresis-only is the explicit non-SPRT alternative today.
 
 ## Translation and synthesized-voice check
 

@@ -3,8 +3,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const containerMocks = vi.hoisted(() => ({
   destroy: vi.fn(() => Promise.resolve()),
-  fetch: vi.fn((request: Request) => {
+  trackBodies: [] as string[],
+  fetch: vi.fn(async (request: Request) => {
     const pathname: string = new URL(request.url).pathname;
+    if (pathname === "/track") containerMocks.trackBodies.push(await request.text());
     if (pathname === "/health") {
       return Promise.resolve(Response.json({ ok: true }));
     }
@@ -23,6 +25,8 @@ const containerMocks = vi.hoisted(() => ({
           posterior: [{ language: "fr", probability: 0.88 }],
         },
         sprt: {
+          enabled: true,
+          mode: "responsive",
           candidate_language: null,
           llr: 1.2,
           accept_llr: 3,
@@ -91,6 +95,7 @@ const sessionRequest = (path: string, init: RequestInit = {}): Request =>
   });
 
 beforeEach(() => {
+  containerMocks.trackBodies.length = 0;
   vi.stubGlobal("scheduler", {
     wait: vi.fn(() => new Promise<never>(() => {})),
   });
@@ -165,10 +170,19 @@ it("runs Workers AI language detection with Rust-tracked lifecycle operations", 
   const environment = { AI: { run }, SPEECHBRAIN_ECAPA_BASIC: trackerNamespace };
   const samples = new Float32Array([0.1, -0.1, 0.2, -0.2]);
   const response = await handleWorkersAiLanguageRequest(
-    sessionRequest("/api/language/workers-ai-nova-3/infer?at_ms=42&pattern=utterance", {
-      method: "POST",
-      body: samples.buffer,
-    }),
+    sessionRequest(
+      `/api/language/workers-ai-nova-3/infer?at_ms=42&pattern=utterance&decision_policy=${encodeURIComponent(
+        JSON.stringify({
+          mode: "wald",
+          false_switch_probability: 0.1,
+          missed_switch_probability: 0.2,
+        }),
+      )}`,
+      {
+        method: "POST",
+        body: samples.buffer,
+      },
+    ),
     environment,
   );
   expect(response?.status).toBe(200);
@@ -184,6 +198,13 @@ it("runs Workers AI language detection with Rust-tracked lifecycle operations", 
     pattern: "utterance",
   });
   expect(run).toHaveBeenCalledOnce();
+  expect(JSON.parse(containerMocks.trackBodies[0])).toMatchObject({
+    decision_policy: {
+      mode: "wald",
+      false_switch_probability: 0.1,
+      missed_switch_probability: 0.2,
+    },
+  });
 
   const health = await handleWorkersAiLanguageRequest(
     sessionRequest("/api/language/workers-ai-nova-3/health"),
@@ -275,6 +296,14 @@ it("rejects invalid Workers AI audio and session identifiers", async () => {
     environment,
   );
   expect(invalidAudio?.status).toBe(400);
+  const invalidPolicy = await handleWorkersAiLanguageRequest(
+    sessionRequest("/api/language/workers-ai-nova-3/infer?decision_policy=%7Binvalid", {
+      method: "POST",
+      body: new Float32Array([0.1, -0.1]).buffer,
+    }),
+    environment,
+  );
+  expect(invalidPolicy?.status).toBe(400);
   const unknown = await handleWorkersAiLanguageRequest(
     sessionRequest("/api/language/workers-ai-nova-3/other"),
     environment,

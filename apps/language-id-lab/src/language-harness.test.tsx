@@ -96,6 +96,7 @@ describe("LanguageHarness", () => {
   it("renders Rust-owned SPRT and hysteresis states as operational labels", () => {
     const messages = messagesFor("en");
     expect(sprtStateLabel(undefined, messages)).toBe("No active challenge");
+    expect(sprtStateLabel("disabled", messages)).toBe("Disabled · hysteresis only");
     expect(sprtStateLabel("accumulating", messages)).toBe("Accumulating evidence");
     expect(sprtStateLabel("accepted", messages)).toBe("Switch accepted");
     expect(hysteresisStateLabel(undefined, messages)).toBe("Waiting for initial lock");
@@ -124,6 +125,13 @@ describe("LanguageHarness", () => {
       container.querySelector(".method-control select")?.firstElementChild?.getAttribute("value"),
     ).toBe("workers-ai-nova-3");
     expect(container.querySelector(".microphone-control")).not.toBeNull();
+    expect(container.querySelector(".decision-policy-panel select")?.children).toHaveLength(4);
+    expect(
+      container
+        .querySelector(".decision-policy-panel select")
+        ?.firstElementChild?.getAttribute("value"),
+    ).toBe("hysteresis-only");
+    expect(container.querySelectorAll(".decision-policy-panel input")).toHaveLength(0);
     expect(container.querySelector(".mute-button")?.textContent?.trim()).toBe("Mute");
     expect(container.querySelector(".timeline-chart")).not.toBeNull();
     const capturePanel = container.querySelector(".capture-panel");
@@ -142,6 +150,27 @@ describe("LanguageHarness", () => {
     expect(window.localStorage.getItem("kotoba-language-id-lab-locale")).toBe("ja");
 
     act(() => root.unmount());
+    container.remove();
+  });
+
+  it("reveals Wald error rates and custom boundaries from the policy selector", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => root.render(<LanguageHarness />));
+    const policySelect = container.querySelector(".decision-policy-panel select");
+    if (!(policySelect instanceof HTMLSelectElement)) throw new Error("Policy select is missing");
+    policySelect.value = "wald";
+    act(() => policySelect.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(container.querySelectorAll(".decision-policy-panel input")).toHaveLength(2);
+    expect(container.querySelector(".decision-policy-panel")?.textContent).toMatch(/False-switch/u);
+
+    policySelect.value = "custom";
+    act(() => policySelect.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(container.querySelector(".decision-policy-panel")?.textContent).toMatch(/Accept LLR/u);
+
+    await act(async () => root.unmount());
     container.remove();
   });
 

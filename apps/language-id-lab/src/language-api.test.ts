@@ -19,6 +19,8 @@ const RESPONSE = {
     posterior: [{ language: "ko", probability: 0.81 }],
   },
   sprt: {
+    enabled: true,
+    mode: "responsive",
     candidate_language: null,
     llr: 0,
     accept_llr: 3,
@@ -56,6 +58,8 @@ it("validates a multilingual Rust inference response", () => {
       posterior: [{ language: "ko", probability: 0.81 }],
     },
     sprt: {
+      enabled: true,
+      mode: "responsive",
       candidateLanguage: null,
       llr: 0,
       acceptLlr: 3,
@@ -114,6 +118,9 @@ it("rejects malformed inference diagnostics", () => {
     parseLanguageInference({ ...RESPONSE, sprt: { ...RESPONSE.sprt, state: "waiting" } }),
   ).toThrow("SPRT state is invalid");
   expect(() =>
+    parseLanguageInference({ ...RESPONSE, sprt: { ...RESPONSE.sprt, mode: "other" } }),
+  ).toThrow("Decision mode is invalid");
+  expect(() =>
     parseLanguageInference({
       ...RESPONSE,
       hysteresis: { ...RESPONSE.hysteresis, state: "waiting" },
@@ -132,9 +139,13 @@ it("rejects malformed inference diagnostics", () => {
 
 it("uploads exact float32 PCM bytes to the selected tier", async () => {
   const requestBodies: ArrayBuffer[] = [];
+  const requestUrls: string[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn((_input: string | URL | Request, init: RequestInit | undefined) => {
+    vi.fn((input: string | URL | Request, init: RequestInit | undefined) => {
+      requestUrls.push(
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+      );
       if (init?.body instanceof ArrayBuffer) requestBodies.push(init.body);
       return Promise.resolve(Response.json(RESPONSE));
     }),
@@ -145,8 +156,15 @@ it("uploads exact float32 PCM bytes to the selected tier", async () => {
     method: "speechbrain-ecapa-standard",
     pattern: "utterance",
     sessionId: "session-1",
+    decisionPolicy: { mode: "wald", falseSwitchProbability: 0.1, missedSwitchProbability: 0.2 },
   });
   expect(result.stableLanguage).toBe("ko");
+  const requestUrl = new URL(requestUrls[0], "https://lab.test");
+  expect(JSON.parse(requestUrl.searchParams.get("decision_policy") ?? "null")).toStrictEqual({
+    mode: "wald",
+    false_switch_probability: 0.1,
+    missed_switch_probability: 0.2,
+  });
   expect(requestBodies.length).toBe(1);
   expect(Array.from(new Float32Array(requestBodies[0]))).toStrictEqual([0.25, -0.5]);
 });
