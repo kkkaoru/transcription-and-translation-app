@@ -34,6 +34,9 @@ describe("timed quality steps", () => {
         "rust:native:lint",
         "rust:native:test",
         "rust:native:build",
+        "rust:language-harness:fmt",
+        "rust:language-harness:lint",
+        "rust:language-harness:test",
         "lint",
         "format:check",
         "assets:verify:checkout-baseline",
@@ -93,20 +96,20 @@ describe("timed quality steps", () => {
 
   it("gives every planned step a stable identity and semantic asset labels", () => {
     const described = describeQualitySteps(QUALITY_GATE_STEPS);
-    assert.equal(described.length, 57);
+    assert.equal(described.length, 60);
     assert.equal(new Set(described.map(({ id }) => id)).size, described.length);
-    assert.deepEqual(described[10], {
+    assert.deepEqual(described[13], {
       id: "assets:verify:checkout-baseline",
       script: "assets:verify",
       label: "assets:verify (checkout baseline)",
-      index: 11,
+      index: 14,
       occurrence: 1,
     });
-    assert.deepEqual(described[31], {
+    assert.deepEqual(described[34], {
       id: "assets:verify:post-worker-build",
       script: "assets:verify",
       label: "assets:verify (post worker:typecheck)",
-      index: 32,
+      index: 35,
       occurrence: 2,
     });
   });
@@ -234,9 +237,9 @@ describe("timed quality steps", () => {
     const payload = serializeTimingSummary(
       {
         exitCode: 0,
-        plannedStepCount: 57,
-        totalMs: 560,
-        stepsTotalMs: 540,
+        plannedStepCount: 60,
+        totalMs: 620,
+        stepsTotalMs: 600,
         overheadMs: 20,
         records,
       },
@@ -261,14 +264,14 @@ describe("timed quality steps", () => {
         recordedAt: "2026-08-15T18:52:00.000Z",
         outcome: "passed",
         exitCode: 0,
-        plannedStepCount: 57,
-        recordedStepCount: 57,
-        totalMs: 560,
-        stepsTotalMs: 540,
+        plannedStepCount: 60,
+        recordedStepCount: 60,
+        totalMs: 620,
+        stepsTotalMs: 600,
         overheadMs: 20,
       },
     );
-    assert.equal(parsed.steps.length, 57);
+    assert.equal(parsed.steps.length, 60);
     assert.deepEqual(Object.keys(parsed.steps[0]), [
       "id",
       "script",

@@ -58,6 +58,9 @@ jobs:
       - run: bun run azookey-compare:typecheck
       - run: bun run vad-lab:typecheck
       - run: bun run language-id-lab:typecheck
+      - run: bun run rust:language-harness:fmt
+      - run: bun run rust:language-harness:lint
+      - run: bun run rust:language-harness:test
       - run: bun run test:coverage
       - run: bun run core:test:coverage
       - run: bun run azookey-reading:test:coverage
