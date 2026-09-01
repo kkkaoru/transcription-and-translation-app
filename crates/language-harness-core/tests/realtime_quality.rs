@@ -9,11 +9,8 @@ fn observation(at_ms: u64, ja: f32, en: f32) -> Observation {
 }
 
 fn tracker() -> LanguageTracker {
-    LanguageTracker::new(TrackerConfig {
-        switch_llr_threshold: 2.5,
-        ..TrackerConfig::default()
-    })
-    .expect("valid tracker config")
+    LanguageTracker::new(TrackerConfig { switch_llr_threshold: 2.5, ..TrackerConfig::default() })
+        .expect("valid tracker config")
 }
 
 fn push_and_advance(
@@ -30,39 +27,25 @@ fn switches_ja_to_en_and_back_to_ja_without_flapping() {
     let mut tracker = tracker();
     let mut switches = Vec::new();
 
-    switches.extend(push_and_advance(
-        &mut tracker,
-        observation(0, 0.99, 0.001),
-    ));
+    switches.extend(push_and_advance(&mut tracker, observation(0, 0.99, 0.001)));
     assert_eq!(tracker.state().stable_language, Language::Ja);
 
     for at_ms in [500, 1_000, 1_500, 2_000] {
-        switches.extend(push_and_advance(
-            &mut tracker,
-            observation(at_ms, 0.01, 0.98),
-        ));
+        switches.extend(push_and_advance(&mut tracker, observation(at_ms, 0.01, 0.98)));
     }
     assert_eq!(tracker.state().stable_language, Language::En);
 
     // A borrowed/ambiguous Japanese-looking token must not immediately flip the state back.
-    switches.extend(push_and_advance(
-        &mut tracker,
-        observation(2_500, 0.60, 0.39),
-    ));
+    switches.extend(push_and_advance(&mut tracker, observation(2_500, 0.60, 0.39)));
     assert_eq!(tracker.state().stable_language, Language::En);
 
     for at_ms in [3_000, 3_500, 4_000, 4_500] {
-        switches.extend(push_and_advance(
-            &mut tracker,
-            observation(at_ms, 0.98, 0.01),
-        ));
+        switches.extend(push_and_advance(&mut tracker, observation(at_ms, 0.98, 0.01)));
     }
     assert_eq!(tracker.state().stable_language, Language::Ja);
 
-    let language_changes: Vec<_> = switches
-        .into_iter()
-        .map(|event| (event.from, event.to))
-        .collect();
+    let language_changes: Vec<_> =
+        switches.into_iter().map(|event| (event.from, event.to)).collect();
     assert_eq!(
         language_changes,
         vec![
@@ -75,11 +58,9 @@ fn switches_ja_to_en_and_back_to_ja_without_flapping() {
 
 #[test]
 fn burst_input_is_coalesced_and_backpressure_is_explicit() {
-    let mut tracker = LanguageTracker::new(TrackerConfig {
-        max_pending_ticks: 2,
-        ..TrackerConfig::default()
-    })
-    .expect("valid tracker config");
+    let mut tracker =
+        LanguageTracker::new(TrackerConfig { max_pending_ticks: 2, ..TrackerConfig::default() })
+            .expect("valid tracker config");
 
     assert_eq!(
         tracker.push_observation_detailed(observation(0, 0.99, 0.001)),

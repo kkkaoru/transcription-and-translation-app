@@ -2,6 +2,8 @@
 
 use std::collections::VecDeque;
 
+pub mod multilingual;
+
 pub const LANGUAGE_COUNT: usize = 4;
 pub const DEFAULT_MAX_PENDING_TICKS: usize = 16;
 const EPSILON: f32 = 1.0e-6;
@@ -17,12 +19,7 @@ pub enum Language {
 }
 
 impl Language {
-    pub const ALL: [Self; LANGUAGE_COUNT] = [
-        Self::Ja,
-        Self::En,
-        Self::Unknown,
-        Self::Unsupported,
-    ];
+    pub const ALL: [Self; LANGUAGE_COUNT] = [Self::Ja, Self::En, Self::Unknown, Self::Unsupported];
 
     pub const fn index(self) -> usize {
         self as usize
@@ -205,22 +202,18 @@ impl LanguageTracker {
     /// Observations mapped to the same logical tracker tick are coalesced latest-first.
     /// Different logical ticks are never silently dropped: once `max_pending_ticks` is
     /// reached, callers receive `Backpressure` and can pause upstream reads or reset.
-    pub fn push_observation_detailed(
-        &mut self,
-        observation: Observation,
-    ) -> PushObservationResult {
-        if self
-            .last_enqueued_at_ms
-            .is_some_and(|last| observation.at_ms < last)
-        {
+    pub fn push_observation_detailed(&mut self, observation: Observation) -> PushObservationResult {
+        if self.last_enqueued_at_ms.is_some_and(|last| observation.at_ms < last) {
             return PushObservationResult::OutOfOrder;
         }
 
         self.next_tick_ms.get_or_insert(observation.at_ms);
         let scheduled_tick = self.scheduled_tick_for(observation.at_ms);
-        if self.pending.back().is_some_and(|previous| {
-            self.scheduled_tick_for(previous.at_ms) == scheduled_tick
-        }) {
+        if self
+            .pending
+            .back()
+            .is_some_and(|previous| self.scheduled_tick_for(previous.at_ms) == scheduled_tick)
+        {
             if let Some(previous) = self.pending.back_mut() {
                 *previous = observation;
             }
@@ -314,11 +307,8 @@ impl LanguageTracker {
             return None;
         }
 
-        self.posterior = hmm_forward(
-            self.posterior,
-            observation.log_scores,
-            self.config.hmm_self_probability,
-        );
+        self.posterior =
+            hmm_forward(self.posterior, observation.log_scores, self.config.hmm_self_probability);
 
         if self.stable_language == Language::Unknown {
             return self.try_lock_initial_language(tick_ms);
@@ -338,17 +328,11 @@ impl LanguageTracker {
 
         let raw_increment = observation.log_scores[candidate.index()]
             - observation.log_scores[self.stable_language.index()];
-        let increment = raw_increment.clamp(
-            -self.config.max_llr_increment,
-            self.config.max_llr_increment,
-        );
+        let increment =
+            raw_increment.clamp(-self.config.max_llr_increment, self.config.max_llr_increment);
         let mut episode = match self.switch_episode {
             Some(existing) if existing.candidate == candidate => existing,
-            _ => SwitchEpisode {
-                candidate,
-                llr: 0.0,
-                last_speech_ms: tick_ms,
-            },
+            _ => SwitchEpisode { candidate, llr: 0.0, last_speech_ms: tick_ms },
         };
         episode.llr += increment;
         episode.last_speech_ms = tick_ms;
@@ -360,12 +344,7 @@ impl LanguageTracker {
             let from = self.stable_language;
             self.stable_language = candidate;
             self.switch_episode = None;
-            return Some(SwitchEvent {
-                at_ms: tick_ms,
-                from,
-                to: candidate,
-                llr: episode.llr,
-            });
+            return Some(SwitchEvent { at_ms: tick_ms, from, to: candidate, llr: episode.llr });
         }
         None
     }
@@ -380,12 +359,7 @@ impl LanguageTracker {
         let from = self.stable_language;
         self.stable_language = best;
         self.switch_episode = None;
-        Some(SwitchEvent {
-            at_ms: tick_ms,
-            from,
-            to: best,
-            llr: 0.0,
-        })
+        Some(SwitchEvent { at_ms: tick_ms, from, to: best, llr: 0.0 })
     }
 
     fn expire_episode_on_silence(&mut self, tick_ms: u64) {
@@ -409,11 +383,8 @@ pub fn hmm_forward(
             .iter()
             .enumerate()
             .map(|(source, probability)| {
-                let transition = if source == destination {
-                    self_probability
-                } else {
-                    cross_probability
-                };
+                let transition =
+                    if source == destination { self_probability } else { cross_probability };
                 probability * transition
             })
             .sum::<f32>();
@@ -441,11 +412,8 @@ pub fn fixed_lag_viterbi(
             let mut best_score = f32::NEG_INFINITY;
             let mut best_source = 0usize;
             for (source, source_score) in scores.iter().copied().enumerate() {
-                let transition = if source == destination {
-                    self_probability
-                } else {
-                    cross_probability
-                };
+                let transition =
+                    if source == destination { self_probability } else { cross_probability };
                 let score = source_score + transition.max(EPSILON).ln() + emission;
                 if score > best_score {
                     best_score = score;
@@ -547,12 +515,8 @@ mod tests {
 
     #[test]
     fn invalid_probability_inputs_fall_back_safely() {
-        let observation = Observation::from_probabilities(
-            0,
-            [f32::NAN, -1.0, f32::INFINITY, 0.0],
-            -1.0,
-            false,
-        );
+        let observation =
+            Observation::from_probabilities(0, [f32::NAN, -1.0, f32::INFINITY, 0.0], -1.0, false);
         let probs = observation.log_scores.map(f32::exp);
         for value in probs {
             assert!((value - 0.25).abs() < 1.0e-5);
@@ -564,35 +528,19 @@ mod tests {
     fn config_validation_rejects_invalid_shapes() {
         let default = TrackerConfig::default();
         assert_eq!(
-            TrackerConfig {
-                tracker_step_ms: 0,
-                ..default
-            }
-            .validate(),
+            TrackerConfig { tracker_step_ms: 0, ..default }.validate(),
             Err(ConfigError::TrackerStepZero)
         );
         assert_eq!(
-            TrackerConfig {
-                hmm_self_probability: 0.2,
-                ..default
-            }
-            .validate(),
+            TrackerConfig { hmm_self_probability: 0.2, ..default }.validate(),
             Err(ConfigError::InvalidSelfProbability)
         );
         assert_eq!(
-            TrackerConfig {
-                switch_llr_threshold: f32::NAN,
-                ..default
-            }
-            .validate(),
+            TrackerConfig { switch_llr_threshold: f32::NAN, ..default }.validate(),
             Err(ConfigError::InvalidSwitchThreshold)
         );
         assert_eq!(
-            TrackerConfig {
-                max_llr_increment: 0.0,
-                ..default
-            }
-            .validate(),
+            TrackerConfig { max_llr_increment: 0.0, ..default }.validate(),
             Err(ConfigError::InvalidLlrIncrement)
         );
         assert_eq!(
@@ -605,19 +553,11 @@ mod tests {
             Err(ConfigError::InvalidHysteresis)
         );
         assert_eq!(
-            TrackerConfig {
-                min_observation_quality: 2.0,
-                ..default
-            }
-            .validate(),
+            TrackerConfig { min_observation_quality: 2.0, ..default }.validate(),
             Err(ConfigError::InvalidMinimumQuality)
         );
         assert_eq!(
-            TrackerConfig {
-                max_pending_ticks: 0,
-                ..default
-            }
-            .validate(),
+            TrackerConfig { max_pending_ticks: 0, ..default }.validate(),
             Err(ConfigError::InvalidPendingCapacity)
         );
         assert_eq!(default.validate(), Ok(default));
@@ -626,17 +566,9 @@ mod tests {
     #[test]
     fn hmm_forward_prefers_stability_but_accepts_strong_evidence() {
         let previous = [0.95, 0.02, 0.02, 0.01];
-        let stable = hmm_forward(
-            previous,
-            obs(0, 0.45, 0.44, 0.1, 0.01).log_scores,
-            0.94,
-        );
+        let stable = hmm_forward(previous, obs(0, 0.45, 0.44, 0.1, 0.01).log_scores, 0.94);
         assert!(stable[Language::Ja.index()] > stable[Language::En.index()]);
-        let switched = hmm_forward(
-            stable,
-            obs(0, 0.01, 0.98, 0.005, 0.005).log_scores,
-            0.94,
-        );
+        let switched = hmm_forward(stable, obs(0, 0.01, 0.98, 0.005, 0.005).log_scores, 0.94);
         assert!(switched[Language::En.index()] > stable[Language::En.index()]);
     }
 
@@ -705,12 +637,7 @@ mod tests {
         sparse.advance_to(500);
 
         assert_eq!(dense.state().stable_language, sparse.state().stable_language);
-        for (a, b) in dense
-            .state()
-            .posterior
-            .iter()
-            .zip(sparse.state().posterior)
-        {
+        for (a, b) in dense.state().posterior.iter().zip(sparse.state().posterior) {
             assert!((a - b).abs() < 1.0e-6);
         }
     }
@@ -859,11 +786,7 @@ mod tests {
 
     #[test]
     fn viterbi_smooths_single_ambiguous_frame() {
-        let sequence = [
-            [0.95, 0.02, 0.02, 0.01],
-            [0.1, 0.75, 0.1, 0.05],
-            [0.95, 0.02, 0.02, 0.01],
-        ];
+        let sequence = [[0.95, 0.02, 0.02, 0.01], [0.1, 0.75, 0.1, 0.05], [0.95, 0.02, 0.02, 0.01]];
         assert_eq!(
             fixed_lag_viterbi(&sequence, 0.98),
             vec![Language::Ja, Language::Ja, Language::Ja]
@@ -886,10 +809,7 @@ mod tests {
 
     #[test]
     fn normalization_preserves_valid_distribution_and_ties_are_stable() {
-        assert_eq!(
-            normalize_probabilities([0.4, 0.3, 0.2, 0.1]),
-            [0.4, 0.3, 0.2, 0.1]
-        );
+        assert_eq!(normalize_probabilities([0.4, 0.3, 0.2, 0.1]), [0.4, 0.3, 0.2, 0.1]);
         assert_eq!(argmax(&[0.5, 0.5, 0.0, 0.0]), Language::Ja);
     }
 }

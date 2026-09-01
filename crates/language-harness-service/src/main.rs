@@ -1,0 +1,650 @@
+#![forbid(unsafe_code)]
+
+use std::{
+    collections::{HashMap, VecDeque},
+    error::Error,
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::mpsc,
+    thread,
+    time::Instant,
+};
+
+use axum::{
+    Router,
+    body::Bytes,
+    extract::{DefaultBodyLimit, Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use language_harness_core::multilingual::{
+    MultilingualObservation, MultilingualTracker, MultilingualTrackerConfig,
+};
+use ort::{inputs, session::Session, value::TensorRef};
+use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
+
+const DEFAULT_PORT: u16 = 8080;
+const SAMPLE_RATE_HZ: usize = 16_000;
+const MAXIMUM_AUDIO_SECONDS: usize = 30;
+const MAXIMUM_AUDIO_BYTES: usize = SAMPLE_RATE_HZ * MAXIMUM_AUDIO_SECONDS * size_of::<f32>();
+const MINIMUM_AUDIO_SAMPLES: usize = SAMPLE_RATE_HZ / 2;
+const ROLLING_WINDOW_SAMPLES: usize = SAMPLE_RATE_HZ * 6;
+const PREFERRED_CONTEXT_SAMPLES: usize = SAMPLE_RATE_HZ * 3;
+const MINIMUM_AUDIBLE_RMS: f32 = 0.02;
+const UNKNOWN_CONFIDENCE_BOUNDARY: f32 = 0.55;
+const UNKNOWN_QUALITY_WEIGHT: f32 = 0.70;
+const TOP_LANGUAGE_COUNT: usize = 8;
+const SESSION_ID_HEADER: &str = "x-kotoba-session-id";
+const MODEL_FILE: &str = "lang-id-ecapa.onnx";
+const LABELS_FILE: &str = "labels.json";
+
+#[derive(Clone)]
+struct AppState {
+    runtime: RuntimeHandle,
+}
+
+#[derive(Clone)]
+struct RuntimeHandle {
+    sender: mpsc::Sender<RuntimeCommand>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum EcapaPattern {
+    Utterance,
+    RollingContext,
+}
+
+#[derive(Debug, Deserialize)]
+struct InferQuery {
+    at_ms: u64,
+    pattern: EcapaPattern,
+}
+
+#[derive(Debug)]
+struct InferInput {
+    session_id: String,
+    at_ms: u64,
+    pattern: EcapaPattern,
+    samples: Vec<f32>,
+}
+
+#[derive(Debug)]
+enum RuntimeCommand {
+    Warmup { response: oneshot::Sender<Result<WarmupResponse, ServiceError>> },
+    Infer { input: InferInput, response: oneshot::Sender<Result<InferenceResponse, ServiceError>> },
+}
+
+#[derive(Debug, Serialize)]
+struct HealthResponse {
+    ok: bool,
+    model: &'static str,
+    languages: usize,
+    tracker: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct WarmupResponse {
+    ok: bool,
+    model_load_ms: f64,
+    languages: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct LanguageProbability {
+    language: String,
+    probability: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct HsmmDiagnostics {
+    duration_ticks: usize,
+    transition_hazard: f32,
+    posterior: Vec<LanguageProbability>,
+}
+
+#[derive(Debug, Serialize)]
+struct SprtDiagnostics {
+    candidate_language: Option<String>,
+    llr: f32,
+    accept_llr: f32,
+    reject_llr: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct HysteresisDiagnostics {
+    stable_posterior: f32,
+    enter_posterior: f32,
+    retain_posterior: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct InferenceResponse {
+    session_id: String,
+    stable_language: String,
+    stable_confidence: f32,
+    raw_languages: Vec<LanguageProbability>,
+    hsmm: HsmmDiagnostics,
+    sprt: SprtDiagnostics,
+    hysteresis: HysteresisDiagnostics,
+    quality: f32,
+    speech_seconds: f32,
+    inference_ms: f64,
+    model: &'static str,
+    pattern: EcapaPattern,
+}
+
+#[derive(Debug)]
+struct RuntimeService {
+    model_path: PathBuf,
+    labels: Vec<String>,
+    model: Option<AcousticModel>,
+    sessions: HashMap<String, LanguageSession>,
+}
+
+#[derive(Debug)]
+struct LanguageSession {
+    tracker: MultilingualTracker,
+    rolling_samples: VecDeque<f32>,
+}
+
+struct AcousticModel {
+    session: Session,
+}
+
+impl std::fmt::Debug for AcousticModel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("AcousticModel").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ServiceError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ServiceError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::BAD_REQUEST, message: message.into() }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::SERVICE_UNAVAILABLE, message: message.into() }
+    }
+}
+
+impl IntoResponse for ServiceError {
+    fn into_response(self) -> Response {
+        (self.status, axum::Json(serde_json::json!({ "error": self.message }))).into_response()
+    }
+}
+
+impl RuntimeHandle {
+    async fn warmup(&self) -> Result<WarmupResponse, ServiceError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender.send(RuntimeCommand::Warmup { response }).map_err(|error| {
+            ServiceError::unavailable(format!("Inference runtime stopped: {error}"))
+        })?;
+        receiver.await.map_err(|error| {
+            ServiceError::unavailable(format!("Inference response dropped: {error}"))
+        })?
+    }
+
+    async fn infer(&self, input: InferInput) -> Result<InferenceResponse, ServiceError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender.send(RuntimeCommand::Infer { input, response }).map_err(|error| {
+            ServiceError::unavailable(format!("Inference runtime stopped: {error}"))
+        })?;
+        receiver.await.map_err(|error| {
+            ServiceError::unavailable(format!("Inference response dropped: {error}"))
+        })?
+    }
+}
+
+impl RuntimeService {
+    fn new(model_dir: &Path) -> Result<Self, Box<dyn Error>> {
+        let labels_path = model_dir.join(LABELS_FILE);
+        let labels_json = fs::read_to_string(&labels_path)?;
+        let mut labels: Vec<String> = serde_json::from_str(&labels_json)?;
+        labels.iter_mut().for_each(|label| {
+            if label == "iw" {
+                *label = "he".into();
+            } else if label == "jw" {
+                *label = "jv".into();
+            }
+        });
+        if labels.len() < TOP_LANGUAGE_COUNT {
+            return Err(format!("ECAPA label set is unexpectedly small: {}", labels.len()).into());
+        }
+        Ok(Self {
+            model_path: model_dir.join(MODEL_FILE),
+            labels,
+            model: None,
+            sessions: HashMap::new(),
+        })
+    }
+
+    fn warmup(&mut self) -> Result<WarmupResponse, ServiceError> {
+        let started_at = Instant::now();
+        self.ensure_model()?;
+        Ok(WarmupResponse {
+            ok: true,
+            model_load_ms: started_at.elapsed().as_secs_f64() * 1_000.0,
+            languages: self.labels.len(),
+        })
+    }
+
+    fn infer(&mut self, input: InferInput) -> Result<InferenceResponse, ServiceError> {
+        if input.samples.len() < MINIMUM_AUDIO_SAMPLES {
+            return Err(ServiceError::bad_request("At least 500 ms of speech is required"));
+        }
+        let quality = observation_quality(&input.samples);
+        let model_samples = self.samples_for_pattern(&input)?;
+        let started_at = Instant::now();
+        self.ensure_model()?;
+        let model = self
+            .model
+            .as_mut()
+            .ok_or_else(|| ServiceError::unavailable("ECAPA model did not initialize"))?;
+        let raw_probabilities = model.infer(&model_samples)?;
+        if raw_probabilities.len() != self.labels.len() {
+            return Err(ServiceError::unavailable(format!(
+                "ECAPA returned {} probabilities for {} labels",
+                raw_probabilities.len(),
+                self.labels.len()
+            )));
+        }
+        let tracker_probabilities = calibrated_tracker_probabilities(&raw_probabilities, quality);
+        let labels = tracker_labels(&self.labels);
+        let session = self.session_mut(&input.session_id, labels)?;
+        let observation = MultilingualObservation::from_probabilities(
+            input.at_ms,
+            tracker_probabilities,
+            quality,
+            true,
+        );
+        if !session.tracker.push_observation(observation).is_accepted() {
+            session.tracker.reset();
+            return Err(ServiceError::bad_request(
+                "Tracker rejected the observation; the session was reset",
+            ));
+        }
+        session.tracker.advance_to(input.at_ms);
+        let state = session.tracker.state();
+        let tracker_labels = session.tracker.labels();
+        let stable_language = tracker_labels[state.stable_index].clone();
+        let candidate_language = state.candidate_index.map(|index| tracker_labels[index].clone());
+        let posterior = top_probabilities(tracker_labels, &state.posterior);
+        Ok(InferenceResponse {
+            session_id: input.session_id,
+            stable_language,
+            stable_confidence: state.stable_confidence,
+            raw_languages: top_probabilities(&self.labels, &raw_probabilities),
+            hsmm: HsmmDiagnostics {
+                duration_ticks: state.hsmm_duration_ticks,
+                transition_hazard: state.hsmm_transition_hazard,
+                posterior,
+            },
+            sprt: SprtDiagnostics {
+                candidate_language,
+                llr: state.sprt_llr,
+                accept_llr: state.sprt_accept_llr,
+                reject_llr: state.sprt_reject_llr,
+            },
+            hysteresis: HysteresisDiagnostics {
+                stable_posterior: state.stable_confidence,
+                enter_posterior: state.hysteresis_enter_posterior,
+                retain_posterior: state.hysteresis_retain_posterior,
+            },
+            quality,
+            speech_seconds: input.samples.len() as f32 / SAMPLE_RATE_HZ as f32,
+            inference_ms: started_at.elapsed().as_secs_f64() * 1_000.0,
+            model: "speechbrain/lang-id-voxlingua107-ecapa",
+            pattern: input.pattern,
+        })
+    }
+
+    fn ensure_model(&mut self) -> Result<(), ServiceError> {
+        if self.model.is_none() {
+            self.model = Some(AcousticModel::load(&self.model_path)?);
+        }
+        Ok(())
+    }
+
+    fn samples_for_pattern(&mut self, input: &InferInput) -> Result<Vec<f32>, ServiceError> {
+        if matches!(input.pattern, EcapaPattern::Utterance) {
+            return Ok(input.samples.clone());
+        }
+        let labels = tracker_labels(&self.labels);
+        let session = self.session_mut(&input.session_id, labels)?;
+        input.samples.iter().copied().for_each(|sample| {
+            session.rolling_samples.push_back(sample);
+        });
+        let overflow = session.rolling_samples.len().saturating_sub(ROLLING_WINDOW_SAMPLES);
+        session.rolling_samples.drain(..overflow);
+        Ok(session.rolling_samples.iter().copied().collect())
+    }
+
+    fn session_mut(
+        &mut self,
+        session_id: &str,
+        labels: Vec<String>,
+    ) -> Result<&mut LanguageSession, ServiceError> {
+        if !self.sessions.contains_key(session_id) {
+            let session = LanguageSession::new(labels)?;
+            self.sessions.insert(session_id.into(), session);
+        }
+        self.sessions
+            .get_mut(session_id)
+            .ok_or_else(|| ServiceError::unavailable("Language session was not created"))
+    }
+}
+
+impl LanguageSession {
+    fn new(labels: Vec<String>) -> Result<Self, ServiceError> {
+        let tracker = MultilingualTracker::new(labels, MultilingualTrackerConfig::default())
+            .map_err(|error| {
+                ServiceError::unavailable(format!("Invalid tracker configuration: {error:?}"))
+            })?;
+        Ok(Self { tracker, rolling_samples: VecDeque::with_capacity(ROLLING_WINDOW_SAMPLES) })
+    }
+}
+
+impl AcousticModel {
+    fn load(model_path: &Path) -> Result<Self, ServiceError> {
+        let builder = Session::builder().map_err(|error| {
+            ServiceError::unavailable(format!("Failed to create ECAPA runtime: {error}"))
+        })?;
+        let mut builder = builder.with_intra_threads(1).map_err(|error| {
+            ServiceError::unavailable(format!("Failed to configure ECAPA runtime: {error}"))
+        })?;
+        let session = builder.commit_from_file(model_path).map_err(|error| {
+            ServiceError::unavailable(format!("Failed to load ECAPA model: {error}"))
+        })?;
+        Ok(Self { session })
+    }
+
+    fn infer(&mut self, samples: &[f32]) -> Result<Vec<f32>, ServiceError> {
+        let waveform = TensorRef::from_array_view(([1_usize, samples.len()], samples))
+            .map_err(|error| ServiceError::bad_request(format!("Invalid waveform: {error}")))?;
+        let outputs = self.session.run(inputs!["waveform" => waveform]).map_err(|error| {
+            ServiceError::unavailable(format!("ECAPA inference failed: {error}"))
+        })?;
+        let (_, probabilities) = outputs[0].try_extract_tensor::<f32>().map_err(|error| {
+            ServiceError::unavailable(format!("Invalid ECAPA model output: {error}"))
+        })?;
+        Ok(probabilities.to_vec())
+    }
+}
+
+fn tracker_labels(model_labels: &[String]) -> Vec<String> {
+    std::iter::once("unknown".into()).chain(model_labels.iter().cloned()).collect()
+}
+
+fn calibrated_tracker_probabilities(raw: &[f32], quality: f32) -> Vec<f32> {
+    let top_probability = raw.iter().copied().fold(0.0_f32, f32::max);
+    let confidence_unknown = ((UNKNOWN_CONFIDENCE_BOUNDARY - top_probability)
+        / UNKNOWN_CONFIDENCE_BOUNDARY)
+        .clamp(0.0, 1.0);
+    let quality_unknown = (1.0 - quality) * UNKNOWN_QUALITY_WEIGHT;
+    let unknown_probability = confidence_unknown.max(quality_unknown).clamp(0.0, 0.9);
+    std::iter::once(unknown_probability)
+        .chain(raw.iter().map(|probability| probability * (1.0 - unknown_probability)))
+        .collect()
+}
+
+fn observation_quality(samples: &[f32]) -> f32 {
+    let duration_quality =
+        (samples.len() as f32 / PREFERRED_CONTEXT_SAMPLES as f32).clamp(0.0, 1.0);
+    let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
+        / samples.len().max(1) as f32)
+        .sqrt();
+    let signal_quality = (rms / MINIMUM_AUDIBLE_RMS).clamp(0.0, 1.0);
+    duration_quality * signal_quality
+}
+
+fn probability_order(left: &(usize, f32), right: &(usize, f32)) -> std::cmp::Ordering {
+    right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0))
+}
+
+fn top_probabilities(labels: &[String], probabilities: &[f32]) -> Vec<LanguageProbability> {
+    let mut indexed: Vec<(usize, f32)> = probabilities.iter().copied().enumerate().collect();
+    indexed.sort_by(probability_order);
+    indexed
+        .into_iter()
+        .take(TOP_LANGUAGE_COUNT)
+        .map(|(index, probability)| LanguageProbability {
+            language: labels.get(index).cloned().unwrap_or_else(|| "unknown".into()),
+            probability,
+        })
+        .collect()
+}
+
+fn decode_float32_pcm(bytes: &[u8]) -> Result<Vec<f32>, ServiceError> {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(size_of::<f32>()) {
+        return Err(ServiceError::bad_request("Audio body must contain little-endian float32 PCM"));
+    }
+    let samples: Vec<f32> = bytes
+        .chunks_exact(size_of::<f32>())
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect();
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        return Err(ServiceError::bad_request("Audio contains a non-finite sample"));
+    }
+    Ok(samples)
+}
+
+fn validated_session_id(headers: &HeaderMap) -> Result<String, ServiceError> {
+    let value = headers
+        .get(SESSION_ID_HEADER)
+        .ok_or_else(|| ServiceError::bad_request("Missing x-kotoba-session-id header"))?
+        .to_str()
+        .map_err(|_| ServiceError::bad_request("Session ID is not valid ASCII"))?;
+    let valid = !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if !valid {
+        return Err(ServiceError::bad_request("Session ID has an invalid format"));
+    }
+    Ok(value.into())
+}
+
+async fn health() -> axum::Json<HealthResponse> {
+    axum::Json(HealthResponse {
+        ok: true,
+        model: "speechbrain/lang-id-voxlingua107-ecapa",
+        languages: 107,
+        tracker: "rust-online-hsmm-sprt-hysteresis",
+    })
+}
+
+async fn warmup(State(state): State<AppState>) -> Result<axum::Json<WarmupResponse>, ServiceError> {
+    state.runtime.warmup().await.map(axum::Json)
+}
+
+async fn infer(
+    State(state): State<AppState>,
+    Query(query): Query<InferQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<axum::Json<InferenceResponse>, ServiceError> {
+    let session_id = validated_session_id(&headers)?;
+    let samples = decode_float32_pcm(&body)?;
+    state
+        .runtime
+        .infer(InferInput { session_id, at_ms: query.at_ms, pattern: query.pattern, samples })
+        .await
+        .map(axum::Json)
+}
+
+fn spawn_runtime(model_dir: PathBuf) -> Result<RuntimeHandle, Box<dyn Error>> {
+    let (sender, receiver) = mpsc::channel();
+    let (boot_sender, boot_receiver) = mpsc::sync_channel(1);
+    thread::Builder::new().name("language-harness-runtime".into()).spawn(move || {
+        let service = RuntimeService::new(&model_dir);
+        let boot_result = service.as_ref().map(|_| ()).map_err(|error| error.to_string());
+        if boot_sender.send(boot_result).is_err() {
+            return;
+        }
+        let Ok(mut service) = service else {
+            return;
+        };
+        while let Ok(command) = receiver.recv() {
+            match command {
+                RuntimeCommand::Warmup { response } => {
+                    drop(response.send(service.warmup()));
+                }
+                RuntimeCommand::Infer { input, response } => {
+                    drop(response.send(service.infer(input)));
+                }
+            }
+        }
+    })?;
+    boot_receiver.recv().map_err(|error| error.to_string())??;
+    Ok(RuntimeHandle { sender })
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let model_dir = std::env::var_os("LANGUAGE_MODEL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/models/speechbrain-ecapa"));
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+    let state = AppState { runtime: spawn_runtime(model_dir)? };
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/warmup", post(warmup))
+        .route("/infer", post(infer))
+        .layer(DefaultBodyLimit::max(MAXIMUM_AUDIO_BYTES))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_bounded_float_pcm_and_rejects_invalid_shapes() {
+        assert_eq!(decode_float32_pcm(&[0, 0, 0, 0, 0, 0, 128, 63]).unwrap(), vec![0.0, 1.0]);
+        assert_eq!(
+            decode_float32_pcm(&[]).unwrap_err(),
+            ServiceError::bad_request("Audio body must contain little-endian float32 PCM")
+        );
+        assert_eq!(
+            decode_float32_pcm(&[0, 1]).unwrap_err(),
+            ServiceError::bad_request("Audio body must contain little-endian float32 PCM")
+        );
+        assert_eq!(
+            decode_float32_pcm(&f32::NAN.to_le_bytes()).unwrap_err(),
+            ServiceError::bad_request("Audio contains a non-finite sample")
+        );
+    }
+
+    #[test]
+    fn calibration_adds_unknown_without_collapsing_multilingual_probabilities() {
+        assert_eq!(
+            calibrated_tracker_probabilities(&[0.7, 0.2, 0.1], 1.0),
+            vec![0.0, 0.7, 0.2, 0.1]
+        );
+        let low_quality = calibrated_tracker_probabilities(&[0.7, 0.2, 0.1], 0.0);
+        assert!((low_quality[0] - 0.7).abs() < 0.0001);
+        assert!((low_quality.iter().sum::<f32>() - 1.0).abs() < 0.0001);
+        let uncertain = calibrated_tracker_probabilities(&[0.2, 0.2, 0.2], 1.0);
+        assert!(uncertain[0] > 0.6);
+    }
+
+    #[test]
+    fn quality_combines_context_duration_and_signal_level() {
+        assert_eq!(observation_quality(&vec![0.0; SAMPLE_RATE_HZ]), 0.0);
+        let preferred = observation_quality(&vec![0.1; PREFERRED_CONTEXT_SAMPLES]);
+        assert!((preferred - 1.0).abs() < 0.0001);
+        let short = observation_quality(&vec![0.1; SAMPLE_RATE_HZ]);
+        assert!((short - (1.0 / 3.0)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn top_probabilities_are_ranked_and_bounded() {
+        let labels: Vec<String> =
+            ["a", "b", "c", "d", "e", "f", "g", "h", "i"].into_iter().map(String::from).collect();
+        let top = top_probabilities(&labels, &[0.1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]);
+        assert_eq!(top.len(), 8);
+        assert_eq!(top[0].language, "b");
+        assert_eq!(top[0].probability, 0.9);
+        assert_eq!(top[7].language, "i");
+    }
+
+    #[test]
+    fn session_header_requires_a_bounded_url_safe_identifier() {
+        let mut valid = HeaderMap::new();
+        valid.insert(SESSION_ID_HEADER, "session_1-test".parse().unwrap());
+        assert_eq!(validated_session_id(&valid).unwrap(), "session_1-test");
+        assert_eq!(
+            validated_session_id(&HeaderMap::new()).unwrap_err(),
+            ServiceError::bad_request("Missing x-kotoba-session-id header")
+        );
+        let mut invalid = HeaderMap::new();
+        invalid.insert(SESSION_ID_HEADER, "session/1".parse().unwrap());
+        assert_eq!(
+            validated_session_id(&invalid).unwrap_err(),
+            ServiceError::bad_request("Session ID has an invalid format")
+        );
+    }
+
+    #[test]
+    fn rolling_pattern_retains_only_the_latest_six_seconds() {
+        let mut service = RuntimeService {
+            model_path: PathBuf::new(),
+            labels: vec![
+                "ja".into(),
+                "en".into(),
+                "ko".into(),
+                "fr".into(),
+                "de".into(),
+                "es".into(),
+                "it".into(),
+                "zh".into(),
+            ],
+            model: None,
+            sessions: HashMap::new(),
+        };
+        let first = service
+            .samples_for_pattern(&InferInput {
+                session_id: "session".into(),
+                at_ms: 0,
+                pattern: EcapaPattern::RollingContext,
+                samples: vec![0.1; SAMPLE_RATE_HZ * 4],
+            })
+            .unwrap();
+        assert_eq!(first.len(), SAMPLE_RATE_HZ * 4);
+        let second = service
+            .samples_for_pattern(&InferInput {
+                session_id: "session".into(),
+                at_ms: 500,
+                pattern: EcapaPattern::RollingContext,
+                samples: vec![0.2; SAMPLE_RATE_HZ * 4],
+            })
+            .unwrap();
+        assert_eq!(second.len(), ROLLING_WINDOW_SAMPLES);
+        assert_eq!(second[0], 0.1);
+        assert_eq!(second[SAMPLE_RATE_HZ * 2], 0.2);
+        let utterance = service
+            .samples_for_pattern(&InferInput {
+                session_id: "session".into(),
+                at_ms: 1_000,
+                pattern: EcapaPattern::Utterance,
+                samples: vec![0.3; SAMPLE_RATE_HZ],
+            })
+            .unwrap();
+        assert_eq!(utterance, vec![0.3; SAMPLE_RATE_HZ]);
+    }
+}
