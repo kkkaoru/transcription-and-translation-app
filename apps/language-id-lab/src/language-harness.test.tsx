@@ -105,7 +105,8 @@ describe("LanguageHarness", () => {
     expect(container.querySelector(".method-control select")?.children).toHaveLength(5);
     expect(container.querySelector(".microphone-control")).not.toBeNull();
     expect(container.querySelector(".timeline-chart")).not.toBeNull();
-    expect(container.querySelector(".voice-test-section")).not.toBeNull();
+    const capturePanel = container.querySelector(".capture-panel");
+    expect(capturePanel?.nextElementSibling?.classList.contains("voice-test-section")).toBe(true);
     expect(container.querySelector(".edge-status")).toBeNull();
     expect(container.querySelector(".hero-description")).toBeNull();
     expect(container.querySelector(".scenario-section")).toBeNull();

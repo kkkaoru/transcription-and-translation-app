@@ -527,6 +527,102 @@ export function LanguageHarness() {
         {captureError ? <p className="control-error">{captureError}</p> : null}
       </section>
 
+      <section className="voice-test-section panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Workers AI translation → Fish Audio TTS → Language ID</p>
+            <h2>{messages.voiceTestTitle}</h2>
+            <p>{messages.voiceTestDetail}</p>
+          </div>
+        </div>
+        <div className="voice-test-grid">
+          <label className="voice-text-control">
+            <span>{messages.sourceText}</span>
+            <textarea
+              value={voiceText}
+              maxLength={500}
+              rows={4}
+              onChange={(event) => setVoiceText(event.currentTarget.value)}
+            />
+          </label>
+          <label>
+            <span>{messages.sourceLanguage}</span>
+            <select
+              value={sourceLanguage}
+              onChange={(event) => setSourceLanguage(event.currentTarget.value)}
+            >
+              {VOICE_LANGUAGES.map((language) => (
+                <option value={language} key={language}>
+                  {displayLanguageName(language, locale)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>{messages.targetLanguage}</span>
+            <select
+              value={targetLanguage}
+              onChange={(event) => setTargetLanguage(event.currentTarget.value)}
+            >
+              {VOICE_LANGUAGES.map((language) => (
+                <option value={language} key={language}>
+                  {displayLanguageName(language, locale)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={voiceStatus !== "idle" || voiceText.trim() === ""}
+            onClick={() => void generateVoice()}
+          >
+            {voiceStatus === "generating" ? messages.generatingVoice : messages.generateVoice}
+          </button>
+        </div>
+        {voiceResult !== null ? (
+          <div className="voice-result">
+            <p>
+              <span>{messages.translatedText}</span>
+              <strong>{voiceResult.translatedText}</strong>
+            </p>
+            <audio controls src={voiceAudioUrl}>
+              <track
+                default
+                kind="captions"
+                label={messages.translatedText}
+                src={`data:text/vtt;charset=utf-8,${encodeURIComponent(`WEBVTT\n\n00:00.000 --> 59:59.000\n${voiceResult.translatedText}`)}`}
+              />
+            </audio>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={voiceStatus !== "idle"}
+              onClick={() => void inferVoice()}
+            >
+              {voiceStatus === "inferring"
+                ? messages.runningVoiceInference
+                : messages.runVoiceInference}
+            </button>
+            <p className="voice-comparison">
+              <span>
+                {messages.expectedLanguage}:{" "}
+                <strong>{displayLanguageName(targetLanguage, locale)}</strong>
+              </span>
+              <span>
+                {messages.detectedLanguage}:{" "}
+                <strong>
+                  {voiceDetected === null
+                    ? "—"
+                    : displayLanguageName(voiceDetected.stableLanguage, locale)}
+                </strong>
+              </span>
+            </p>
+          </div>
+        ) : null}
+        {voiceError !== "" ? <p className="control-error">{voiceError}</p> : null}
+      </section>
+
       <section className="latest-strip panel">
         <div>
           <span>{messages.currentInference}</span>
@@ -626,102 +722,6 @@ export function LanguageHarness() {
             />
           </article>
         </div>
-      </section>
-
-      <section className="voice-test-section panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Workers AI translation → Fish Audio TTS → Language ID</p>
-            <h2>{messages.voiceTestTitle}</h2>
-            <p>{messages.voiceTestDetail}</p>
-          </div>
-        </div>
-        <div className="voice-test-grid">
-          <label className="voice-text-control">
-            <span>{messages.sourceText}</span>
-            <textarea
-              value={voiceText}
-              maxLength={500}
-              rows={4}
-              onChange={(event) => setVoiceText(event.currentTarget.value)}
-            />
-          </label>
-          <label>
-            <span>{messages.sourceLanguage}</span>
-            <select
-              value={sourceLanguage}
-              onChange={(event) => setSourceLanguage(event.currentTarget.value)}
-            >
-              {VOICE_LANGUAGES.map((language) => (
-                <option value={language} key={language}>
-                  {displayLanguageName(language, locale)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>{messages.targetLanguage}</span>
-            <select
-              value={targetLanguage}
-              onChange={(event) => setTargetLanguage(event.currentTarget.value)}
-            >
-              {VOICE_LANGUAGES.map((language) => (
-                <option value={language} key={language}>
-                  {displayLanguageName(language, locale)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            className="primary-button"
-            disabled={voiceStatus !== "idle" || voiceText.trim() === ""}
-            onClick={() => void generateVoice()}
-          >
-            {voiceStatus === "generating" ? messages.generatingVoice : messages.generateVoice}
-          </button>
-        </div>
-        {voiceResult !== null ? (
-          <div className="voice-result">
-            <p>
-              <span>{messages.translatedText}</span>
-              <strong>{voiceResult.translatedText}</strong>
-            </p>
-            <audio controls src={voiceAudioUrl}>
-              <track
-                default
-                kind="captions"
-                label={messages.translatedText}
-                src={`data:text/vtt;charset=utf-8,${encodeURIComponent(`WEBVTT\n\n00:00.000 --> 59:59.000\n${voiceResult.translatedText}`)}`}
-              />
-            </audio>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={voiceStatus !== "idle"}
-              onClick={() => void inferVoice()}
-            >
-              {voiceStatus === "inferring"
-                ? messages.runningVoiceInference
-                : messages.runVoiceInference}
-            </button>
-            <p className="voice-comparison">
-              <span>
-                {messages.expectedLanguage}:{" "}
-                <strong>{displayLanguageName(targetLanguage, locale)}</strong>
-              </span>
-              <span>
-                {messages.detectedLanguage}:{" "}
-                <strong>
-                  {voiceDetected === null
-                    ? "—"
-                    : displayLanguageName(voiceDetected.stableLanguage, locale)}
-                </strong>
-              </span>
-            </p>
-          </div>
-        ) : null}
-        {voiceError !== "" ? <p className="control-error">{voiceError}</p> : null}
       </section>
 
       <section className="cost-section panel">
