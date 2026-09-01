@@ -1,0 +1,44 @@
+FROM rust:1.97.1-trixie@sha256:b1b3c9c0d921d7fa0a6d1f9ec7e4eab87f8c8ec97644c3d791450f131dec813f AS builder
+WORKDIR /build
+COPY language-harness-core language-harness-core
+COPY language-harness-service language-harness-service
+RUN cargo build --locked --release --manifest-path language-harness-service/Cargo.toml && \
+    strip language-harness-service/target/release/language-harness-service && \
+    mkdir -p /runtime/lib && \
+    find language-harness-service/target/release -maxdepth 2 -type f -name 'libonnxruntime.so*' \
+      -exec cp '{}' /runtime/lib/ \;
+
+FROM python:3.10-bookworm@sha256:94c362db08c5b38857943d31b10558ff1856e918605c474d205d72a534929d4e AS model
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip install --no-cache-dir 'Cython==0.29.36' && \
+    pip install --no-cache-dir 'numpy==1.26.4' 'torch==2.1.2' \
+      --index-url https://download.pytorch.org/whl/cpu \
+      --extra-index-url https://pypi.org/simple && \
+    pip install --no-cache-dir 'nemo_toolkit[asr]==1.23.0' 'onnx==1.15.0'
+RUN pip install --no-cache-dir --no-deps \
+      'numpy==1.26.4' \
+      'huggingface_hub==0.23.5' \
+      'transformers==4.40.2' \
+      'tokenizers==0.19.1' \
+      'einops==0.8.1'
+RUN mkdir -p /models/source /models/nvidia-ambernet && \
+    curl -fL --retry 3 -o /models/source/ambernet.nemo \
+      'https://api.ngc.nvidia.com/v2/models/nvidia/nemo/langid_ambernet/versions/1.12.0/files/ambernet.nemo' && \
+    echo '2f92d645b9ea5824d7663584fecb9ecc52557d0d700e24266747f38a61ba1681  /models/source/ambernet.nemo' | sha256sum -c -
+COPY language-harness-service/export_ambernet.py /export_ambernet.py
+RUN python /export_ambernet.py && \
+    test "$(python -c 'import json; print(len(json.load(open("/models/nvidia-ambernet/labels.json"))))')" = 107
+
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS final
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libgomp1 && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/language-harness-service/target/release/language-harness-service /usr/local/bin/language-harness-service
+COPY --from=builder /runtime/lib /usr/local/lib
+COPY --from=model /models/nvidia-ambernet /models/nvidia-ambernet
+ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV LANGUAGE_MODEL_DIR=/models/nvidia-ambernet
+ENV LANGUAGE_MODEL_KIND=nvidia-ambernet
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/language-harness-service"]

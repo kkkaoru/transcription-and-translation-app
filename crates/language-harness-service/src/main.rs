@@ -38,12 +38,45 @@ const UNKNOWN_CONFIDENCE_BOUNDARY: f32 = 0.55;
 const UNKNOWN_QUALITY_WEIGHT: f32 = 0.70;
 const TOP_LANGUAGE_COUNT: usize = 8;
 const SESSION_ID_HEADER: &str = "x-kotoba-session-id";
-const MODEL_FILE: &str = "lang-id-ecapa.onnx";
+const ECAPA_MODEL_FILE: &str = "lang-id-ecapa.onnx";
+const AMBERNET_MODEL_FILE: &str = "ambernet.onnx";
 const LABELS_FILE: &str = "labels.json";
+const AMBERNET_PREPROCESSOR_FILE: &str = "preprocessor.json";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ModelKind {
+    SpeechbrainEcapa,
+    NvidiaAmbernet,
+}
+
+impl ModelKind {
+    fn from_environment() -> Self {
+        match std::env::var("LANGUAGE_MODEL_KIND").as_deref() {
+            Ok("nvidia-ambernet") => Self::NvidiaAmbernet,
+            _ => Self::SpeechbrainEcapa,
+        }
+    }
+
+    const fn model_name(self) -> &'static str {
+        match self {
+            Self::SpeechbrainEcapa => "speechbrain/lang-id-voxlingua107-ecapa",
+            Self::NvidiaAmbernet => "nvidia/nemo-langid-ambernet",
+        }
+    }
+
+    const fn model_file(self) -> &'static str {
+        match self {
+            Self::SpeechbrainEcapa => ECAPA_MODEL_FILE,
+            Self::NvidiaAmbernet => AMBERNET_MODEL_FILE,
+        }
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
     runtime: RuntimeHandle,
+    model_kind: ModelKind,
+    language_count: usize,
 }
 
 #[derive(Clone)]
@@ -139,6 +172,7 @@ struct InferenceResponse {
 
 #[derive(Debug)]
 struct RuntimeService {
+    model_kind: ModelKind,
     model_path: PathBuf,
     labels: Vec<String>,
     model: Option<AcousticModel>,
@@ -152,7 +186,36 @@ struct LanguageSession {
 }
 
 struct AcousticModel {
+    kind: ModelKind,
     session: Session,
+    ambernet_preprocessor: Option<AmbernetPreprocessor>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AmbernetPreprocessorConfig {
+    n_fft: usize,
+    hop_length: usize,
+    pad_to: usize,
+    preemphasis: f32,
+    log_zero_guard: f32,
+    window: Vec<f32>,
+    filter_bank: Vec<Vec<f32>>,
+}
+
+struct AmbernetPreprocessor {
+    config: AmbernetPreprocessorConfig,
+    cosine_basis: Vec<f32>,
+    sine_basis: Vec<f32>,
+}
+
+impl std::fmt::Debug for AmbernetPreprocessor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AmbernetPreprocessor")
+            .field("n_fft", &self.config.n_fft)
+            .field("mel_bins", &self.config.filter_bank.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for AcousticModel {
@@ -206,7 +269,7 @@ impl RuntimeHandle {
 }
 
 impl RuntimeService {
-    fn new(model_dir: &Path) -> Result<Self, Box<dyn Error>> {
+    fn new(model_dir: &Path, model_kind: ModelKind) -> Result<Self, Box<dyn Error>> {
         let labels_path = model_dir.join(LABELS_FILE);
         let labels_json = fs::read_to_string(&labels_path)?;
         let mut labels: Vec<String> = serde_json::from_str(&labels_json)?;
@@ -218,10 +281,13 @@ impl RuntimeService {
             }
         });
         if labels.len() < TOP_LANGUAGE_COUNT {
-            return Err(format!("ECAPA label set is unexpectedly small: {}", labels.len()).into());
+            return Err(
+                format!("Language label set is unexpectedly small: {}", labels.len()).into()
+            );
         }
         Ok(Self {
-            model_path: model_dir.join(MODEL_FILE),
+            model_kind,
+            model_path: model_dir.join(model_kind.model_file()),
             labels,
             model: None,
             sessions: HashMap::new(),
@@ -249,11 +315,11 @@ impl RuntimeService {
         let model = self
             .model
             .as_mut()
-            .ok_or_else(|| ServiceError::unavailable("ECAPA model did not initialize"))?;
+            .ok_or_else(|| ServiceError::unavailable("Language model did not initialize"))?;
         let raw_probabilities = model.infer(&model_samples)?;
         if raw_probabilities.len() != self.labels.len() {
             return Err(ServiceError::unavailable(format!(
-                "ECAPA returned {} probabilities for {} labels",
+                "Language model returned {} probabilities for {} labels",
                 raw_probabilities.len(),
                 self.labels.len()
             )));
@@ -303,14 +369,14 @@ impl RuntimeService {
             quality,
             speech_seconds: input.samples.len() as f32 / SAMPLE_RATE_HZ as f32,
             inference_ms: started_at.elapsed().as_secs_f64() * 1_000.0,
-            model: "speechbrain/lang-id-voxlingua107-ecapa",
+            model: self.model_kind.model_name(),
             pattern: input.pattern,
         })
     }
 
     fn ensure_model(&mut self) -> Result<(), ServiceError> {
         if self.model.is_none() {
-            self.model = Some(AcousticModel::load(&self.model_path)?);
+            self.model = Some(AcousticModel::load(&self.model_path, self.model_kind)?);
         }
         Ok(())
     }
@@ -355,30 +421,191 @@ impl LanguageSession {
 }
 
 impl AcousticModel {
-    fn load(model_path: &Path) -> Result<Self, ServiceError> {
+    fn load(model_path: &Path, kind: ModelKind) -> Result<Self, ServiceError> {
         let builder = Session::builder().map_err(|error| {
-            ServiceError::unavailable(format!("Failed to create ECAPA runtime: {error}"))
+            ServiceError::unavailable(format!("Failed to create language runtime: {error}"))
         })?;
         let mut builder = builder.with_intra_threads(1).map_err(|error| {
-            ServiceError::unavailable(format!("Failed to configure ECAPA runtime: {error}"))
+            ServiceError::unavailable(format!("Failed to configure language runtime: {error}"))
         })?;
         let session = builder.commit_from_file(model_path).map_err(|error| {
-            ServiceError::unavailable(format!("Failed to load ECAPA model: {error}"))
+            ServiceError::unavailable(format!("Failed to load language model: {error}"))
         })?;
-        Ok(Self { session })
+        let ambernet_preprocessor = if matches!(kind, ModelKind::NvidiaAmbernet) {
+            let path = model_path.with_file_name(AMBERNET_PREPROCESSOR_FILE);
+            Some(AmbernetPreprocessor::load(&path)?)
+        } else {
+            None
+        };
+        Ok(Self { kind, session, ambernet_preprocessor })
     }
 
     fn infer(&mut self, samples: &[f32]) -> Result<Vec<f32>, ServiceError> {
-        let waveform = TensorRef::from_array_view(([1_usize, samples.len()], samples))
-            .map_err(|error| ServiceError::bad_request(format!("Invalid waveform: {error}")))?;
-        let outputs = self.session.run(inputs!["waveform" => waveform]).map_err(|error| {
-            ServiceError::unavailable(format!("ECAPA inference failed: {error}"))
+        let outputs = match self.kind {
+            ModelKind::SpeechbrainEcapa => {
+                let waveform = TensorRef::from_array_view(([1_usize, samples.len()], samples))
+                    .map_err(|error| {
+                        ServiceError::bad_request(format!("Invalid waveform: {error}"))
+                    })?;
+                self.session.run(inputs!["waveform" => waveform])
+            }
+            ModelKind::NvidiaAmbernet => {
+                let preprocessor = self.ambernet_preprocessor.as_ref().ok_or_else(|| {
+                    ServiceError::unavailable("AmberNet preprocessor did not initialize")
+                })?;
+                let features = preprocessor.process(samples)?;
+                let tensor = TensorRef::from_array_view((
+                    [1_usize, features.mel_bins, features.padded_frames],
+                    features.values.as_slice(),
+                ))
+                .map_err(|error| {
+                    ServiceError::bad_request(format!("Invalid AmberNet features: {error}"))
+                })?;
+                let lengths = [i64::try_from(features.valid_frames).map_err(|error| {
+                    ServiceError::bad_request(format!("AmberNet context is too long: {error}"))
+                })?];
+                let length = TensorRef::from_array_view(([1_usize], lengths.as_slice())).map_err(
+                    |error| ServiceError::bad_request(format!("Invalid feature length: {error}")),
+                )?;
+                self.session.run(inputs!["audio_signal" => tensor, "length" => length])
+            }
+        }
+        .map_err(|error| {
+            ServiceError::unavailable(format!("Language inference failed: {error}"))
         })?;
-        let (_, probabilities) = outputs[0].try_extract_tensor::<f32>().map_err(|error| {
-            ServiceError::unavailable(format!("Invalid ECAPA model output: {error}"))
+        let (_, values) = outputs[0].try_extract_tensor::<f32>().map_err(|error| {
+            ServiceError::unavailable(format!("Invalid language model output: {error}"))
         })?;
-        Ok(probabilities.to_vec())
+        let output = values.to_vec();
+        if matches!(self.kind, ModelKind::NvidiaAmbernet) {
+            Ok(softmax(&output))
+        } else {
+            Ok(output)
+        }
     }
+}
+
+#[derive(Debug)]
+struct AmbernetFeatures {
+    values: Vec<f32>,
+    mel_bins: usize,
+    valid_frames: usize,
+    padded_frames: usize,
+}
+
+impl AmbernetPreprocessor {
+    fn load(path: &Path) -> Result<Self, ServiceError> {
+        let json = fs::read_to_string(path).map_err(|error| {
+            ServiceError::unavailable(format!("Failed to read AmberNet preprocessing: {error}"))
+        })?;
+        let config: AmbernetPreprocessorConfig = serde_json::from_str(&json).map_err(|error| {
+            ServiceError::unavailable(format!("Invalid AmberNet preprocessing: {error}"))
+        })?;
+        let spectrum_bins = config.n_fft / 2 + 1;
+        let valid = config.n_fft > 0
+            && config.hop_length > 0
+            && config.window.len() == config.n_fft
+            && !config.filter_bank.is_empty()
+            && config.filter_bank.iter().all(|row| row.len() == spectrum_bins);
+        if !valid {
+            return Err(ServiceError::unavailable("AmberNet preprocessing dimensions are invalid"));
+        }
+        let basis_size = spectrum_bins * config.n_fft;
+        let mut cosine_basis = Vec::with_capacity(basis_size);
+        let mut sine_basis = Vec::with_capacity(basis_size);
+        for frequency in 0..spectrum_bins {
+            for time in 0..config.n_fft {
+                let angle = 2.0 * std::f32::consts::PI * frequency as f32 * time as f32
+                    / config.n_fft as f32;
+                cosine_basis.push(config.window[time] * angle.cos());
+                sine_basis.push(config.window[time] * -angle.sin());
+            }
+        }
+        Ok(Self { config, cosine_basis, sine_basis })
+    }
+
+    fn process(&self, samples: &[f32]) -> Result<AmbernetFeatures, ServiceError> {
+        let padding = self.config.n_fft / 2;
+        if samples.len() <= padding {
+            return Err(ServiceError::bad_request(
+                "AmberNet requires more than half an FFT window of audio",
+            ));
+        }
+        let mut preemphasized = Vec::with_capacity(samples.len());
+        preemphasized.push(samples[0]);
+        preemphasized
+            .extend(samples.windows(2).map(|pair| pair[1] - self.config.preemphasis * pair[0]));
+        let mut padded = vec![0.0_f32; samples.len() + padding * 2];
+        padded[padding..padding + samples.len()].copy_from_slice(&preemphasized);
+        for offset in 0..padding {
+            padded[padding - 1 - offset] = preemphasized[offset + 1];
+            padded[padding + samples.len() + offset] = preemphasized[samples.len() - 2 - offset];
+        }
+        let frame_count = (padded.len() - self.config.n_fft) / self.config.hop_length + 1;
+        if frame_count < 2 {
+            return Err(ServiceError::bad_request(
+                "AmberNet requires at least two spectrogram frames",
+            ));
+        }
+        let spectrum_bins = self.config.n_fft / 2 + 1;
+        let mut power = vec![0.0_f32; spectrum_bins * frame_count];
+        for frame in 0..frame_count {
+            let frame_start = frame * self.config.hop_length;
+            let frame_samples = &padded[frame_start..frame_start + self.config.n_fft];
+            for frequency in 0..spectrum_bins {
+                let basis_start = frequency * self.config.n_fft;
+                let cosine = &self.cosine_basis[basis_start..basis_start + self.config.n_fft];
+                let sine = &self.sine_basis[basis_start..basis_start + self.config.n_fft];
+                let mut real = 0.0_f32;
+                let mut imaginary = 0.0_f32;
+                for time in 0..self.config.n_fft {
+                    real += frame_samples[time] * cosine[time];
+                    imaginary += frame_samples[time] * sine[time];
+                }
+                power[frequency * frame_count + frame] = real * real + imaginary * imaginary;
+            }
+        }
+        let mel_bins = self.config.filter_bank.len();
+        let padded_frames = if self.config.pad_to == 0 {
+            frame_count
+        } else {
+            frame_count.div_ceil(self.config.pad_to) * self.config.pad_to
+        };
+        let mut values = vec![0.0_f32; mel_bins * padded_frames];
+        for (mel, filter) in self.config.filter_bank.iter().enumerate() {
+            let mut log_features = vec![0.0_f32; frame_count];
+            for frame in 0..frame_count {
+                let energy: f32 = filter
+                    .iter()
+                    .enumerate()
+                    .map(|(frequency, weight)| weight * power[frequency * frame_count + frame])
+                    .sum();
+                log_features[frame] = (energy.max(0.0) + self.config.log_zero_guard).ln();
+            }
+            let mean = log_features.iter().sum::<f32>() / frame_count as f32;
+            let variance = log_features
+                .iter()
+                .map(|value| {
+                    let difference = value - mean;
+                    difference * difference
+                })
+                .sum::<f32>()
+                / (frame_count - 1) as f32;
+            let standard_deviation = variance.sqrt() + 1e-5;
+            let output = &mut values[mel * padded_frames..mel * padded_frames + frame_count];
+            output.iter_mut().zip(log_features).for_each(|(target, value)| {
+                *target = (value - mean) / standard_deviation;
+            });
+        }
+        Ok(AmbernetFeatures { values, mel_bins, valid_frames: frame_count, padded_frames })
+    }
+}
+
+fn softmax(logits: &[f32]) -> Vec<f32> {
+    let maximum = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exponentials: Vec<f32> = logits.iter().map(|value| (value - maximum).exp()).collect();
+    let total: f32 = exponentials.iter().sum();
+    exponentials.into_iter().map(|value| value / total.max(f32::EPSILON)).collect()
 }
 
 fn tracker_labels(model_labels: &[String]) -> Vec<String> {
@@ -453,11 +680,11 @@ fn validated_session_id(headers: &HeaderMap) -> Result<String, ServiceError> {
     Ok(value.into())
 }
 
-async fn health() -> axum::Json<HealthResponse> {
+async fn health(State(state): State<AppState>) -> axum::Json<HealthResponse> {
     axum::Json(HealthResponse {
         ok: true,
-        model: "speechbrain/lang-id-voxlingua107-ecapa",
-        languages: 107,
+        model: state.model_kind.model_name(),
+        languages: state.language_count,
         tracker: "rust-online-hsmm-sprt-hysteresis",
     })
 }
@@ -481,11 +708,14 @@ async fn infer(
         .map(axum::Json)
 }
 
-fn spawn_runtime(model_dir: PathBuf) -> Result<RuntimeHandle, Box<dyn Error>> {
+fn spawn_runtime(
+    model_dir: PathBuf,
+    model_kind: ModelKind,
+) -> Result<RuntimeHandle, Box<dyn Error>> {
     let (sender, receiver) = mpsc::channel();
     let (boot_sender, boot_receiver) = mpsc::sync_channel(1);
     thread::Builder::new().name("language-harness-runtime".into()).spawn(move || {
-        let service = RuntimeService::new(&model_dir);
+        let service = RuntimeService::new(&model_dir, model_kind);
         let boot_result = service.as_ref().map(|_| ()).map_err(|error| error.to_string());
         if boot_sender.send(boot_result).is_err() {
             return;
@@ -510,6 +740,7 @@ fn spawn_runtime(model_dir: PathBuf) -> Result<RuntimeHandle, Box<dyn Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let model_kind = ModelKind::from_environment();
     let model_dir = std::env::var_os("LANGUAGE_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/models/speechbrain-ecapa"));
@@ -517,7 +748,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(DEFAULT_PORT);
-    let state = AppState { runtime: spawn_runtime(model_dir)? };
+    let labels_json = fs::read_to_string(model_dir.join(LABELS_FILE))?;
+    let language_count = serde_json::from_str::<Vec<String>>(&labels_json)?.len();
+    let state =
+        AppState { runtime: spawn_runtime(model_dir, model_kind)?, model_kind, language_count };
     let app = Router::new()
         .route("/health", get(health))
         .route("/warmup", post(warmup))
@@ -601,8 +835,22 @@ mod tests {
     }
 
     #[test]
+    fn model_kind_selects_distinct_artifacts_and_softmax_normalizes_logits() {
+        assert_eq!(
+            ModelKind::SpeechbrainEcapa.model_name(),
+            "speechbrain/lang-id-voxlingua107-ecapa"
+        );
+        assert_eq!(ModelKind::NvidiaAmbernet.model_file(), AMBERNET_MODEL_FILE);
+        let probabilities = softmax(&[1.0, 2.0, 3.0]);
+        assert_eq!(probabilities.len(), 3);
+        assert!((probabilities.iter().sum::<f32>() - 1.0).abs() < 0.0001);
+        assert!(probabilities[2] > probabilities[1]);
+    }
+
+    #[test]
     fn rolling_pattern_retains_only_the_latest_six_seconds() {
         let mut service = RuntimeService {
+            model_kind: ModelKind::SpeechbrainEcapa,
             model_path: PathBuf::new(),
             labels: vec![
                 "ja".into(),
