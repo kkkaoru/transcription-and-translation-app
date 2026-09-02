@@ -639,7 +639,7 @@ fn set_error(snapshot: &Arc<Mutex<CompanionConnectionSnapshot>>, error: String) 
 mod tests {
     use std::net::UdpSocket;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::{
         companion_pairing_link, companion_pairing_qr_rgba, constant_time_equal,
@@ -786,7 +786,15 @@ mod tests {
                 .into(),
             ))
             .expect("send Mobile Browser Source status");
-        thread::sleep(Duration::from_millis(25));
+        let browser_source_deadline = Instant::now() + Duration::from_secs(1);
+        while {
+            let snapshot = server.snapshot();
+            !snapshot.browser_source_enabled
+                || snapshot.browser_source_url.as_deref() != Some("http://127.0.0.1:1522/")
+        } && Instant::now() < browser_source_deadline
+        {
+            thread::sleep(super::IO_POLL_INTERVAL);
+        }
         assert!(server.snapshot().browser_source_enabled);
         assert_eq!(server.snapshot().browser_source_url.as_deref(), Some("http://127.0.0.1:1522/"));
         assert!(server
@@ -821,9 +829,14 @@ mod tests {
                 .into(),
             ))
             .expect("send ASR result");
-        thread::sleep(Duration::from_millis(25));
+        let stage_result_deadline = Instant::now() + Duration::from_secs(1);
+        let mut inbound = handle.try_recv();
+        while inbound.is_none() && Instant::now() < stage_result_deadline {
+            thread::sleep(super::IO_POLL_INTERVAL);
+            inbound = handle.try_recv();
+        }
         assert!(matches!(
-            handle.try_recv(),
+            inbound,
             Some(CompanionInbound::StageResult(result))
                 if result.turn_id == 3 && result.revision == 7 && result.text == "こんにちは"
         ));

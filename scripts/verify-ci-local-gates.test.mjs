@@ -22,11 +22,17 @@ import {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
+const languageHarnessWorkflow = readFileSync(
+  resolve(root, ".github/workflows/language-harness.yml"),
+  "utf8",
+);
+const allWorkflows = `${workflow}\n${languageHarnessWorkflow}`;
+const mobileMakefile = readFileSync(resolve(root, "apps/mobile/Makefile"), "utf8");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 
 describe("CI and local quality-gate parity", () => {
   it("keeps the local full gate a superset of every classified CI gate", () => {
-    assert.deepEqual(verifyCiLocalGateParity({ workflow, packageJson }), {
+    assert.deepEqual(verifyCiLocalGateParity({ workflow: allWorkflows, packageJson }), {
       missingLocalScripts: [],
       unknownCiCommands: [],
       staleExclusions: [],
@@ -34,7 +40,7 @@ describe("CI and local quality-gate parity", () => {
   });
 
   it("maps direct CI Cargo commands to their local script equivalents", () => {
-    const ciCommands = extractCiGateCommands(workflow);
+    const ciCommands = extractCiGateCommands(allWorkflows);
     const localScripts = extractLocalGateScripts(packageJson);
 
     assert.equal(
@@ -49,6 +55,25 @@ describe("CI and local quality-gate parity", () => {
     assert.equal(localScripts.includes("rust:mobile:lint"), true);
     assert.equal(localScripts.includes("rust:mobile:test"), true);
     assert.equal(localScripts.includes("rust:mobile:build"), true);
+    assert.equal(ciCommands.includes("make rust-language-harness-coverage"), true);
+    assert.equal(localScripts.includes("rust:language-harness:coverage"), true);
+    assert.equal(localScripts.includes("rust:language-harness:wasm:build"), true);
+  });
+
+  it("runs Language Harness coverage only through the serialized Make target", () => {
+    assert.match(languageHarnessWorkflow, /run: make rust-language-harness-coverage/u);
+    assert.doesNotMatch(languageHarnessWorkflow, /cargo llvm-cov/u);
+    assert.match(languageHarnessWorkflow, /cargo fmt .* -- --check/u);
+    assert.match(languageHarnessWorkflow, /cargo test --locked/u);
+  });
+
+  it("keeps the Xcode-deadlocking Simulator integration explicit and manual", () => {
+    assert.match(workflow, /flutter test -d <simulator>.*deadlock/u);
+    assert.doesNotMatch(workflow, /make -C apps\/mobile test-ios-simulator/u);
+    assert.match(
+      mobileMakefile,
+      /test-ios-simulator:[\s\S]*\$\(FLUTTER\).*integration_test\/mobile_browser_source_test\.dart/u,
+    );
   });
 
   it("installs Parapper Linux libraries before running its Rust lint gate", () => {
